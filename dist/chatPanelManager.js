@@ -1,0 +1,150 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ChatPanelManager = exports.CHAT_PANEL_VIEW_TYPE = void 0;
+const vscode = __importStar(require("vscode"));
+const webviewHtml_1 = require("./webviewHtml");
+exports.CHAT_PANEL_VIEW_TYPE = "codexElement.chatPanel";
+class ChatPanelManager {
+    constructor(context, state, logger) {
+        this.context = context;
+        this.state = state;
+        this.logger = logger;
+        this.panels = new Map();
+    }
+    registerSerializer() {
+        return vscode.window.registerWebviewPanelSerializer(exports.CHAT_PANEL_VIEW_TYPE, {
+            deserializeWebviewPanel: async (panel, rawState) => {
+                const state = parsePanelState(rawState);
+                if (!state) {
+                    panel.dispose();
+                    return;
+                }
+                this.logger.info(`Restoring chat panel ${state.chatId}.`);
+                this.setupPanel(panel, state.chatId);
+            }
+        });
+    }
+    openChat(chatId) {
+        const existing = this.panels.get(chatId);
+        if (existing) {
+            existing.reveal();
+            return;
+        }
+        const chat = this.state.getChat(chatId);
+        if (!chat) {
+            vscode.window.showWarningMessage("Чат не найден.");
+            return;
+        }
+        const panel = vscode.window.createWebviewPanel(exports.CHAT_PANEL_VIEW_TYPE, chat.title, vscode.ViewColumn.Beside, {
+            enableScripts: true,
+            retainContextWhenHidden: true,
+            enableFindWidget: true,
+            localResourceRoots: [
+                vscode.Uri.joinPath(this.context.extensionUri, "media"),
+                vscode.Uri.joinPath(this.context.extensionUri, "resources")
+            ]
+        });
+        this.setupPanel(panel, chatId);
+    }
+    postSnapshot(chatId) {
+        const panel = this.panels.get(chatId);
+        const snapshot = this.state.getChatSnapshot(chatId);
+        if (!panel || !snapshot) {
+            return;
+        }
+        panel.webview.postMessage({ type: "chat.snapshot", snapshot });
+    }
+    setupPanel(panel, chatId) {
+        const chat = this.state.getChat(chatId);
+        panel.title = chat?.title ?? "Codex";
+        panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "resources", "icons", "codex.svg");
+        panel.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [
+                vscode.Uri.joinPath(this.context.extensionUri, "media"),
+                vscode.Uri.joinPath(this.context.extensionUri, "resources")
+            ]
+        };
+        panel.webview.html = (0, webviewHtml_1.renderWebviewHtml)({
+            extensionUri: this.context.extensionUri,
+            webview: panel.webview,
+            scriptPath: "media/chat.js",
+            stylePath: "media/chat.css",
+            title: panel.title,
+            rootData: {
+                "chat-id": chatId
+            }
+        });
+        this.panels.set(chatId, panel);
+        panel.webview.onDidReceiveMessage((message) => {
+            this.handleMessage(panel, chatId, message);
+        });
+        panel.onDidDispose(() => {
+            this.panels.delete(chatId);
+            this.logger.info(`Chat panel disposed: ${chatId}.`);
+        });
+    }
+    handleMessage(panel, chatId, message) {
+        if (!message || typeof message !== "object") {
+            return;
+        }
+        if (message.type === "ready") {
+            panel.webview.postMessage({
+                type: "chat.snapshot",
+                snapshot: this.state.getChatSnapshot(chatId)
+            });
+            return;
+        }
+        if (message.type !== "command") {
+            return;
+        }
+        this.logger.info(`Chat panel command ${chatId}: ${message.command}`);
+        panel.webview.postMessage({
+            type: "event",
+            event: "shell.notice",
+            payload: "Команда принята UI shell. Runtime будет подключен в следующих итерациях."
+        });
+    }
+}
+exports.ChatPanelManager = ChatPanelManager;
+function parsePanelState(rawState) {
+    if (!rawState || typeof rawState !== "object") {
+        return undefined;
+    }
+    const value = rawState;
+    return typeof value.chatId === "string" ? { chatId: value.chatId } : undefined;
+}
+//# sourceMappingURL=chatPanelManager.js.map

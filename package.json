@@ -1,0 +1,113 @@
+{
+  "name": "codex-element-v1",
+  "displayName": "Codex for 1C: Element",
+  "description": "Claude Code-style Codex plugin shell for 1C: Element.",
+  "version": "0.1.0",
+  "publisher": "element-ai",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "vscode": "^1.97.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:codexElement.sidebar",
+    "onWebviewPanel:codexElement.chatPanel",
+    "onCommand:codexElement.open",
+    "onCommand:codexElement.newProjectChat",
+    "onCommand:codexElement.newGeneralChat",
+    "onCommand:codexElement.openSettings",
+    "onCommand:codexElement.openLogs"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "tsc -p ./",
+    "check": "tsc -p ./ --noEmit"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexElement.open",
+        "title": "Codex: Открыть"
+      },
+      {
+        "command": "codexElement.newProjectChat",
+        "title": "Codex: Новый проектный чат",
+        "icon": "$(add)"
+      },
+      {
+        "command": "codexElement.newGeneralChat",
+        "title": "Codex: Новый общий чат",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "codexElement.openSettings",
+        "title": "Codex: Настройки",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "codexElement.openLogs",
+        "title": "Codex: Логи",
+        "icon": "$(output)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codexElement",
+          "title": "Codex",
+          "icon": "resources/icons/codex.svg"
+        }
+      ]
+    },
+    "views": {
+      "codexElement": [
+        {
+          "type": "webview",
+          "id": "codexElement.sidebar",
+          "name": "Codex"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "codexElement.openSettings",
+          "when": "view == codexElement.sidebar",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codexElement.openLogs",
+          "when": "view == codexElement.sidebar",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "codexElement.open"
+        },
+        {
+          "command": "codexElement.newProjectChat"
+        },
+        {
+          "command": "codexElement.newGeneralChat"
+        },
+        {
+          "command": "codexElement.openSettings"
+        },
+        {
+          "command": "codexElement.openLogs"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.97.0",
+    "typescript": "^5.4.5"
+  }
+}
+
