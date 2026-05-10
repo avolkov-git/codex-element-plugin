@@ -2,9 +2,9 @@
   color-scheme: light dark;
   --accent: #0e7fd2;
   --accent-hover: #0b70bd;
-  --text-muted: color-mix(in srgb, var(--vscode-foreground) 68%, transparent);
-  --panel: color-mix(in srgb, var(--vscode-sideBar-background) 92%, var(--vscode-foreground) 8%);
-  --border: color-mix(in srgb, var(--vscode-sideBar-foreground) 18%, transparent);
+  --text-muted: var(--vscode-descriptionForeground, #6b7280);
+  --panel: var(--vscode-sideBarSectionHeader-background, #f3f4f6);
+  --border: var(--vscode-panel-border, #d0d0d0);
 }
 
 * {
@@ -129,7 +129,7 @@ input {
 }
 
 .button.secondary {
-  background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 88%, #000 12%);
+  background: var(--vscode-button-secondaryBackground, #5f6b7a);
   color: var(--vscode-button-secondaryForeground);
 }
 
@@ -169,7 +169,7 @@ input {
 }
 
 .chat-row:hover {
-  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 80%, transparent);
+  background: var(--vscode-list-hoverBackground, #e8e8e8);
 }
 
 .chat-row.active {
@@ -224,4 +224,3 @@ input {
   background: var(--vscode-input-background);
   color: var(--vscode-input-foreground);
 }
-

@@ -1,9 +1,9 @@
 :root {
   color-scheme: light dark;
   --accent: #0e7fd2;
-  --border: color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
-  --panel: color-mix(in srgb, var(--vscode-editor-background) 95%, var(--vscode-foreground) 5%);
-  --muted: color-mix(in srgb, var(--vscode-foreground) 65%, transparent);
+  --border: var(--vscode-panel-border, #d0d0d0);
+  --panel: var(--vscode-editorWidget-background, #f3f4f6);
+  --muted: var(--vscode-descriptionForeground, #6b7280);
 }
 
 * {
@@ -96,7 +96,7 @@ textarea {
 .composer {
   border-top: 1px solid var(--border);
   padding: 14px 22px 18px;
-  background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-foreground) 8%);
+  background: var(--vscode-editorWidget-background, #f3f4f6);
 }
 
 .composer-box {
@@ -150,4 +150,3 @@ textarea {
   color: var(--muted);
   margin-top: 8px;
 }
-

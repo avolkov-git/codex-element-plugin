@@ -35,27 +35,60 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.renderWebviewHtml = renderWebviewHtml;
 const vscode = __importStar(require("vscode"));
+const fs = __importStar(require("fs"));
 function renderWebviewHtml(options) {
     const nonce = createNonce();
     const scriptUri = options.webview.asWebviewUri(vscode.Uri.joinPath(options.extensionUri, options.scriptPath));
     const styleUri = options.webview.asWebviewUri(vscode.Uri.joinPath(options.extensionUri, options.stylePath));
+    const inlineScript = readExtensionFile(options.extensionUri, options.scriptPath);
+    const inlineStyle = readExtensionFile(options.extensionUri, options.stylePath);
     const rootData = Object.entries(options.rootData ?? {})
         .map(([key, value]) => `data-${escapeAttribute(key)}="${escapeAttribute(value)}"`)
         .join(" ");
+    const styleTag = inlineStyle
+        ? `<style>${inlineStyle}</style>`
+        : `<link rel="stylesheet" href="${styleUri}">`;
+    const scriptTag = inlineScript
+        ? `<script nonce="${nonce}">${inlineScript}</script>`
+        : `<script nonce="${nonce}" src="${scriptUri}"></script>`;
     return `<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${options.webview.cspSource} data:; style-src ${options.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${options.webview.cspSource} data:; style-src ${options.webview.cspSource} 'unsafe-inline'; script-src ${options.webview.cspSource} 'nonce-${nonce}' 'unsafe-inline';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="${styleUri}">
+  ${styleTag}
+  <style>
+    body { margin: 0; }
+    .webview-fallback { padding: 14px; color: #444; }
+    .webview-fallback-card { border: 1px solid #d0d0d0; border-radius: 8px; padding: 12px; background: #f7f7f7; }
+    .webview-fallback-title { font-weight: 700; margin-bottom: 8px; }
+  </style>
   <title>${escapeHtml(options.title)}</title>
 </head>
 <body>
-  <div id="root" ${rootData}></div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+  <div id="root" ${rootData}>${renderFallback(options.title)}</div>
+  ${scriptTag}
 </body>
 </html>`;
+}
+function readExtensionFile(extensionUri, relativePath) {
+    try {
+        return fs.readFileSync(vscode.Uri.joinPath(extensionUri, relativePath).fsPath, "utf8");
+    }
+    catch {
+        return undefined;
+    }
+}
+function renderFallback(title) {
+    return `
+    <main class="webview-fallback">
+      <section class="webview-fallback-card">
+        <div class="webview-fallback-title">${escapeHtml(title)}</div>
+        <div>UI загружается. Если этот текст не исчезает, значит JavaScript webview не стартовал в Element.</div>
+      </section>
+    </main>
+  `;
 }
 function createNonce() {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
