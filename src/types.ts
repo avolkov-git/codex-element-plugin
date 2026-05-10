@@ -34,7 +34,6 @@ export interface SidebarSnapshot {
   };
   chats: ChatSummary[];
   activeChatId?: string;
-  message: string;
 }
 
 export interface ChatPanelSnapshot {
@@ -59,6 +58,5 @@ export interface ChatPanelState {
 }
 
 export type WebviewCommand =
-  | { type: "ready" }
+  | { type: "ready"; assetMode?: "external" | "inline fallback" }
   | { type: "command"; command: string; payload?: unknown };
-

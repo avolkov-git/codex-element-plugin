@@ -57,6 +57,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     if (message.type === "ready") {
       this.logger.info("Sidebar webview ready.");
+      this.logger.info(`Sidebar webview assets: ${message.assetMode ?? "unknown"}.`);
       this.postSnapshot();
       return;
     }
@@ -106,4 +107,3 @@ export interface SidebarHandlers {
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
-

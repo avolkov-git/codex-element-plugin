@@ -109,6 +109,8 @@ export class ChatPanelManager {
     }
 
     if (message.type === "ready") {
+      this.logger.info(`Chat panel webview ready ${chatId}.`);
+      this.logger.info(`Chat panel webview assets ${chatId}: ${message.assetMode ?? "unknown"}.`);
       panel.webview.postMessage({
         type: "chat.snapshot",
         snapshot: this.state.getChatSnapshot(chatId)
@@ -136,4 +138,3 @@ function parsePanelState(rawState: unknown): ChatPanelState | undefined {
   const value = rawState as Record<string, unknown>;
   return typeof value.chatId === "string" ? { chatId: value.chatId } : undefined;
 }
-

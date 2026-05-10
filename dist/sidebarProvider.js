@@ -79,6 +79,7 @@ class SidebarProvider {
         }
         if (message.type === "ready") {
             this.logger.info("Sidebar webview ready.");
+            this.logger.info(`Sidebar webview assets: ${message.assetMode ?? "unknown"}.`);
             this.postSnapshot();
             return;
         }

@@ -1,4 +1,9 @@
 (function () {
+  if (window.__codexElementAppReady) {
+    return;
+  }
+  window.__codexElementAppReady = true;
+  const assetMode = window.__codexElementWebviewAssetMode || "external";
   const vscode = acquireVsCodeApi();
   const root = document.getElementById("root");
   const state = {
@@ -22,7 +27,7 @@
     }
   });
 
-  vscode.postMessage({ type: "ready" });
+  vscode.postMessage({ type: "ready", assetMode });
   render();
 
   function render() {

@@ -122,6 +122,8 @@ class ChatPanelManager {
             return;
         }
         if (message.type === "ready") {
+            this.logger.info(`Chat panel webview ready ${chatId}.`);
+            this.logger.info(`Chat panel webview assets ${chatId}: ${message.assetMode ?? "unknown"}.`);
             panel.webview.postMessage({
                 type: "chat.snapshot",
                 snapshot: this.state.getChatSnapshot(chatId)

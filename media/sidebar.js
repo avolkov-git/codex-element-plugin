@@ -1,4 +1,9 @@
 (function () {
+  if (window.__codexElementAppReady) {
+    return;
+  }
+  window.__codexElementAppReady = true;
+  const assetMode = window.__codexElementWebviewAssetMode || "external";
   const vscode = acquireVsCodeApi();
   const state = {
     snapshot: undefined,
@@ -18,7 +23,7 @@
     }
   });
 
-  vscode.postMessage({ type: "ready" });
+  vscode.postMessage({ type: "ready", assetMode });
   render();
 
   function render() {
@@ -27,8 +32,7 @@
     root.innerHTML = `
       <main class="app">
         ${brand()}
-        ${snapshot ? statusCard(snapshot) : loading()}
-        ${snapshot && snapshot.auth.status === "authenticated" ? chatSections(snapshot) : authCard(snapshot)}
+        ${snapshot ? (snapshot.auth.status === "authenticated" ? chatSections(snapshot) : authCard(snapshot)) : loading()}
       </main>
     `;
     bind(root);
@@ -47,22 +51,7 @@
   }
 
   function loading() {
-    return `<section class="card"><div class="muted">Загрузка UI shell...</div></section>`;
-  }
-
-  function statusCard(snapshot) {
-    return `
-      <section class="card">
-        <div class="status">
-          <span>Backend</span>
-          <span class="pill">${escapeHtml(snapshot.runtime.label)}</span>
-        </div>
-        <div class="status">
-          <span>Proxy</span>
-          <span class="pill">${escapeHtml(snapshot.proxy.label)}</span>
-        </div>
-      </section>
-    `;
+    return `<section class="card"><div class="muted">Загрузка...</div></section>`;
   }
 
   function authCard(snapshot) {
@@ -95,13 +84,11 @@
     return `
       <section class="card auth-panel">
         <div class="section-title">Авторизация</div>
-        <div class="muted">Backend работает на сервере Element. Proxy нужен до авторизации, если сервер находится в закрытом контуре.</div>
         <div class="button-stack">
           <button class="button" data-mode="device">DEVICE CODE</button>
           <button class="button secondary" data-mode="apiKey">API KEY</button>
           <button class="button ghost" data-command="settings.proxy.open">Настроить proxy</button>
         </div>
-        ${snapshot ? `<div class="notice">${escapeHtml(snapshot.message)}</div>` : ""}
         ${notice()}
       </section>
     `;

@@ -24,8 +24,7 @@ class StateStore {
                 label: "Backend не запускался"
             },
             chats: [...this.chats],
-            activeChatId: this.activeChatId,
-            message: "UI shell готов. Backend, auth и runtime будут подключены в следующих итерациях."
+            activeChatId: this.activeChatId
         };
     }
     getChatSnapshot(chatId) {

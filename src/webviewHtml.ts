@@ -19,12 +19,9 @@ export function renderWebviewHtml(options: WebviewHtmlOptions): string {
   const rootData = Object.entries(options.rootData ?? {})
     .map(([key, value]) => `data-${escapeAttribute(key)}="${escapeAttribute(value)}"`)
     .join(" ");
-  const styleTag = inlineStyle
-    ? `<style>${inlineStyle}</style>`
-    : `<link rel="stylesheet" href="${styleUri}">`;
-  const scriptTag = inlineScript
-    ? `<script nonce="${nonce}">${inlineScript}</script>`
-    : `<script nonce="${nonce}" src="${scriptUri}"></script>`;
+  const fallbackBootstrap = inlineScript
+    ? renderFallbackBootstrap(nonce, inlineScript, inlineStyle ?? "")
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="ru">
@@ -32,7 +29,7 @@ export function renderWebviewHtml(options: WebviewHtmlOptions): string {
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${options.webview.cspSource} data:; style-src ${options.webview.cspSource} 'unsafe-inline'; script-src ${options.webview.cspSource} 'nonce-${nonce}' 'unsafe-inline';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  ${styleTag}
+  <link rel="stylesheet" href="${styleUri}">
   <style>
     body { margin: 0; }
     .webview-fallback { padding: 14px; color: #444; }
@@ -43,9 +40,29 @@ export function renderWebviewHtml(options: WebviewHtmlOptions): string {
 </head>
 <body>
   <div id="root" ${rootData}>${renderFallback(options.title)}</div>
-  ${scriptTag}
+  ${fallbackBootstrap}
+  <script defer src="${scriptUri}"></script>
 </body>
 </html>`;
+}
+
+function renderFallbackBootstrap(nonce: string, inlineScript: string, inlineStyle: string): string {
+  return `<script nonce="${nonce}">
+    window.__codexElementAppReady = false;
+    window.__codexElementWebviewAssetMode = "external";
+    window.__codexElementRunInlineFallback = function () {
+      if (window.__codexElementAppReady) {
+        return;
+      }
+      window.__codexElementWebviewAssetMode = "inline fallback";
+      var style = document.createElement("style");
+      style.setAttribute("data-codex-element-inline-fallback", "true");
+      style.textContent = ${JSON.stringify(inlineStyle)};
+      document.head.appendChild(style);
+      ${escapeScriptEnd(inlineScript)}
+    };
+    window.setTimeout(window.__codexElementRunInlineFallback, 700);
+  </script>`;
 }
 
 function readExtensionFile(extensionUri: vscode.Uri, relativePath: string): string | undefined {
@@ -61,10 +78,14 @@ function renderFallback(title: string): string {
     <main class="webview-fallback">
       <section class="webview-fallback-card">
         <div class="webview-fallback-title">${escapeHtml(title)}</div>
-        <div>UI загружается. Если этот текст не исчезает, значит JavaScript webview не стартовал в Element.</div>
+        <div>Codex загружается...</div>
       </section>
     </main>
   `;
+}
+
+function escapeScriptEnd(value: string): string {
+  return value.replace(/<\/script/gi, "<\\/script");
 }
 
 function createNonce(): string {
