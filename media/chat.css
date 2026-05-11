@@ -177,6 +177,35 @@ textarea {
   color: var(--muted);
 }
 
+.chip-button {
+  background: transparent;
+  cursor: pointer;
+}
+
+.chip-button:hover,
+.chip-button:focus {
+  color: var(--vscode-editor-foreground);
+  border-color: var(--vscode-focusBorder, var(--border));
+}
+
+.chip.active {
+  color: var(--vscode-editor-foreground);
+  border-color: var(--vscode-focusBorder, var(--border));
+}
+
+.chip.error {
+  color: var(--vscode-errorForeground, #d93025);
+}
+
+.chip.pending {
+  color: var(--vscode-charts-yellow, #b89500);
+  border-color: var(--vscode-charts-yellow, var(--border));
+}
+
+.chip.muted {
+  opacity: 0.72;
+}
+
 .button {
   border: 0;
   border-radius: 7px;
@@ -185,6 +214,11 @@ textarea {
   padding: 9px 16px;
   font-weight: 700;
   cursor: pointer;
+}
+
+.button.secondary {
+  background: var(--vscode-button-secondaryBackground, #5f6b7a);
+  color: var(--vscode-button-secondaryForeground, #fff);
 }
 
 .button:disabled {
@@ -199,4 +233,100 @@ textarea {
 
 .transcript-end {
   height: 1px;
+}
+
+.approval-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--vscode-editor-background) 42%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.approval-modal {
+  width: min(760px, 100%);
+  max-height: min(720px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.28);
+  padding: 22px;
+}
+
+.approval-kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.approval-modal h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.approval-description {
+  margin: 10px 0 18px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.approval-details {
+  margin: 0 0 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.approval-details div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.approval-details dt {
+  color: var(--muted);
+}
+
+.approval-details dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.approval-details code {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.approval-diff {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--vscode-editor-foreground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--vscode-editor-font-size, 12px);
+}
+
+.approval-diff.muted {
+  color: var(--muted);
+}
+
+.approval-actions {
+  margin-top: 18px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }

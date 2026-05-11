@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { Logger } from "./logger";
+import { getCodexPanelIconPath } from "./panelIcon";
 import { StateStore } from "./stateStore";
 import { ChatPanelState, WebviewCommand } from "./types";
 import { renderWebviewHtml } from "./webviewHtml";
@@ -9,6 +10,8 @@ export const CHAT_PANEL_VIEW_TYPE = "codexElement.chatPanel";
 export interface ChatPanelHandlers {
   sendPrompt(chatId: string, prompt: string): Promise<void>;
   markReadToBottom(chatId: string): void;
+  toggleRules(chatId: string): Promise<void>;
+  resolveApproval(chatId: string, approvalId: string, approved: boolean): Promise<void> | void;
 }
 
 export class ChatPanelManager {
@@ -50,7 +53,7 @@ export class ChatPanelManager {
     this.state.setActiveChat(chatId);
 
     if (this.panel) {
-      this.panel.reveal();
+      this.panel.reveal(vscode.ViewColumn.One);
       this.postActiveSnapshot();
       return;
     }
@@ -58,7 +61,7 @@ export class ChatPanelManager {
     const panel = vscode.window.createWebviewPanel(
       CHAT_PANEL_VIEW_TYPE,
       "Codex",
-      vscode.ViewColumn.Beside,
+      vscode.ViewColumn.One,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -93,7 +96,7 @@ export class ChatPanelManager {
 
   private setupPanel(panel: vscode.WebviewPanel): void {
     panel.title = "Codex";
-    panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "resources", "icons", "codex.svg");
+    panel.iconPath = getCodexPanelIconPath(this.context);
     panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [
@@ -148,6 +151,24 @@ export class ChatPanelManager {
         return;
       }
       this.handlers.markReadToBottom(chatId);
+      return;
+    }
+
+    if (message.command === "chat.rules.toggle") {
+      const chatId = this.state.getActiveChatId();
+      if (!chatId) {
+        return;
+      }
+      await this.handlers.toggleRules(chatId);
+      return;
+    }
+
+    if (message.command === "approval.approve" || message.command === "approval.deny") {
+      const chatId = this.state.getActiveChatId();
+      if (!chatId || !isObject(message.payload) || typeof message.payload.approvalId !== "string") {
+        return;
+      }
+      await this.handlers.resolveApproval(chatId, message.payload.approvalId, message.command === "approval.approve");
       return;
     }
 

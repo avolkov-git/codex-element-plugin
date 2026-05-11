@@ -88,12 +88,13 @@
             <textarea data-role="prompt-input" placeholder="Напишите задачу для Codex"></textarea>
             <div class="composer-actions">
               <div class="chips">
-                ${snapshot.chat.kind === "project" ? projectChips() : `<span class="chip">Без проектного контекста</span>`}
+                ${snapshot.chat.kind === "project" ? projectChips(snapshot) : `<span class="chip">Без проектного контекста</span>`}
               </div>
-              <button class="button" data-command="chat.send" ${snapshot.chat.status === "running" ? "disabled" : ""}>Отправить</button>
+              <button class="button" data-command="chat.send" ${snapshot.chat.status === "running" || snapshot.chat.status === "waitingApproval" ? "disabled" : ""}>Отправить</button>
             </div>
           </div>
         </footer>
+        ${snapshot.chat.pendingApproval ? approvalModal(snapshot.chat.pendingApproval) : ""}
       </main>
     `;
 
@@ -142,6 +143,14 @@
           vscode.postMessage({ type: "command", command, payload: { prompt } });
           return;
         }
+        if (command === "approval.approve" || command === "approval.deny") {
+          vscode.postMessage({
+            type: "command",
+            command,
+            payload: { approvalId: button.dataset.approvalId || "" }
+          });
+          return;
+        }
         vscode.postMessage({ type: "command", command });
       });
     });
@@ -160,13 +169,47 @@
     }
   }
 
-  function projectChips() {
+  function projectChips(snapshot) {
+    const project = snapshot.projectContext || { status: "notIndexed", label: "Проектный контекст будет собран при отправке" };
+    const projectClass = project.status === "active" ? " active" : project.status === "error" ? " error" : project.status === "indexing" ? " pending" : "";
+    const docs = snapshot.docs || { status: "notConfigured", label: "Документация не настроена" };
+    const docsClass = docs.status === "configured" ? " active" : docs.status === "error" ? " error" : "";
+    const rules = snapshot.rulesContext || { status: snapshot.chat.rulesEnabled === false ? "disabled" : "missing", label: "Файл .local-codex/rules.md не найден" };
+    const rulesClass = rules.status === "active" ? " active" : rules.status === "error" ? " error" : rules.status === "disabled" ? " muted" : "";
     return `
-      <span class="chip">Проект</span>
-      <span class="chip">Документация</span>
-      <span class="chip">Библиотеки</span>
-      <span class="chip">Правила</span>
+      <span class="chip${projectClass}" title="${escapeAttribute(project.label)}">${escapeHtml(projectLabel(project.status))}</span>
+      <span class="chip${docsClass}" title="${escapeAttribute(docs.label)}">Документация: ${escapeHtml(docs.status === "configured" ? "активна" : "не настроена")}</span>
+      <button class="chip chip-button${rulesClass}" type="button" data-command="chat.rules.toggle" title="${escapeAttribute(rules.label)}">${escapeHtml(rulesLabel(rules.status))}</button>
     `;
+  }
+
+  function projectLabel(status) {
+    if (status === "active") {
+      return "Проект: активен";
+    }
+    if (status === "indexing") {
+      return "Проект: индексируется";
+    }
+    if (status === "error") {
+      return "Проект: ошибка";
+    }
+    if (status === "disabled") {
+      return "Проект: недоступен";
+    }
+    return "Проект";
+  }
+
+  function rulesLabel(status) {
+    if (status === "active") {
+      return "Правила: активны";
+    }
+    if (status === "disabled") {
+      return "Правила: выключены";
+    }
+    if (status === "error") {
+      return "Правила: ошибка";
+    }
+    return "Правила: отсутствуют";
   }
 
   function message(item) {
@@ -176,6 +219,40 @@
         <div class="message-text">${escapeHtml(item.text)}</div>
       </article>
     `;
+  }
+
+  function approvalModal(approval) {
+    return `
+      <section class="approval-overlay" role="dialog" aria-modal="true" aria-label="${escapeAttribute(approval.title)}">
+        <div class="approval-modal">
+          <div class="approval-kicker">Требуется подтверждение</div>
+          <h2>${escapeHtml(approval.title)}</h2>
+          <p class="approval-description">${escapeHtml(approval.description)}</p>
+          <dl class="approval-details">
+            <div>
+              <dt>Тип</dt>
+              <dd>${escapeHtml(approvalKindLabel(approval.kind))}</dd>
+            </div>
+            ${approval.command ? `<div><dt>Команда</dt><dd><code>${escapeHtml(approval.command)}</code></dd></div>` : ""}
+            ${approval.path ? `<div><dt>Файл</dt><dd><code>${escapeHtml(approval.path)}</code></dd></div>` : ""}
+            ${approval.cwd ? `<div><dt>Каталог</dt><dd><code>${escapeHtml(approval.cwd)}</code></dd></div>` : ""}
+          </dl>
+          ${approval.diff ? `<pre class="approval-diff">${escapeHtml(approval.diff)}</pre>` : `<pre class="approval-diff muted">${escapeHtml(approval.payloadPreview || "Подробности действия недоступны.")}</pre>`}
+          <div class="approval-actions">
+            <button class="button secondary" data-command="approval.deny" data-approval-id="${escapeAttribute(approval.id)}">Отклонить</button>
+            <button class="button" data-command="approval.approve" data-approval-id="${escapeAttribute(approval.id)}">Разрешить</button>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function approvalKindLabel(kind) {
+    if (kind === "command") return "Команда";
+    if (kind === "file") return "Файл";
+    if (kind === "diff") return "Изменение";
+    if (kind === "network") return "Сеть";
+    return "Действие";
   }
 
   function transcriptSignature(snapshot) {
@@ -241,5 +318,9 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function escapeAttribute(value) {
+    return escapeHtml(value).replace(/`/g, "&#96;");
   }
 })();

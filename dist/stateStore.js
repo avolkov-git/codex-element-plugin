@@ -27,6 +27,18 @@ class StateStore {
             status: "notConfigured",
             label: "Proxy не настроен"
         };
+        this.docs = {
+            status: "notConfigured",
+            label: "Документация не настроена"
+        };
+        this.projectContext = {
+            status: "notIndexed",
+            label: "Проектный контекст будет собран при отправке"
+        };
+        this.rulesContext = {
+            status: "missing",
+            label: "Файл .local-codex/rules.md не найден"
+        };
         this.runtime = {
             status: "notStarted",
             label: "Backend не запускался"
@@ -38,6 +50,9 @@ class StateStore {
             version: this.version,
             auth: this.auth,
             proxy: this.proxy,
+            docs: this.docs,
+            projectContext: this.projectContext,
+            rulesContext: this.rulesContext,
             runtime: this.runtime,
             chats: [...this.chats],
             activeChatId: this.activeChatId
@@ -62,6 +77,18 @@ class StateStore {
         this.proxy = proxy;
         this.version += 1;
     }
+    setDocs(docs) {
+        this.docs = docs;
+        this.version += 1;
+    }
+    setProjectContext(projectContext) {
+        this.projectContext = projectContext;
+        this.version += 1;
+    }
+    setRulesContext(rulesContext) {
+        this.rulesContext = rulesContext;
+        this.version += 1;
+    }
     setRuntime(runtime) {
         this.runtime = runtime;
         this.version += 1;
@@ -78,6 +105,9 @@ class StateStore {
             chat,
             auth: sidebar.auth,
             runtime: sidebar.runtime,
+            docs: sidebar.docs,
+            projectContext: sidebar.projectContext,
+            rulesContext: sidebar.rulesContext,
             transcript: this.transcripts.get(chat.id) ?? [],
             shellNotice: "Read-only режим: Codex отвечает в чате, но approvals, diff и правки файлов пока отключены."
         };
@@ -101,6 +131,9 @@ class StateStore {
             lastReadAt: now,
             hasUnread: false,
             status: "idle",
+            accessMode: kind === "project" ? "workspace-write" : "read-only",
+            rulesEnabled: kind === "project",
+            pendingApproval: null,
             backendThreadId: null,
             activeTurnId: null
         };
@@ -111,7 +144,7 @@ class StateStore {
                 id: `${chat.id}-system`,
                 role: "system",
                 text: kind === "project"
-                    ? "Проектный чат будет использовать контекст проекта, документации, библиотек и правил."
+                    ? "Проектный чат будет использовать контекст проекта, документации и правил."
                     : "Общий чат не будет использовать проектный контекст без явного действия пользователя.",
                 createdAt: now
             }
@@ -147,6 +180,27 @@ class StateStore {
         this.version += 1;
         this.emitMutation("immediate");
         return updated;
+    }
+    toggleChatRules(chatId) {
+        const chat = this.getChat(chatId);
+        if (!chat || chat.kind !== "project") {
+            return undefined;
+        }
+        const updated = {
+            ...chat,
+            rulesEnabled: !chat.rulesEnabled
+        };
+        this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+        this.version += 1;
+        this.emitMutation("immediate");
+        return updated;
+    }
+    setPendingApproval(chatId, pendingApproval) {
+        const status = pendingApproval ? "waitingApproval" : this.getChat(chatId)?.status === "waitingApproval" ? "running" : undefined;
+        return this.updateChat(chatId, {
+            pendingApproval,
+            ...(status ? { status } : {})
+        }, "immediate");
     }
     updateChat(chatId, patch, mode = "debounced") {
         const chat = this.getChat(chatId);
@@ -255,6 +309,9 @@ class StateStore {
             ...chat,
             lastReadAt: chat.lastReadAt || chat.updatedAt,
             hasUnread: Boolean(chat.hasUnread),
+            accessMode: chat.accessMode ?? (chat.kind === "project" ? "workspace-write" : "read-only"),
+            rulesEnabled: chat.kind === "project" ? chat.rulesEnabled !== false : false,
+            pendingApproval: null,
             status: "idle",
             activeTurnId: null
         })) ?? [];
@@ -270,10 +327,16 @@ class StateStore {
         for (const chat of this.chats) {
             transcripts[chat.id] = this.transcripts.get(chat.id) ?? [];
         }
+        const chats = this.chats.map((chat) => ({
+            ...chat,
+            pendingApproval: null,
+            status: chat.status === "waitingApproval" || chat.status === "running" ? "idle" : chat.status,
+            activeTurnId: null
+        }));
         return {
             version: 1,
             activeChatId: this.activeChatId,
-            chats: this.chats,
+            chats,
             transcripts
         };
     }

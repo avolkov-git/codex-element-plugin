@@ -32,6 +32,18 @@ export class StateStore {
     status: "notConfigured",
     label: "Proxy не настроен"
   };
+  private docs: SidebarSnapshot["docs"] = {
+    status: "notConfigured",
+    label: "Документация не настроена"
+  };
+  private projectContext: SidebarSnapshot["projectContext"] = {
+    status: "notIndexed",
+    label: "Проектный контекст будет собран при отправке"
+  };
+  private rulesContext: SidebarSnapshot["rulesContext"] = {
+    status: "missing",
+    label: "Файл .local-codex/rules.md не найден"
+  };
   private runtime: SidebarSnapshot["runtime"] = {
     status: "notStarted",
     label: "Backend не запускался"
@@ -45,6 +57,9 @@ export class StateStore {
       version: this.version,
       auth: this.auth,
       proxy: this.proxy,
+      docs: this.docs,
+      projectContext: this.projectContext,
+      rulesContext: this.rulesContext,
       runtime: this.runtime,
       chats: [...this.chats],
       activeChatId: this.activeChatId
@@ -72,6 +87,21 @@ export class StateStore {
     this.version += 1;
   }
 
+  setDocs(docs: SidebarSnapshot["docs"]): void {
+    this.docs = docs;
+    this.version += 1;
+  }
+
+  setProjectContext(projectContext: SidebarSnapshot["projectContext"]): void {
+    this.projectContext = projectContext;
+    this.version += 1;
+  }
+
+  setRulesContext(rulesContext: SidebarSnapshot["rulesContext"]): void {
+    this.rulesContext = rulesContext;
+    this.version += 1;
+  }
+
   setRuntime(runtime: SidebarSnapshot["runtime"]): void {
     this.runtime = runtime;
     this.version += 1;
@@ -90,6 +120,9 @@ export class StateStore {
       chat,
       auth: sidebar.auth,
       runtime: sidebar.runtime,
+      docs: sidebar.docs,
+      projectContext: sidebar.projectContext,
+      rulesContext: sidebar.rulesContext,
       transcript: this.transcripts.get(chat.id) ?? [],
       shellNotice: "Read-only режим: Codex отвечает в чате, но approvals, diff и правки файлов пока отключены."
     };
@@ -116,6 +149,9 @@ export class StateStore {
       lastReadAt: now,
       hasUnread: false,
       status: "idle",
+      accessMode: kind === "project" ? "workspace-write" : "read-only",
+      rulesEnabled: kind === "project",
+      pendingApproval: null,
       backendThreadId: null,
       activeTurnId: null
     };
@@ -127,7 +163,7 @@ export class StateStore {
         id: `${chat.id}-system`,
         role: "system",
         text: kind === "project"
-          ? "Проектный чат будет использовать контекст проекта, документации, библиотек и правил."
+          ? "Проектный чат будет использовать контекст проекта, документации и правил."
           : "Общий чат не будет использовать проектный контекст без явного действия пользователя.",
         createdAt: now
       }
@@ -167,6 +203,34 @@ export class StateStore {
     this.version += 1;
     this.emitMutation("immediate");
     return updated;
+  }
+
+  toggleChatRules(chatId: string): ChatSummary | undefined {
+    const chat = this.getChat(chatId);
+    if (!chat || chat.kind !== "project") {
+      return undefined;
+    }
+
+    const updated: ChatSummary = {
+      ...chat,
+      rulesEnabled: !chat.rulesEnabled
+    };
+    this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+    this.version += 1;
+    this.emitMutation("immediate");
+    return updated;
+  }
+
+  setPendingApproval(chatId: string, pendingApproval: ChatSummary["pendingApproval"]): ChatSummary | undefined {
+    const status = pendingApproval ? "waitingApproval" : this.getChat(chatId)?.status === "waitingApproval" ? "running" : undefined;
+    return this.updateChat(
+      chatId,
+      {
+        pendingApproval,
+        ...(status ? { status } : {})
+      },
+      "immediate"
+    );
   }
 
   updateChat(chatId: string, patch: Partial<ChatSummary>, mode: StateMutationMode = "debounced"): ChatSummary | undefined {
@@ -291,6 +355,9 @@ export class StateStore {
       ...chat,
       lastReadAt: chat.lastReadAt || chat.updatedAt,
       hasUnread: Boolean(chat.hasUnread),
+      accessMode: chat.accessMode ?? (chat.kind === "project" ? "workspace-write" : "read-only"),
+      rulesEnabled: chat.kind === "project" ? chat.rulesEnabled !== false : false,
+      pendingApproval: null,
       status: "idle",
       activeTurnId: null
     })) ?? [];
@@ -309,11 +376,17 @@ export class StateStore {
     for (const chat of this.chats) {
       transcripts[chat.id] = this.transcripts.get(chat.id) ?? [];
     }
+    const chats = this.chats.map((chat) => ({
+      ...chat,
+      pendingApproval: null,
+      status: chat.status === "waitingApproval" || chat.status === "running" ? "idle" as const : chat.status,
+      activeTurnId: null
+    }));
 
     return {
       version: 1,
       activeChatId: this.activeChatId,
-      chats: this.chats,
+      chats,
       transcripts
     };
   }

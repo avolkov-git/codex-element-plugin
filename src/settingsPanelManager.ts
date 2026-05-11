@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
+import { DocsNormalizerProgress, DocsNormalizerService } from "./docsNormalizerService";
 import { Logger } from "./logger";
+import { getCodexPanelIconPath } from "./panelIcon";
 import { ProxySaveInput, SettingsService } from "./settingsService";
 import { WebviewCommand } from "./types";
 import { renderWebviewHtml } from "./webviewHtml";
@@ -8,12 +10,19 @@ export const SETTINGS_PANEL_VIEW_TYPE = "codexElement.settingsPanel";
 
 export class SettingsPanelManager {
   private panel: vscode.WebviewPanel | undefined;
+  private normalizerProgress: DocsNormalizerProgress = {
+    status: "idle",
+    percent: 0,
+    stage: "idle",
+    message: ""
+  };
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly settings: SettingsService,
+    private readonly normalizer: DocsNormalizerService,
     private readonly logger: Logger,
-    private readonly onProxyChanged: () => Promise<void>
+    private readonly onSettingsChanged: (options?: { restartRuntime?: boolean }) => Promise<void>
   ) {}
 
   registerSerializer(): vscode.Disposable {
@@ -27,14 +36,14 @@ export class SettingsPanelManager {
 
   open(): void {
     if (this.panel) {
-      this.panel.reveal();
+      this.panel.reveal(vscode.ViewColumn.One);
       return;
     }
 
     const panel = vscode.window.createWebviewPanel(
       SETTINGS_PANEL_VIEW_TYPE,
       "Codex: Настройки",
-      vscode.ViewColumn.Beside,
+      vscode.ViewColumn.One,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -52,7 +61,7 @@ export class SettingsPanelManager {
   private setupPanel(panel: vscode.WebviewPanel): void {
     this.panel = panel;
     panel.title = "Codex: Настройки";
-    panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "resources", "icons", "codex.svg");
+    panel.iconPath = getCodexPanelIconPath(this.context);
     panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [
@@ -98,6 +107,34 @@ export class SettingsPanelManager {
 
     this.logger.info(`Settings panel command: ${message.command}`);
 
+    if (message.command === "settings.docs.normalize") {
+      await this.normalizeDocs(panel, message.payload);
+      return;
+    }
+
+    if (message.command === "settings.docs.save") {
+      const normalizedPath = parseDocsPath(message.payload);
+      if (normalizedPath === undefined) {
+        await panel.webview.postMessage({
+          type: "event",
+          event: "settings.error",
+          payload: "Некорректный путь к документации."
+        });
+        return;
+      }
+
+      this.settings.saveDocsNormalizedPath(normalizedPath);
+      await this.onSettingsChanged({ restartRuntime: false });
+      await panel.webview.postMessage({
+        type: "event",
+        event: "settings.saved",
+        payload: normalizedPath.trim() ? "Путь к документации сохранен." : "Путь к документации очищен."
+      });
+      await this.postSnapshot(panel);
+      this.logger.info(normalizedPath.trim() ? "Docs settings saved." : "Docs settings cleared.");
+      return;
+    }
+
     if (message.command !== "settings.proxy.save") {
       await panel.webview.postMessage({
         type: "event",
@@ -119,7 +156,7 @@ export class SettingsPanelManager {
 
     try {
       await this.settings.saveProxy(input);
-      await this.onProxyChanged();
+      await this.onSettingsChanged({ restartRuntime: true });
       await panel.webview.postMessage({
         type: "event",
         event: "settings.saved",
@@ -140,9 +177,76 @@ export class SettingsPanelManager {
     await panel.webview.postMessage({
       type: "settings.snapshot",
       snapshot: {
-        proxy: await this.settings.getProxySettingsView()
+        proxy: await this.settings.getProxySettingsView(),
+        docs: this.settings.getDocsSettingsView(),
+        normalizer: this.normalizerProgress
       }
     });
+  }
+
+  private async normalizeDocs(panel: vscode.WebviewPanel, payload: unknown): Promise<void> {
+    const requestedOutput = parseDocsPath(payload)?.trim();
+    let sourcePath = this.normalizer.findBundledSourcePath();
+    if (!sourcePath) {
+      const manualSource = await vscode.window.showInputBox({
+        title: "Путь к документации Element",
+        prompt: "Укажите каталог docs/help/ru из bundle Element.",
+        value: this.settings.getDocsSettingsView().sourcePath,
+        ignoreFocusOut: true
+      });
+      if (!manualSource) {
+        await panel.webview.postMessage({
+          type: "event",
+          event: "settings.saved",
+          payload: "Нормализация отменена."
+        });
+        return;
+      }
+      sourcePath = manualSource.trim();
+    }
+
+    const sourceValidation = this.normalizer.validateSourcePath(sourcePath);
+    if (sourceValidation) {
+      await panel.webview.postMessage({
+        type: "event",
+        event: "settings.error",
+        payload: sourceValidation
+      });
+      return;
+    }
+
+    const outputPath = requestedOutput || this.normalizer.getDefaultOutputPath();
+    this.settings.saveDocsSourcePath(sourcePath);
+
+    try {
+      const result = await this.normalizer.normalize({
+        sourcePath,
+        outputPath,
+        onProgress: (progress) => {
+          this.normalizerProgress = progress;
+          void panel.webview.postMessage({
+            type: "event",
+            event: "settings.docs.normalize.progress",
+            payload: progress
+          });
+        }
+      });
+      this.settings.saveDocsPaths(result.sourcePath, result.outputPath);
+      await this.onSettingsChanged({ restartRuntime: false });
+      await panel.webview.postMessage({
+        type: "event",
+        event: "settings.saved",
+        payload: `Документация нормализована. Страниц: ${result.pageCount}.`
+      });
+      await this.postSnapshot(panel);
+      this.logger.info(`Docs normalized: ${result.pageCount} pages from ${result.sourcePath} to ${result.outputPath}.`);
+    } catch (error) {
+      await panel.webview.postMessage({
+        type: "event",
+        event: "settings.error",
+        payload: error instanceof Error ? error.message : "Не удалось нормализовать документацию."
+      });
+    }
   }
 }
 
@@ -161,4 +265,13 @@ function parseProxySaveInput(payload: unknown): ProxySaveInput | undefined {
     username: value.username,
     password: value.password
   };
+}
+
+function parseDocsPath(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const value = payload as Record<string, unknown>;
+  return typeof value.normalizedPath === "string" ? value.normalizedPath : undefined;
 }

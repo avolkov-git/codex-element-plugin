@@ -9,6 +9,10 @@ interface ServerSettingsFile {
     url?: string;
     username?: string;
   };
+  docs?: {
+    sourcePath?: string;
+    normalizedPath?: string;
+  };
 }
 
 interface ConfigRootResolution {
@@ -32,6 +36,12 @@ export interface ProxySettingsView {
   url: string;
   username: string;
   passwordSaved: boolean;
+}
+
+export interface DocsSettingsView {
+  sourcePath: string;
+  normalizedPath: string;
+  validationMessage: string;
 }
 
 export interface RuntimeProxySettings {
@@ -72,8 +82,34 @@ export class SettingsService {
     };
   }
 
+  getDocsSettingsView(): DocsSettingsView {
+    const docs = this.readSettings().docs;
+    const sourcePath = docs?.sourcePath?.trim() ?? "";
+    const normalizedPath = docs?.normalizedPath?.trim() ?? "";
+    return {
+      sourcePath,
+      normalizedPath,
+      validationMessage: validateDocsPath(normalizedPath)
+    };
+  }
+
+  getSidebarDocsStatus(): { status: "notConfigured" | "configured" | "error"; label: string } {
+    const docs = this.getDocsSettingsView();
+    if (!docs.normalizedPath) {
+      return { status: "notConfigured", label: "Документация не настроена" };
+    }
+    if (docs.validationMessage) {
+      return { status: "error", label: "Документация недоступна" };
+    }
+    return { status: "configured", label: "Документация активна" };
+  }
+
   getConfigRoot(): string {
     return this.configRoot;
+  }
+
+  getDefaultDocsNormalizedPath(): string {
+    return path.join(this.configRoot, "server", "normalized-docs");
   }
 
   getUserCodexHome(profileId: string): string {
@@ -126,7 +162,7 @@ export class SettingsService {
     const password = input.password;
 
     if (!url) {
-      this.writeSettings({ version: 1, proxy: { url: "", username: "" } });
+      this.writeSettings({ ...this.readSettings(), proxy: { url: "", username: "" } });
       await this.context.secrets.delete(proxyPasswordSecretKey());
       return;
     }
@@ -144,13 +180,47 @@ export class SettingsService {
       throw new Error("Введите пароль proxy для указанного логина.");
     }
 
-    this.writeSettings({ version: 1, proxy: { url, username } });
+    this.writeSettings({ ...this.readSettings(), proxy: { url, username } });
 
     if (username) {
       await this.context.secrets.store(proxyPasswordSecretKey(), password);
     } else {
       await this.context.secrets.delete(proxyPasswordSecretKey());
     }
+  }
+
+  saveDocsNormalizedPath(normalizedPath: string): void {
+    const current = this.readSettings();
+    this.writeSettings({
+      ...current,
+      docs: {
+        ...current.docs,
+        normalizedPath: normalizedPath.trim()
+      }
+    });
+  }
+
+  saveDocsSourcePath(sourcePath: string): void {
+    const current = this.readSettings();
+    this.writeSettings({
+      ...current,
+      docs: {
+        ...current.docs,
+        sourcePath: sourcePath.trim()
+      }
+    });
+  }
+
+  saveDocsPaths(sourcePath: string, normalizedPath: string): void {
+    const current = this.readSettings();
+    this.writeSettings({
+      ...current,
+      docs: {
+        ...current.docs,
+        sourcePath: sourcePath.trim(),
+        normalizedPath: normalizedPath.trim()
+      }
+    });
   }
 
   private async getProxySnapshot(): Promise<ProxySettingsSnapshot> {
@@ -250,6 +320,26 @@ function validateProxyUrl(url: string): string {
     }
   } catch {
     return "Proxy URL должен быть валидным, например http://proxy.example:8080.";
+  }
+  return "";
+}
+
+function validateDocsPath(normalizedPath: string): string {
+  if (!normalizedPath) {
+    return "";
+  }
+  try {
+    const stats = fs.statSync(normalizedPath);
+    if (!stats.isDirectory()) {
+      return "Путь к нормализованной документации должен быть каталогом.";
+    }
+    const highPriority = path.join(normalizedPath, "index", "pages.high-priority.jsonl");
+    const pages = path.join(normalizedPath, "index", "pages.jsonl");
+    if (!fs.existsSync(highPriority) && !fs.existsSync(pages)) {
+      return "В каталоге документации не найден index/pages.high-priority.jsonl или index/pages.jsonl.";
+    }
+  } catch {
+    return "Каталог нормализованной документации недоступен.";
   }
   return "";
 }

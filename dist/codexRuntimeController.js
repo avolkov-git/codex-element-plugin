@@ -46,6 +46,8 @@ class CodexRuntimeController {
         this.processManager = new runtimeProcessManager_1.RuntimeProcessManager();
         this.activeTurnChatId = new Map();
         this.activeThreadChatId = new Map();
+        this.itemPayloads = new Map();
+        this.pendingApprovals = new Map();
         this.restoreAttempted = false;
     }
     async restoreAccountIfAvailable() {
@@ -216,7 +218,6 @@ class CodexRuntimeController {
                 if (staleThreadId) {
                     this.activeThreadChatId.delete(staleThreadId);
                 }
-                this.options.state.addTranscriptItem(chatId, "system", "Предыдущая runtime-сессия недоступна, создан новый backend thread. История в интерфейсе сохранена.", "immediate");
                 this.options.state.updateChat(chatId, {
                     backendThreadId: null,
                     activeTurnId: null
@@ -247,6 +248,19 @@ class CodexRuntimeController {
             this.options.onDidChangeChat(chatId);
             this.options.logger.error(`sendPrompt failed: ${message}`);
         }
+    }
+    resolveApproval(chatId, approvalId, approved) {
+        const pending = this.pendingApprovals.get(approvalId);
+        if (!pending || pending.chatId !== chatId) {
+            this.options.logger.warn(`Approval decision ignored: pending request not found (${approvalId}).`);
+            return;
+        }
+        this.pendingApprovals.delete(approvalId);
+        this.options.state.setPendingApproval(chatId, null);
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+        pending.resolve(approved);
+        this.options.logger.info(`Approval ${approved ? "accepted" : "declined"}: request=${approvalId}.`);
     }
     async readAccount() {
         if (!this.processManager.isRunning) {
@@ -295,11 +309,13 @@ class CodexRuntimeController {
     async startBackendThread(chatId) {
         const rpcClient = this.requireRpcClient();
         const cwd = resolveWorkspaceCwd(this.options.context);
+        const chat = this.options.state.getChat(chatId);
+        const accessMode = chat?.accessMode ?? (chat?.kind === "project" ? "workspace-write" : "read-only");
         const result = await rpcClient.request("thread/start", {
             cwd,
-            approvalPolicy: "never",
+            approvalPolicy: getApprovalPolicy(accessMode),
             approvalsReviewer: "user",
-            sandbox: "read-only",
+            sandbox: getThreadSandbox(accessMode),
             sessionStartSource: "startup",
             serviceName: "codex_element_v1",
             model: null
@@ -320,14 +336,95 @@ class CodexRuntimeController {
             throw new Error("Backend thread не готов.");
         }
         const cwd = resolveWorkspaceCwd(this.options.context);
+        const routing = this.options.contextRouter.decide(prompt, chat.kind);
+        const contextBlocks = [];
+        let projectRoute = "skip";
+        let docsRoute = "skip";
+        let rulesRoute = "skip";
+        if (routing.shouldUseProjectContext) {
+            this.options.state.setProjectContext({
+                status: "indexing",
+                label: "Проектный контекст индексируется"
+            });
+            this.options.onDidChange();
+            this.options.onDidChangeChat(chatId);
+            const project = await this.options.projectContext.buildContext(prompt, this.options.profiles.getCurrentProfileId());
+            this.options.state.setProjectContext(project.status);
+            this.options.onDidChange();
+            this.options.onDidChangeChat(chatId);
+            if (project.text) {
+                projectRoute = project.mode === "fallback" ? "fallback" : "added";
+                contextBlocks.push({
+                    source: "project",
+                    text: project.text,
+                    matchCount: project.matchCount,
+                    mode: project.mode === "fallback" ? "fallback" : "matched"
+                });
+            }
+        }
+        else if (chat.kind === "general") {
+            this.options.state.setProjectContext({
+                status: "disabled",
+                label: "Обычный чат не использует проектный контекст"
+            });
+            this.options.onDidChange();
+            this.options.onDidChangeChat(chatId);
+        }
+        if (routing.shouldUseDocsContext) {
+            const docs = await this.options.docsContext.buildContext(prompt);
+            if (docs?.text) {
+                docsRoute = "added";
+                contextBlocks.push({
+                    source: "docs",
+                    text: docs.text,
+                    matchCount: docs.matchCount,
+                    mode: "matched"
+                });
+            }
+        }
+        else {
+            this.options.logger.info(`Docs context skipped by router: ${routing.reason}.`);
+        }
+        if (routing.shouldUseProjectContext && chat.kind === "project") {
+            const rules = await this.options.rulesContext.buildContext(chat.kind, chat.rulesEnabled);
+            this.options.state.setRulesContext(rules.status);
+            this.options.onDidChange();
+            this.options.onDidChangeChat(chatId);
+            rulesRoute = rules.status.status === "active" && rules.text
+                ? "added"
+                : rules.status.status;
+            if (rules.text) {
+                contextBlocks.push({
+                    source: "rules",
+                    text: rules.text,
+                    matchCount: rules.matchCount,
+                    mode: "matched"
+                });
+            }
+        }
+        else if (chat.kind === "general") {
+            this.options.state.setRulesContext({
+                status: "disabled",
+                label: "Обычный чат не использует правила проекта"
+            });
+            this.options.onDidChange();
+            this.options.onDidChangeChat(chatId);
+        }
+        else {
+            this.options.logger.info(`Rules context skipped by router: ${routing.reason}.`);
+        }
+        const input = contextBlocks.length
+            ? [{ type: "text", text: this.options.contextRouter.buildServiceEnvelope({ userPrompt: prompt, blocks: contextBlocks }) }]
+            : [{ type: "text", text: prompt }];
+        this.options.logger.info(`context routed: project=${projectRoute}, docs=${docsRoute}, rules=${rulesRoute}, reason=${routing.reason}, blocks=${contextBlocks.length}.`);
         this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}.`);
         return this.requireRpcClient().request("turn/start", {
             threadId: chat.backendThreadId,
-            input: [{ type: "text", text: prompt }],
+            input,
             cwd,
-            approvalPolicy: "never",
+            approvalPolicy: getApprovalPolicy(chat.accessMode),
             approvalsReviewer: "user",
-            sandboxPolicy: { type: "readOnly", networkAccess: true },
+            sandboxPolicy: getTurnSandboxPolicy(chat.accessMode, cwd),
             model: null,
             effort: "medium"
         }, 30000);
@@ -456,6 +553,13 @@ class CodexRuntimeController {
             }
             return;
         }
+        if (notification.method === "item/started") {
+            const itemId = extractItemId(notification.params);
+            if (itemId) {
+                this.itemPayloads.set(itemId, notification.params);
+            }
+            return;
+        }
         if (notification.method === "item/agentMessage/delta") {
             const delta = extractDelta(notification.params);
             const chatId = this.findChatIdForNotification(notification.params);
@@ -467,6 +571,10 @@ class CodexRuntimeController {
             return;
         }
         if (notification.method === "item/completed") {
+            const itemId = extractItemId(notification.params);
+            if (itemId) {
+                this.itemPayloads.delete(itemId);
+            }
             const agentText = extractCompletedAgentMessage(notification.params);
             const chatId = this.findChatIdForNotification(notification.params);
             if (chatId && agentText) {
@@ -487,11 +595,25 @@ class CodexRuntimeController {
             if (chatId) {
                 this.options.state.updateChat(chatId, {
                     activeTurnId: null,
-                    status: status === "completed" || !errorMessage ? "idle" : "error"
+                    status: status === "completed" || !errorMessage ? "idle" : "error",
+                    pendingApproval: null
                 }, "immediate");
                 if (errorMessage) {
                     this.options.state.addTranscriptItem(chatId, "system", errorMessage, "immediate");
                 }
+                this.options.onDidChange();
+                this.options.onDidChangeChat(chatId);
+            }
+            return;
+        }
+        if (notification.method === "serverRequest/resolved") {
+            const requestId = extractRequestId(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params);
+            if (requestId) {
+                this.pendingApprovals.delete(requestId);
+            }
+            if (chatId) {
+                this.options.state.setPendingApproval(chatId, null);
                 this.options.onDidChange();
                 this.options.onDidChangeChat(chatId);
             }
@@ -512,11 +634,36 @@ class CodexRuntimeController {
             this.options.logger.error(`App-server error: ${message}`);
         }
     }
-    handleServerRequest(request) {
-        this.options.logger.warn(`Unsupported app-server request during auth: ${request.method}.`);
-        return {};
+    async handleServerRequest(request) {
+        const normalized = normalizeApprovalRequest(request, this.itemPayloads);
+        if (!normalized) {
+            this.options.logger.warn(`Unsupported app-server request: ${request.method}; payload=${sanitizePayload(request.params)}.`);
+            return {};
+        }
+        const approval = normalized.approval;
+        const chatId = this.findChatIdForNotification(request.params) ?? this.latestChatId;
+        if (!chatId) {
+            this.options.logger.warn(`Approval request has no matching chat: ${request.method}; payload=${sanitizePayload(request.params)}.`);
+            return { decision: "decline" };
+        }
+        this.options.logger.info(`Approval requested: method=${request.method}; chat=${chatId}; kind=${approval.kind}; payload=${approval.payloadPreview}.`);
+        this.options.state.setPendingApproval(chatId, approval);
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+        return new Promise((resolve) => {
+            this.pendingApprovals.set(approval.id, {
+                chatId,
+                requestId: approval.id,
+                resolve: (approved) => resolve(normalized.resolvePayload(approved))
+            });
+        });
     }
     handleExit(code, signal) {
+        for (const pending of this.pendingApprovals.values()) {
+            pending.resolve(false);
+            this.options.state.setPendingApproval(pending.chatId, null);
+        }
+        this.pendingApprovals.clear();
         this.rpcClient?.dispose();
         this.rpcClient = undefined;
         this.options.state.setRuntime({
@@ -561,6 +708,31 @@ class CodexRuntimeController {
 exports.CodexRuntimeController = CodexRuntimeController;
 function resolveBundledRuntimePath(context) {
     return path.join(context.extensionUri.fsPath, "bin", "windows-x86_64", "codex.exe");
+}
+function getApprovalPolicy(accessMode) {
+    return accessMode === "read-only" ? "never" : "unlessTrusted";
+}
+function getThreadSandbox(accessMode) {
+    if (accessMode === "workspace-write") {
+        return "workspaceWrite";
+    }
+    if (accessMode === "danger-full-access") {
+        return "dangerFullAccess";
+    }
+    return "read-only";
+}
+function getTurnSandboxPolicy(accessMode, cwd) {
+    if (accessMode === "workspace-write") {
+        return {
+            type: "workspaceWrite",
+            writableRoots: [cwd],
+            networkAccess: true
+        };
+    }
+    if (accessMode === "danger-full-access") {
+        return { type: "dangerFullAccess" };
+    }
+    return { type: "readOnly", networkAccess: true };
 }
 function resolveWorkspaceCwd(context) {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -659,6 +831,19 @@ function extractThreadId(value) {
     const thread = isRecord(root.thread) ? root.thread : null;
     return thread ? getString(thread.id) : "";
 }
+function extractItemId(value) {
+    const root = isRecord(value) ? value : {};
+    const direct = getString(root.itemId);
+    if (direct) {
+        return direct;
+    }
+    const item = isRecord(root.item) ? root.item : null;
+    return item ? getString(item.id) : "";
+}
+function extractRequestId(value) {
+    const root = isRecord(value) ? value : {};
+    return getString(root.requestId) || getString(root.serverRequestId) || getString(root.id);
+}
 function extractTurnId(value) {
     const root = isRecord(value) ? value : {};
     const direct = getString(root.turnId);
@@ -733,6 +918,149 @@ function isThreadNotFoundError(error) {
 }
 function normalizeErrorMessage(error) {
     return (0, logger_1.redact)(error instanceof Error ? error.message : "Неизвестная ошибка Codex runtime.");
+}
+function normalizeApprovalRequest(request, itemPayloads) {
+    const method = request.method;
+    if (!method.includes("requestApproval") && !method.toLowerCase().includes("approval")) {
+        return undefined;
+    }
+    const params = isRecord(request.params) ? request.params : {};
+    const targetItemId = getString(params.itemId) || getString(params.targetItemId);
+    const itemPayload = targetItemId ? itemPayloads.get(targetItemId) : undefined;
+    const merged = mergeRecords(params, extractItemRecord(itemPayload));
+    const kind = inferApprovalKind(method, merged);
+    const command = extractFirstString(merged, ["command", "cmd", "shellCommand", "argv", "commandLine"]);
+    const filePath = extractFirstString(merged, ["path", "filePath", "absolutePath", "targetPath"]);
+    const cwd = extractFirstString(merged, ["cwd", "workingDirectory"]);
+    const reason = extractFirstString(merged, ["reason", "description", "summary", "message"]);
+    const diff = limitText(extractDiffText(merged), 12000);
+    const approval = {
+        id: String(request.id),
+        method,
+        kind,
+        title: approvalTitle(kind),
+        description: reason || approvalDescription(kind),
+        command,
+        path: filePath,
+        cwd,
+        diff,
+        payloadPreview: sanitizePayload(request.params)
+    };
+    if (method === "item/permissions/requestApproval") {
+        const requestedPermissions = extractRequestedPermissions(params);
+        return {
+            approval,
+            resolvePayload: (approved) => ({
+                permissions: approved ? requestedPermissions : {},
+                scope: "turn"
+            })
+        };
+    }
+    return {
+        approval,
+        resolvePayload: (approved) => ({ decision: approved ? "accept" : "decline" })
+    };
+}
+function approvalTitle(kind) {
+    if (kind === "command") {
+        return "Разрешить выполнение команды";
+    }
+    if (kind === "file" || kind === "diff") {
+        return "Разрешить изменение файлов";
+    }
+    if (kind === "network") {
+        return "Разрешить сетевой доступ";
+    }
+    return "Разрешить действие Codex";
+}
+function approvalDescription(kind) {
+    if (kind === "command") {
+        return "Codex хочет выполнить команду в workspace.";
+    }
+    if (kind === "file" || kind === "diff") {
+        return "Codex хочет применить изменение в файлах проекта.";
+    }
+    if (kind === "network") {
+        return "Codex запрашивает сетевой доступ для действия.";
+    }
+    return "Codex запрашивает разрешение на действие.";
+}
+function inferApprovalKind(method, value) {
+    const text = `${method} ${JSON.stringify(value)}`.toLowerCase();
+    if (text.includes("command") || text.includes("exec") || text.includes("shell")) {
+        return "command";
+    }
+    if (text.includes("patch") || text.includes("diff")) {
+        return "diff";
+    }
+    if (text.includes("file") || text.includes("write")) {
+        return "file";
+    }
+    if (text.includes("network")) {
+        return "network";
+    }
+    return "unknown";
+}
+function mergeRecords(left, right) {
+    return { ...right, ...left };
+}
+function extractItemRecord(value) {
+    const root = isRecord(value) ? value : {};
+    const item = isRecord(root.item) ? root.item : root;
+    return item;
+}
+function extractFirstString(value, keys) {
+    for (const key of keys) {
+        const found = findStringByKey(value, key);
+        if (found) {
+            return found;
+        }
+    }
+    return "";
+}
+function findStringByKey(value, key) {
+    if (!isRecord(value)) {
+        if (Array.isArray(value) && (key === "argv" || key === "command")) {
+            return value.map((part) => typeof part === "string" ? part : "").filter(Boolean).join(" ");
+        }
+        return "";
+    }
+    if (typeof value[key] === "string") {
+        return value[key];
+    }
+    if (Array.isArray(value[key]) && (key === "argv" || key === "command")) {
+        return value[key].map((part) => typeof part === "string" ? part : "").filter(Boolean).join(" ");
+    }
+    for (const nested of Object.values(value)) {
+        const found = findStringByKey(nested, key);
+        if (found) {
+            return found;
+        }
+    }
+    return "";
+}
+function extractDiffText(value) {
+    return extractFirstString(value, [
+        "diff",
+        "patch",
+        "unifiedDiff",
+        "applyPatch",
+        "patchText",
+        "summary"
+    ]);
+}
+function extractRequestedPermissions(value) {
+    const permissions = value.permissions ?? value.permissionProfile ?? value.requestedPermissions;
+    return isRecord(permissions) ? permissions : {};
+}
+function sanitizePayload(value) {
+    return limitText((0, logger_1.redact)(JSON.stringify(value, null, 2)), 2000);
+}
+function limitText(value, maxLength) {
+    if (!value || value.length <= maxLength) {
+        return value;
+    }
+    return `${value.slice(0, maxLength)}\n... [обрезано: ${value.length - maxLength} символов]`;
 }
 function isRecord(value) {
     return typeof value === "object" && value !== null;

@@ -38,9 +38,14 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const chatPanelManager_1 = require("./chatPanelManager");
 const chatHistoryService_1 = require("./chatHistoryService");
+const contextRouterService_1 = require("./contextRouterService");
 const codexRuntimeController_1 = require("./codexRuntimeController");
+const docsContextService_1 = require("./docsContextService");
+const docsNormalizerService_1 = require("./docsNormalizerService");
 const logger_1 = require("./logger");
 const performance_1 = require("./performance");
+const projectContextService_1 = require("./projectContextService");
+const rulesContextService_1 = require("./rulesContextService");
 const settingsPanelManager_1 = require("./settingsPanelManager");
 const settingsService_1 = require("./settingsService");
 const sidebarProvider_1 = require("./sidebarProvider");
@@ -53,9 +58,14 @@ async function activate(context) {
     logger.info("Codex Element V1 activating.");
     perf.mark("logger");
     const settings = new settingsService_1.SettingsService(context);
+    const contextRouter = new contextRouterService_1.ContextRouterService();
+    const docsContext = new docsContextService_1.DocsContextService(settings, logger);
+    const projectContext = new projectContextService_1.ProjectContextService(context, settings.getConfigRoot(), logger);
+    const rulesContext = new rulesContextService_1.RulesContextService(logger);
+    const docsNormalizer = new docsNormalizerService_1.DocsNormalizerService(context, settings, logger);
     const profiles = new userProfileService_1.UserProfileService(context);
     const history = new chatHistoryService_1.ChatHistoryService(context, settings.getConfigRoot(), logger);
-    context.subscriptions.push(history);
+    context.subscriptions.push(history, projectContext);
     let historyProfileId;
     let sidebar;
     let runtime;
@@ -72,13 +82,25 @@ async function activate(context) {
         history.scheduleSave(historyProfileId, snapshot);
     });
     state.setProxy(await settings.getSidebarProxyStatus());
+    state.setDocs(settings.getSidebarDocsStatus());
     chatPanels = new chatPanelManager_1.ChatPanelManager(context, state, logger, {
         sendPrompt: async (chatId, prompt) => runtime.sendPrompt(chatId, prompt),
         markReadToBottom: (chatId) => {
             if (state.markChatRead(chatId)) {
                 sidebar?.postSnapshot();
             }
-        }
+        },
+        toggleRules: async (chatId) => {
+            const updated = state.toggleChatRules(chatId);
+            if (!updated) {
+                vscode.window.showWarningMessage("Правила доступны только для проектных чатов.");
+                return;
+            }
+            state.setRulesContext(rulesContext.getStatus(updated.kind, updated.rulesEnabled));
+            sidebar?.postSnapshot();
+            chatPanels.postSnapshot(chatId);
+        },
+        resolveApproval: (chatId, approvalId, approved) => runtime.resolveApproval(chatId, approvalId, approved)
     });
     const ensureHistoryLoaded = async (profileId) => {
         const resolvedProfileId = profileId ?? await profiles.getKnownProfileId(settings.listExistingProfileIds());
@@ -92,6 +114,7 @@ async function activate(context) {
         }
         const persistedHistory = await history.load(resolvedProfileId);
         state.replaceChatHistory(persistedHistory);
+        refreshRulesContext(state, rulesContext);
         historyProfileId = resolvedProfileId;
         logger.info(`Chat history profile active: ${resolvedProfileId}.`);
         sidebar?.postSnapshot();
@@ -101,6 +124,10 @@ async function activate(context) {
     runtime = new codexRuntimeController_1.CodexRuntimeController({
         context,
         settings,
+        contextRouter,
+        projectContext,
+        docsContext,
+        rulesContext,
         profiles,
         state,
         logger,
@@ -112,14 +139,18 @@ async function activate(context) {
         onDidResolveProfile: ensureHistoryLoaded
     });
     context.subscriptions.push(runtime);
-    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, logger, async () => {
+    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, docsNormalizer, logger, async (options) => {
         state.setProxy(await settings.getSidebarProxyStatus());
-        await runtime.stop();
+        state.setDocs(settings.getSidebarDocsStatus());
+        if (options?.restartRuntime) {
+            await runtime.stop();
+        }
         sidebar?.postSnapshot();
+        chatPanels.postSnapshot();
     });
     sidebar = new sidebarProvider_1.SidebarProvider(context, state, logger, {
-        createChat: async (kind) => createChat(kind, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
-        openChat: async (chatId) => openChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
+        createChat: async (kind) => createChat(kind, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
+        openChat: async (chatId) => openChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
         renameChat: async (chatId) => renameChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
         openSettings: async () => settingsPanels.open(),
         openLogs: () => logger.show(),
@@ -141,18 +172,23 @@ async function activate(context) {
     context.subscriptions.push(vscode.commands.registerCommand("codexElement.open", async () => {
         const existingChatId = state.getSidebarSnapshot().activeChatId;
         if (existingChatId) {
-            await openChat(existingChatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded);
+            await openChat(existingChatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded);
             return;
         }
-        await createChat("project", state, sidebar, chatPanels, logger, ensureHistoryLoaded);
+        await createChat("project", state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded);
     }), vscode.commands.registerCommand("codexElement.newProjectChat", async () => {
-        await createChat("project", state, sidebar, chatPanels, logger, ensureHistoryLoaded);
+        await createChat("project", state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded);
     }), vscode.commands.registerCommand("codexElement.newGeneralChat", async () => {
-        await createChat("general", state, sidebar, chatPanels, logger, ensureHistoryLoaded);
+        await createChat("general", state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded);
     }), vscode.commands.registerCommand("codexElement.openSettings", async () => {
         settingsPanels.open();
     }), vscode.commands.registerCommand("codexElement.openLogs", () => {
         logger.show();
+    }), vscode.commands.registerCommand("codexElement.openProjectRules", async () => {
+        await rulesContext.openRulesFile();
+        refreshRulesContext(state, rulesContext);
+        sidebar?.postSnapshot();
+        chatPanels.postSnapshot();
     }));
     perf.mark("commands");
     perf.flush(logger, "Codex activation");
@@ -160,16 +196,18 @@ async function activate(context) {
 function deactivate() {
     // All disposables are owned by the extension context.
 }
-async function createChat(kind, state, sidebar, chatPanels, logger, ensureHistoryLoaded) {
+async function createChat(kind, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded) {
     await ensureHistoryLoaded();
     const chat = state.createChat(kind);
+    refreshRulesContext(state, rulesContext, chat.id);
     logger.info(`Created ${kind} chat: ${chat.title}.`);
     sidebar?.postSnapshot();
     chatPanels.openChat(chat.id);
 }
-async function openChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded) {
+async function openChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded) {
     await ensureHistoryLoaded();
     state.setActiveChat(chatId);
+    refreshRulesContext(state, rulesContext, chatId);
     logger.info(`Opening chat: ${chatId}.`);
     sidebar?.postSnapshot();
     chatPanels.openChat(chatId);
@@ -198,5 +236,12 @@ async function renameChat(chatId, state, sidebar, chatPanels, logger, ensureHist
     logger.info(`Renamed chat: ${chatId}.`);
     sidebar?.postSnapshot();
     chatPanels.postSnapshot(chatId);
+}
+function refreshRulesContext(state, rulesContext, chatId = state.getActiveChatId()) {
+    const chat = chatId ? state.getChat(chatId) : undefined;
+    if (!chat) {
+        return;
+    }
+    state.setRulesContext(rulesContext.getStatus(chat.kind, chat.rulesEnabled));
 }
 //# sourceMappingURL=extension.js.map

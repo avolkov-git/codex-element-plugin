@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.22",
+  "version": "0.1.27",
   "publisher": "element-ai",
   "license": "UNLICENSED",
   "private": true,
@@ -20,6 +20,7 @@
     "onCommand:codexElement.open",
     "onCommand:codexElement.newProjectChat",
     "onCommand:codexElement.newGeneralChat",
+    "onCommand:codexElement.openProjectRules",
     "onCommand:codexElement.openSettings",
     "onCommand:codexElement.openLogs"
   ],
@@ -53,6 +54,11 @@
         "command": "codexElement.openLogs",
         "title": "Codex: Логи",
         "icon": "$(output)"
+      },
+      {
+        "command": "codexElement.openProjectRules",
+        "title": "Codex: Открыть правила проекта",
+        "icon": "$(checklist)"
       }
     ],
     "viewsContainers": {
@@ -111,6 +117,9 @@
         },
         {
           "command": "codexElement.openLogs"
+        },
+        {
+          "command": "codexElement.openProjectRules"
         }
       ]
     }

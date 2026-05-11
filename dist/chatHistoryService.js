@@ -166,6 +166,9 @@ function normalizeChat(value) {
         lastReadAt: typeof value.lastReadAt === "string" ? value.lastReadAt : typeof value.updatedAt === "string" ? value.updatedAt : now,
         hasUnread: value.hasUnread === true,
         status: normalizeChatStatus(value.status),
+        accessMode: normalizeChatAccessMode(value.accessMode, kind),
+        rulesEnabled: kind === "project" ? value.rulesEnabled !== false : false,
+        pendingApproval: null,
         backendThreadId: typeof value.backendThreadId === "string" ? value.backendThreadId : null,
         activeTurnId: null
     };
@@ -190,6 +193,12 @@ function normalizeChatKind(value) {
 }
 function normalizeChatStatus(value) {
     return value === "error" ? "error" : "idle";
+}
+function normalizeChatAccessMode(value, kind) {
+    if (value === "workspace-write" || value === "danger-full-access" || value === "read-only") {
+        return value;
+    }
+    return kind === "project" ? "workspace-write" : "read-only";
 }
 function isObject(value) {
     return typeof value === "object" && value !== null;

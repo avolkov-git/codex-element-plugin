@@ -66,8 +66,31 @@ class SettingsService {
             passwordSaved: proxy.passwordSaved
         };
     }
+    getDocsSettingsView() {
+        const docs = this.readSettings().docs;
+        const sourcePath = docs?.sourcePath?.trim() ?? "";
+        const normalizedPath = docs?.normalizedPath?.trim() ?? "";
+        return {
+            sourcePath,
+            normalizedPath,
+            validationMessage: validateDocsPath(normalizedPath)
+        };
+    }
+    getSidebarDocsStatus() {
+        const docs = this.getDocsSettingsView();
+        if (!docs.normalizedPath) {
+            return { status: "notConfigured", label: "Документация не настроена" };
+        }
+        if (docs.validationMessage) {
+            return { status: "error", label: "Документация недоступна" };
+        }
+        return { status: "configured", label: "Документация активна" };
+    }
     getConfigRoot() {
         return this.configRoot;
+    }
+    getDefaultDocsNormalizedPath() {
+        return path.join(this.configRoot, "server", "normalized-docs");
     }
     getUserCodexHome(profileId) {
         return path.join(this.configRoot, "users", profileId, "codex-home");
@@ -113,7 +136,7 @@ class SettingsService {
         const username = input.username.trim();
         const password = input.password;
         if (!url) {
-            this.writeSettings({ version: 1, proxy: { url: "", username: "" } });
+            this.writeSettings({ ...this.readSettings(), proxy: { url: "", username: "" } });
             await this.context.secrets.delete(proxyPasswordSecretKey());
             return;
         }
@@ -127,13 +150,44 @@ class SettingsService {
         if (username && password.length === 0) {
             throw new Error("Введите пароль proxy для указанного логина.");
         }
-        this.writeSettings({ version: 1, proxy: { url, username } });
+        this.writeSettings({ ...this.readSettings(), proxy: { url, username } });
         if (username) {
             await this.context.secrets.store(proxyPasswordSecretKey(), password);
         }
         else {
             await this.context.secrets.delete(proxyPasswordSecretKey());
         }
+    }
+    saveDocsNormalizedPath(normalizedPath) {
+        const current = this.readSettings();
+        this.writeSettings({
+            ...current,
+            docs: {
+                ...current.docs,
+                normalizedPath: normalizedPath.trim()
+            }
+        });
+    }
+    saveDocsSourcePath(sourcePath) {
+        const current = this.readSettings();
+        this.writeSettings({
+            ...current,
+            docs: {
+                ...current.docs,
+                sourcePath: sourcePath.trim()
+            }
+        });
+    }
+    saveDocsPaths(sourcePath, normalizedPath) {
+        const current = this.readSettings();
+        this.writeSettings({
+            ...current,
+            docs: {
+                ...current.docs,
+                sourcePath: sourcePath.trim(),
+                normalizedPath: normalizedPath.trim()
+            }
+        });
     }
     async getProxySnapshot() {
         const settings = this.readSettings();
@@ -225,6 +279,26 @@ function validateProxyUrl(url) {
     }
     catch {
         return "Proxy URL должен быть валидным, например http://proxy.example:8080.";
+    }
+    return "";
+}
+function validateDocsPath(normalizedPath) {
+    if (!normalizedPath) {
+        return "";
+    }
+    try {
+        const stats = fs.statSync(normalizedPath);
+        if (!stats.isDirectory()) {
+            return "Путь к нормализованной документации должен быть каталогом.";
+        }
+        const highPriority = path.join(normalizedPath, "index", "pages.high-priority.jsonl");
+        const pages = path.join(normalizedPath, "index", "pages.jsonl");
+        if (!fs.existsSync(highPriority) && !fs.existsSync(pages)) {
+            return "В каталоге документации не найден index/pages.high-priority.jsonl или index/pages.jsonl.";
+        }
+    }
+    catch {
+        return "Каталог нормализованной документации недоступен.";
     }
     return "";
 }

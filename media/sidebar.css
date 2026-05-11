@@ -10,7 +10,7 @@
   --accent-hover: var(--vscode-button-hoverBackground, #0b70bd);
   --accent-fg: var(--vscode-button-foreground, #ffffff);
   --activity-accent: var(--vscode-activityBar-activeBorder, var(--vscode-activityBarBadge-background, var(--vscode-focusBorder, var(--accent))));
-  --active-row-bg: var(--vscode-list-inactiveSelectionBackground, var(--codex-hover));
+  --active-row-bg: var(--codex-hover);
   --unread-dot: var(--vscode-activityBarBadge-background, var(--vscode-badge-background, #5daeff));
 }
 

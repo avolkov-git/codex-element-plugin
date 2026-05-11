@@ -6,11 +6,34 @@ export type AuthFlowStatus = "idle" | "starting" | "awaiting" | "success" | "err
 
 export type ProxyStatus = "notConfigured" | "configured" | "error";
 
+export type DocsStatus = "notConfigured" | "configured" | "error";
+
+export type ProjectContextStatus = "notIndexed" | "indexing" | "active" | "error" | "disabled";
+
+export type RulesContextStatus = "missing" | "active" | "disabled" | "error";
+
 export type RuntimeStatus = "notStarted" | "starting" | "running" | "error";
 
 export type ChatKind = "project" | "general";
 
 export type ChatStatus = "idle" | "running" | "waitingApproval" | "error";
+
+export type ChatAccessMode = "read-only" | "workspace-write" | "danger-full-access";
+
+export type ApprovalKind = "command" | "file" | "diff" | "network" | "unknown";
+
+export interface ApprovalRequest {
+  id: string;
+  method: string;
+  kind: ApprovalKind;
+  title: string;
+  description: string;
+  command?: string;
+  path?: string;
+  cwd?: string;
+  diff?: string;
+  payloadPreview: string;
+}
 
 export interface ChatSummary {
   id: string;
@@ -21,6 +44,9 @@ export interface ChatSummary {
   lastReadAt: string;
   hasUnread: boolean;
   status: ChatStatus;
+  accessMode: ChatAccessMode;
+  rulesEnabled: boolean;
+  pendingApproval: ApprovalRequest | null;
   backendThreadId: string | null;
   activeTurnId: string | null;
 }
@@ -48,6 +74,18 @@ export interface SidebarSnapshot {
     status: ProxyStatus;
     label: string;
   };
+  docs: {
+    status: DocsStatus;
+    label: string;
+  };
+  projectContext: {
+    status: ProjectContextStatus;
+    label: string;
+  };
+  rulesContext: {
+    status: RulesContextStatus;
+    label: string;
+  };
   runtime: {
     status: RuntimeStatus;
     label: string;
@@ -62,6 +100,9 @@ export interface ChatPanelSnapshot {
   chat: ChatSummary;
   runtime: SidebarSnapshot["runtime"];
   auth: SidebarSnapshot["auth"];
+  docs: SidebarSnapshot["docs"];
+  projectContext: SidebarSnapshot["projectContext"];
+  rulesContext: SidebarSnapshot["rulesContext"];
   transcript: ChatTranscriptItem[];
   shellNotice: string;
 }
