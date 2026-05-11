@@ -120,6 +120,14 @@ class SidebarProvider {
                     await this.handlers.openChat(message.payload.chatId);
                 }
                 return;
+            case "chat.rename":
+                if (isObject(message.payload) && typeof message.payload.chatId === "string") {
+                    await this.handlers.renameChat(message.payload.chatId);
+                }
+                return;
+            case "chat.archive":
+                this.postEvent("shell.notice", "Архивация будет добавлена позже.");
+                return;
             default:
                 this.postEvent("shell.notice", `Команда ${message.command} пока не подключена.`);
         }

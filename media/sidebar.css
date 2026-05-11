@@ -126,6 +126,11 @@ input {
   margin-bottom: 8px;
 }
 
+.section-title:hover .section-action,
+.section-title:focus-within .section-action {
+  opacity: 1;
+}
+
 .auth-heading {
   color: var(--codex-fg);
   font-size: inherit;
@@ -240,14 +245,21 @@ input {
   background: transparent;
   color: var(--codex-muted);
   cursor: pointer;
-  font-weight: 600;
-  font-size: 18px;
   line-height: 1;
+  opacity: 0;
+  transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
 }
 
 .small-button:hover {
   background: var(--codex-hover);
   color: var(--codex-fg);
+}
+
+.inline-icon {
+  width: 14px;
+  height: 14px;
+  display: block;
+  color: currentColor;
 }
 
 .chat-list {
@@ -265,9 +277,9 @@ input {
   border-radius: 6px;
   cursor: pointer;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 44px;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .chat-row:hover {
@@ -277,7 +289,6 @@ input {
 .chat-row.active {
   background: var(--active-row-bg);
   color: var(--codex-fg);
-  box-shadow: inset 3px 0 0 var(--activity-accent);
 }
 
 .chat-title {
@@ -287,14 +298,69 @@ input {
   font-weight: 600;
 }
 
+.chat-right {
+  width: 44px;
+  height: 22px;
+  position: relative;
+}
+
 .chat-state {
-  min-width: 26px;
-  display: inline-flex;
+  position: absolute;
+  inset: 0;
+  display: flex;
   justify-content: flex-end;
   align-items: center;
   font-size: 11px;
   color: var(--codex-muted);
   line-height: 1;
+  opacity: 1;
+  transition: opacity 0.12s ease;
+}
+
+.chat-actions {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.chat-row:hover .chat-state,
+.chat-row:focus-within .chat-state {
+  opacity: 0;
+}
+
+.chat-row:hover .chat-actions,
+.chat-row:focus-within .chat-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-action {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--codex-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.chat-action .inline-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.chat-action:hover {
+  background: var(--codex-hover);
+  color: var(--codex-fg);
 }
 
 .chat-time {

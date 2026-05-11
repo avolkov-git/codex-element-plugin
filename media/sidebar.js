@@ -68,6 +68,26 @@
     `;
   }
 
+  function penFieldIcon() {
+    return iconSvg("M12.5,12h1.586c.936,0,1.814-.364,2.475-1.025l6.707-6.707c.473-.472.732-1.1.732-1.768s-.26-1.296-.732-1.768c-.975-.975-2.561-.975-3.535,0l-6.707,6.707c-.651.651-1.025,1.554-1.025,2.475v1.586c0,.276.224.5.5.5Zm.5-2.086c0-.658.267-1.302.732-1.768l6.707-6.707c.584-.585,1.537-.585,2.121,0,.283.283.439.66.439,1.061s-.156.777-.439,1.061l-6.707,6.707c-.472.472-1.1.732-1.768.732h-1.086v-1.086Zm-1,6.086c0-.552.448-1,1-1s1,.448,1,1-.448,1-1,1-1-.448-1-1Zm-7-1c.552,0,1,.448,1,1s-.448,1-1,1-1-.448-1-1,.448-1,1-1Zm5,1c0,.552-.448,1-1,1s-1-.448-1-1,.448-1,1-1,1,.448,1,1Zm14-3.5v6c0,2.481-2.019,4.5-4.5,4.5H4.5c-2.481,0-4.5-2.019-4.5-4.5v-6c0-2.481,2.019-4.5,4.5-4.5h5c.276,0,.5.224.5.5s-.224.5-.5.5h-5c-1.93,0-3.5,1.57-3.5,3.5v6c0,1.93,1.57,3.5,3.5,3.5h15c1.93,0,3.5-1.57,3.5-3.5v-6c0-1.246-.671-2.408-1.75-3.032-.239-.138-.321-.444-.183-.683s.446-.32.683-.182c1.388.802,2.25,2.296,2.25,3.897Z");
+  }
+
+  function pencilIcon() {
+    return iconSvg("M22.94,1.061c-1.368-1.367-3.76-1.365-5.124,0L1.611,17.265c-1.039,1.04-1.611,2.421-1.611,3.89v2.346c0,.276,.224,.5,.5,.5H2.846c1.47,0,2.851-.572,3.889-1.611L22.86,6.265c.579-.581,.953-1.262,1.08-1.972,.216-1.202-.148-2.381-1-3.232ZM6.028,21.682c-.85,.851-1.979,1.318-3.182,1.318H1v-1.846c0-1.202,.468-2.332,1.318-3.183L15.292,4.999l3.709,3.709L6.028,21.682ZM22.956,4.116c-.115,.642-.5,1.138-.803,1.441l-2.444,2.444-3.709-3.709,2.525-2.525c.986-.988,2.718-.99,3.709,0,.617,.617,.88,1.473,.723,2.349Z");
+  }
+
+  function boxIcon() {
+    return iconSvg("M19.5,0H4.5C2.019,0,0,2.019,0,4.5v1c0,.815,.397,1.532,1.002,1.989,0,.004-.002,.007-.002,.011v12c0,2.481,2.019,4.5,4.5,4.5h13c2.481,0,4.5-2.019,4.5-4.5V7.5s-.002-.007-.002-.011c.605-.457,1.002-1.175,1.002-1.989v-1c0-2.481-2.019-4.5-4.5-4.5Zm2.5,19.5c0,1.93-1.57,3.5-3.5,3.5H5.5c-1.93,0-3.5-1.57-3.5-3.5V7.949c.162,.033,.329,.051,.5,.051H21.5c.171,0,.338-.018,.5-.051v11.551Zm1-14c0,.827-.673,1.5-1.5,1.5H2.5c-.827,0-1.5-.673-1.5-1.5v-1c0-1.93,1.57-3.5,3.5-3.5h15c1.93,0,3.5,1.57,3.5,3.5v1Zm-7,7c0,.276-.224,.5-.5,.5h-7c-.276,0-.5-.224-.5-.5s.224-.5,.5-.5h7c.276,0,.5,.224,.5,.5Z");
+  }
+
+  function iconSvg(path) {
+    return `
+      <svg class="inline-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="${path}" fill="currentColor"></path>
+      </svg>
+    `;
+  }
+
   function loading() {
     return `<section class="panel"><div class="muted">Загрузка...</div></section>`;
   }
@@ -141,7 +161,7 @@
       <section class="chat-section">
         <div class="section-title">
           <span>${title}</span>
-          <button class="small-button" title="Создать чат" data-command="${command}">+</button>
+          <button class="small-button section-action" title="Создать чат" data-command="${command}">${penFieldIcon()}</button>
         </div>
         <div class="chat-list">
           ${chats.length ? chats.map((chat) => chatRow(chat, snapshot.activeChatId)).join("") : `<div class="empty">Чатов пока нет</div>`}
@@ -152,11 +172,18 @@
 
   function chatRow(chat, activeChatId) {
     const active = chat.id === activeChatId ? " active" : "";
+    const chatId = escapeHtml(chat.id);
     return `
-      <button class="chat-row${active}" data-command="chat.open" data-chat-id="${escapeHtml(chat.id)}">
+      <div class="chat-row${active}" role="button" tabindex="0" data-command="chat.open" data-chat-id="${chatId}">
         <span class="chat-title">${escapeHtml(chat.title)}</span>
-        <span class="chat-state">${chatState(chat)}</span>
-      </button>
+        <span class="chat-right">
+          <span class="chat-state">${chatState(chat)}</span>
+          <span class="chat-actions" aria-label="Действия чата">
+            <button class="chat-action" title="Переименовать" data-command="chat.rename" data-chat-id="${chatId}">${pencilIcon()}</button>
+            <button class="chat-action" title="Архивировать" data-command="chat.archive" data-chat-id="${chatId}">${boxIcon()}</button>
+          </span>
+        </span>
+      </div>
     `;
   }
 
@@ -189,7 +216,8 @@
       });
     });
     root.querySelectorAll("[data-command]").forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
         const command = button.dataset.command;
         let payload = button.dataset.chatId ? { chatId: button.dataset.chatId } : undefined;
         if (command === "auth.apiKey.login") {
@@ -201,6 +229,15 @@
         }
         vscode.postMessage({ type: "command", command, payload });
       });
+      if (button.classList.contains("chat-row")) {
+        button.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") {
+            return;
+          }
+          event.preventDefault();
+          button.click();
+        });
+      }
     });
   }
 

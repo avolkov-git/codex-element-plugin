@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "publisher": "element-ai",
   "license": "UNLICENSED",
   "private": true,

@@ -120,6 +120,7 @@ async function activate(context) {
     sidebar = new sidebarProvider_1.SidebarProvider(context, state, logger, {
         createChat: async (kind) => createChat(kind, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
         openChat: async (chatId) => openChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
+        renameChat: async (chatId) => renameChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
         openSettings: async () => settingsPanels.open(),
         openLogs: () => logger.show(),
         restoreAuth: async () => runtime.restoreAccountIfAvailable(),
@@ -172,5 +173,30 @@ async function openChat(chatId, state, sidebar, chatPanels, logger, ensureHistor
     logger.info(`Opening chat: ${chatId}.`);
     sidebar?.postSnapshot();
     chatPanels.openChat(chatId);
+}
+async function renameChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded) {
+    await ensureHistoryLoaded();
+    const chat = state.getChat(chatId);
+    if (!chat) {
+        vscode.window.showWarningMessage("Чат не найден.");
+        return;
+    }
+    const title = await vscode.window.showInputBox({
+        title: "Введите название чата",
+        value: chat.title,
+        prompt: "Нажмите Enter, чтобы сохранить новое название, или Escape для отмены.",
+        ignoreFocusOut: true
+    });
+    if (title === undefined) {
+        return;
+    }
+    const updated = state.renameChat(chatId, title);
+    if (!updated) {
+        vscode.window.showWarningMessage("Название чата не может быть пустым.");
+        return;
+    }
+    logger.info(`Renamed chat: ${chatId}.`);
+    sidebar?.postSnapshot();
+    chatPanels.postSnapshot(chatId);
 }
 //# sourceMappingURL=extension.js.map

@@ -101,6 +101,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           await this.handlers.openChat(message.payload.chatId);
         }
         return;
+      case "chat.rename":
+        if (isObject(message.payload) && typeof message.payload.chatId === "string") {
+          await this.handlers.renameChat(message.payload.chatId);
+        }
+        return;
+      case "chat.archive":
+        this.postEvent("shell.notice", "Архивация будет добавлена позже.");
+        return;
       default:
         this.postEvent("shell.notice", `Команда ${message.command} пока не подключена.`);
     }
@@ -110,6 +118,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 export interface SidebarHandlers {
   createChat(kind: ChatKind): Promise<void>;
   openChat(chatId: string): Promise<void>;
+  renameChat(chatId: string): Promise<void>;
   openSettings(): Promise<void>;
   openLogs(): void;
   restoreAuth(): Promise<void>;

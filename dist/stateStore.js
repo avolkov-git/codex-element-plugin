@@ -130,6 +130,24 @@ class StateStore {
     getChat(chatId) {
         return this.chats.find((chat) => chat.id === chatId);
     }
+    renameChat(chatId, title) {
+        const chat = this.getChat(chatId);
+        const trimmed = title.trim();
+        if (!chat || !trimmed) {
+            return undefined;
+        }
+        if (chat.title === trimmed) {
+            return chat;
+        }
+        const updated = {
+            ...chat,
+            title: trimmed
+        };
+        this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+        this.version += 1;
+        this.emitMutation("immediate");
+        return updated;
+    }
     updateChat(chatId, patch, mode = "debounced") {
         const chat = this.getChat(chatId);
         if (!chat) {

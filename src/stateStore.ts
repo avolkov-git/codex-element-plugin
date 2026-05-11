@@ -149,6 +149,26 @@ export class StateStore {
     return this.chats.find((chat) => chat.id === chatId);
   }
 
+  renameChat(chatId: string, title: string): ChatSummary | undefined {
+    const chat = this.getChat(chatId);
+    const trimmed = title.trim();
+    if (!chat || !trimmed) {
+      return undefined;
+    }
+    if (chat.title === trimmed) {
+      return chat;
+    }
+
+    const updated: ChatSummary = {
+      ...chat,
+      title: trimmed
+    };
+    this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+    this.version += 1;
+    this.emitMutation("immediate");
+    return updated;
+  }
+
   updateChat(chatId: string, patch: Partial<ChatSummary>, mode: StateMutationMode = "debounced"): ChatSummary | undefined {
     const chat = this.getChat(chatId);
     if (!chat) {
