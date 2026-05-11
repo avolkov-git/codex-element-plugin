@@ -1,9 +1,11 @@
-import { ChatKind, ChatPanelSnapshot, ChatSummary, ChatTranscriptItem, SidebarSnapshot } from "./types";
+import { ChatKind, ChatPanelSnapshot, ChatSummary, ChatTranscriptItem, PersistedChatHistory, SidebarSnapshot } from "./types";
 
 type AuthPatch = Omit<Partial<SidebarSnapshot["auth"]>, "deviceCode" | "apiKey"> & {
   deviceCode?: Partial<SidebarSnapshot["auth"]["deviceCode"]>;
   apiKey?: Partial<SidebarSnapshot["auth"]["apiKey"]>;
 };
+
+export type StateMutationMode = "debounced" | "immediate";
 
 export class StateStore {
   private version = 1;
@@ -34,6 +36,8 @@ export class StateStore {
     status: "notStarted",
     label: "Backend не запускался"
   };
+
+  constructor(private readonly onDidMutate?: (mode: StateMutationMode) => void) {}
 
   getSidebarSnapshot(): SidebarSnapshot {
     return {
@@ -87,8 +91,16 @@ export class StateStore {
       auth: sidebar.auth,
       runtime: sidebar.runtime,
       transcript: this.transcripts.get(chat.id) ?? [],
-      shellNotice: "Это UI shell. Реальный Codex runtime, streaming и approvals появятся в следующих итерациях."
+      shellNotice: "Read-only режим: Codex отвечает в чате, но approvals, diff и правки файлов пока отключены."
     };
+  }
+
+  getActiveChatId(): string | undefined {
+    return this.activeChatId;
+  }
+
+  getActiveChatSnapshot(): ChatPanelSnapshot | undefined {
+    return this.activeChatId ? this.getChatSnapshot(this.activeChatId) : undefined;
   }
 
   createChat(kind: ChatKind, title?: string): ChatSummary {
@@ -101,7 +113,11 @@ export class StateStore {
       title: title?.trim() || defaultTitle,
       createdAt: now,
       updatedAt: now,
-      status: "idle"
+      lastReadAt: now,
+      hasUnread: false,
+      status: "idle",
+      backendThreadId: null,
+      activeTurnId: null
     };
 
     this.chats.unshift(chat);
@@ -117,6 +133,7 @@ export class StateStore {
       }
     ]);
     this.version += 1;
+    this.emitMutation("immediate");
     return chat;
   }
 
@@ -124,10 +141,164 @@ export class StateStore {
     if (this.chats.some((chat) => chat.id === chatId)) {
       this.activeChatId = chatId;
       this.version += 1;
+      this.emitMutation("debounced");
     }
   }
 
   getChat(chatId: string): ChatSummary | undefined {
     return this.chats.find((chat) => chat.id === chatId);
+  }
+
+  updateChat(chatId: string, patch: Partial<ChatSummary>, mode: StateMutationMode = "debounced"): ChatSummary | undefined {
+    const chat = this.getChat(chatId);
+    if (!chat) {
+      return undefined;
+    }
+
+    const updatedAt = new Date().toISOString();
+    const updated: ChatSummary = {
+      ...chat,
+      ...patch,
+      updatedAt
+    };
+    this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+    this.version += 1;
+    this.emitMutation(mode);
+    return updated;
+  }
+
+  markChatRead(chatId: string): boolean {
+    const chat = this.getChat(chatId);
+    if (!chat || !chat.hasUnread) {
+      return false;
+    }
+
+    const updated: ChatSummary = {
+      ...chat,
+      hasUnread: false,
+      lastReadAt: chat.updatedAt
+    };
+    this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+    this.version += 1;
+    this.emitMutation("debounced");
+    return true;
+  }
+
+  addTranscriptItem(
+    chatId: string,
+    role: ChatTranscriptItem["role"],
+    text: string,
+    mode: StateMutationMode = "immediate"
+  ): ChatTranscriptItem | undefined {
+    const chat = this.getChat(chatId);
+    if (!chat) {
+      return undefined;
+    }
+
+    const item: ChatTranscriptItem = {
+      id: `${chatId}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      role,
+      text,
+      createdAt: new Date().toISOString()
+    };
+    this.transcripts.set(chatId, [...(this.transcripts.get(chatId) ?? []), item]);
+    this.updateChat(chatId, role === "user" ? {} : { hasUnread: true }, mode);
+    return item;
+  }
+
+  appendAssistantDelta(chatId: string, delta: string): void {
+    const chat = this.getChat(chatId);
+    if (!chat || !delta) {
+      return;
+    }
+
+    const transcript = this.transcripts.get(chatId) ?? [];
+    const last = transcript[transcript.length - 1];
+    if (last?.role === "assistant") {
+      const updatedLast: ChatTranscriptItem = {
+        ...last,
+        text: `${last.text}${delta}`
+      };
+      this.transcripts.set(chatId, [...transcript.slice(0, -1), updatedLast]);
+    } else {
+      this.transcripts.set(chatId, [
+        ...transcript,
+        {
+          id: `${chatId}-assistant-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          role: "assistant",
+          text: delta,
+          createdAt: new Date().toISOString()
+        }
+      ]);
+    }
+    this.updateChat(chatId, { hasUnread: true }, "debounced");
+  }
+
+  setLastAssistantText(chatId: string, text: string): void {
+    const chat = this.getChat(chatId);
+    if (!chat || !text) {
+      return;
+    }
+
+    const transcript = this.transcripts.get(chatId) ?? [];
+    const last = transcript[transcript.length - 1];
+    if (last?.role === "assistant") {
+      this.transcripts.set(chatId, [...transcript.slice(0, -1), { ...last, text }]);
+    } else {
+      this.transcripts.set(chatId, [
+        ...transcript,
+        {
+          id: `${chatId}-assistant-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          role: "assistant",
+          text,
+          createdAt: new Date().toISOString()
+        }
+      ]);
+    }
+    this.updateChat(chatId, { hasUnread: true }, "immediate");
+  }
+
+  findChatByTurnId(turnId: string): ChatSummary | undefined {
+    return this.chats.find((chat) => chat.activeTurnId === turnId);
+  }
+
+  hasChats(): boolean {
+    return this.chats.length > 0;
+  }
+
+  replaceChatHistory(history: PersistedChatHistory | undefined): void {
+    this.chats = history?.chats.map((chat) => ({
+      ...chat,
+      lastReadAt: chat.lastReadAt || chat.updatedAt,
+      hasUnread: Boolean(chat.hasUnread),
+      status: "idle",
+      activeTurnId: null
+    })) ?? [];
+    this.activeChatId = history?.activeChatId && this.chats.some((chat) => chat.id === history.activeChatId)
+      ? history.activeChatId
+      : this.chats[0]?.id;
+    this.transcripts = new Map(
+      Object.entries(history?.transcripts ?? {})
+        .filter(([chatId]) => this.chats.some((chat) => chat.id === chatId))
+    );
+    this.version += 1;
+  }
+
+  exportChatHistory(): PersistedChatHistory {
+    const transcripts: Record<string, ChatTranscriptItem[]> = {};
+    for (const chat of this.chats) {
+      transcripts[chat.id] = this.transcripts.get(chat.id) ?? [];
+    }
+
+    return {
+      version: 1,
+      activeChatId: this.activeChatId,
+      chats: this.chats,
+      transcripts
+    };
+  }
+
+  private emitMutation(mode: StateMutationMode): void {
+    this.onDidMutate?.(mode);
   }
 }

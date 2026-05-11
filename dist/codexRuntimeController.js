@@ -33,17 +33,47 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RuntimeAuthController = void 0;
+exports.CodexRuntimeController = void 0;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const jsonRpcClient_1 = require("./jsonRpcClient");
 const logger_1 = require("./logger");
 const runtimeProcessManager_1 = require("./runtimeProcessManager");
-class RuntimeAuthController {
+class CodexRuntimeController {
     constructor(options) {
         this.options = options;
         this.processManager = new runtimeProcessManager_1.RuntimeProcessManager();
+        this.activeTurnChatId = new Map();
+        this.activeThreadChatId = new Map();
+        this.restoreAttempted = false;
+    }
+    async restoreAccountIfAvailable() {
+        if (this.restoreAttempted || this.options.state.getSidebarSnapshot().auth.status === "authenticated") {
+            return;
+        }
+        this.restoreAttempted = true;
+        const profileId = await this.options.profiles.getKnownProfileId(this.options.settings.listExistingProfileIds());
+        if (!profileId) {
+            this.options.logger.info("Auth restore skipped: no known Codex profile.");
+            return;
+        }
+        try {
+            this.updateAuth({
+                status: "checking",
+                profileLabel: profileId,
+                message: "Проверяем сохраненную авторизацию Codex..."
+            });
+            await this.ensureBackendProcess();
+        }
+        catch (error) {
+            const message = normalizeAuthError(error);
+            this.updateAuth({
+                status: "error",
+                message
+            });
+            this.options.logger.warn(`Auth restore failed: ${message}`);
+        }
     }
     async startDeviceCodeLogin() {
         try {
@@ -149,6 +179,75 @@ class RuntimeAuthController {
         await vscode.env.clipboard.writeText(code);
         this.updateAuth({ message: "Device Code скопирован." });
     }
+    async sendPrompt(chatId, prompt) {
+        const trimmed = prompt.trim();
+        if (!trimmed) {
+            return;
+        }
+        const chat = this.options.state.getChat(chatId);
+        if (!chat) {
+            throw new Error("Чат не найден.");
+        }
+        this.latestChatId = chatId;
+        this.options.state.addTranscriptItem(chatId, "user", trimmed);
+        this.options.state.updateChat(chatId, { status: "running" });
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+        try {
+            await this.ensureBackendProcess();
+            await this.ensureAuthenticatedForTurn();
+            if (!this.options.state.getChat(chatId)?.backendThreadId) {
+                await this.startBackendThread(chatId);
+            }
+            const existingThreadId = this.options.state.getChat(chatId)?.backendThreadId;
+            if (existingThreadId) {
+                this.activeThreadChatId.set(existingThreadId, chatId);
+            }
+            let turnResult;
+            try {
+                turnResult = await this.startTurn(chatId, trimmed);
+            }
+            catch (error) {
+                if (!isThreadNotFoundError(error) || !this.options.state.getChat(chatId)?.backendThreadId) {
+                    throw error;
+                }
+                const staleThreadId = this.options.state.getChat(chatId)?.backendThreadId;
+                this.options.logger.warn(`Backend thread was not found by runtime, recreating: ${staleThreadId ?? "-"}.`);
+                if (staleThreadId) {
+                    this.activeThreadChatId.delete(staleThreadId);
+                }
+                this.options.state.addTranscriptItem(chatId, "system", "Предыдущая runtime-сессия недоступна, создан новый backend thread. История в интерфейсе сохранена.", "immediate");
+                this.options.state.updateChat(chatId, {
+                    backendThreadId: null,
+                    activeTurnId: null
+                });
+                await this.startBackendThread(chatId);
+                turnResult = await this.startTurn(chatId, trimmed);
+            }
+            const turnId = extractTurnId(turnResult);
+            if (turnId) {
+                this.activeTurnChatId.set(turnId, chatId);
+            }
+            this.options.state.updateChat(chatId, {
+                activeTurnId: turnId || null,
+                status: "running"
+            });
+            this.options.onDidChange();
+            this.options.onDidChangeChat(chatId);
+            this.options.logger.info(`turn/start accepted: turn=${turnId || "-"}.`);
+        }
+        catch (error) {
+            const message = normalizeErrorMessage(error);
+            this.options.state.updateChat(chatId, {
+                status: "error",
+                activeTurnId: null
+            });
+            this.options.state.addTranscriptItem(chatId, "system", message);
+            this.options.onDidChange();
+            this.options.onDidChangeChat(chatId);
+            this.options.logger.error(`sendPrompt failed: ${message}`);
+        }
+    }
     async readAccount() {
         if (!this.processManager.isRunning) {
             await this.ensureBackendProcess();
@@ -185,6 +284,54 @@ class RuntimeAuthController {
             this.options.logger.warn(`account/read failed: ${message}`);
         }
     }
+    async ensureAuthenticatedForTurn() {
+        if (this.options.state.getSidebarSnapshot().auth.status !== "authenticated") {
+            await this.readAccount();
+        }
+        if (this.options.state.getSidebarSnapshot().auth.status !== "authenticated") {
+            throw new Error("Codex не авторизован. Сначала выполните DEVICE CODE или API KEY login.");
+        }
+    }
+    async startBackendThread(chatId) {
+        const rpcClient = this.requireRpcClient();
+        const cwd = resolveWorkspaceCwd(this.options.context);
+        const result = await rpcClient.request("thread/start", {
+            cwd,
+            approvalPolicy: "never",
+            approvalsReviewer: "user",
+            sandbox: "read-only",
+            sessionStartSource: "startup",
+            serviceName: "codex_element_v1",
+            model: null
+        });
+        const threadId = extractThreadId(result);
+        if (!threadId) {
+            throw new Error("thread/start не вернул thread.id.");
+        }
+        this.options.state.updateChat(chatId, { backendThreadId: threadId });
+        this.activeThreadChatId.set(threadId, chatId);
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+        this.options.logger.info(`thread/start completed: thread=${threadId}.`);
+    }
+    async startTurn(chatId, prompt) {
+        const chat = this.options.state.getChat(chatId);
+        if (!chat?.backendThreadId) {
+            throw new Error("Backend thread не готов.");
+        }
+        const cwd = resolveWorkspaceCwd(this.options.context);
+        this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}.`);
+        return this.requireRpcClient().request("turn/start", {
+            threadId: chat.backendThreadId,
+            input: [{ type: "text", text: prompt }],
+            cwd,
+            approvalPolicy: "never",
+            approvalsReviewer: "user",
+            sandboxPolicy: { type: "readOnly", networkAccess: true },
+            model: null,
+            effort: "medium"
+        }, 30000);
+    }
     async stop() {
         this.rpcClient?.dispose();
         this.rpcClient = undefined;
@@ -203,8 +350,9 @@ class RuntimeAuthController {
         if (this.processManager.isRunning) {
             return;
         }
-        const profileId = await this.options.profiles.requireProfileId();
+        const profileId = await this.options.profiles.requireProfileId(this.options.settings.listExistingProfileIds());
         const codexHome = await this.options.settings.ensureUserCodexHome(profileId);
+        await this.options.onDidResolveProfile?.(profileId);
         const runtimePath = resolveBundledRuntimePath(this.options.context);
         if (!fs.existsSync(runtimePath)) {
             this.options.state.setRuntime({
@@ -285,6 +433,83 @@ class RuntimeAuthController {
         }
         if (notification.method === "account/updated") {
             void this.readAccount();
+            return;
+        }
+        if (notification.method === "thread/started") {
+            const threadId = extractThreadId(notification.params);
+            if (threadId) {
+                this.options.logger.info(`thread/started notification: ${threadId}.`);
+            }
+            return;
+        }
+        if (notification.method === "turn/started") {
+            const turnId = extractTurnId(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params);
+            if (turnId && chatId) {
+                this.activeTurnChatId.set(turnId, chatId);
+                this.options.state.updateChat(chatId, {
+                    activeTurnId: turnId,
+                    status: "running"
+                });
+                this.options.onDidChange();
+                this.options.onDidChangeChat(chatId);
+            }
+            return;
+        }
+        if (notification.method === "item/agentMessage/delta") {
+            const delta = extractDelta(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params);
+            if (chatId && delta) {
+                this.options.state.appendAssistantDelta(chatId, delta);
+                this.options.onDidChange();
+                this.options.onDidChangeChat(chatId);
+            }
+            return;
+        }
+        if (notification.method === "item/completed") {
+            const agentText = extractCompletedAgentMessage(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params);
+            if (chatId && agentText) {
+                this.options.state.setLastAssistantText(chatId, agentText);
+                this.options.onDidChange();
+                this.options.onDidChangeChat(chatId);
+            }
+            return;
+        }
+        if (notification.method === "turn/completed") {
+            const turnId = extractTurnId(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params);
+            const status = extractTurnStatus(notification.params);
+            const errorMessage = extractTurnErrorMessage(notification.params);
+            if (turnId) {
+                this.activeTurnChatId.delete(turnId);
+            }
+            if (chatId) {
+                this.options.state.updateChat(chatId, {
+                    activeTurnId: null,
+                    status: status === "completed" || !errorMessage ? "idle" : "error"
+                }, "immediate");
+                if (errorMessage) {
+                    this.options.state.addTranscriptItem(chatId, "system", errorMessage, "immediate");
+                }
+                this.options.onDidChange();
+                this.options.onDidChangeChat(chatId);
+            }
+            return;
+        }
+        if (notification.method === "error") {
+            const message = extractErrorNotificationMessage(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params) ?? this.latestChatId;
+            if (chatId) {
+                this.options.state.updateChat(chatId, {
+                    status: "error",
+                    activeTurnId: null
+                });
+                this.options.state.addTranscriptItem(chatId, "system", message);
+                this.options.onDidChangeChat(chatId);
+            }
+            this.options.onDidChange();
+            this.options.logger.error(`App-server error: ${message}`);
         }
     }
     handleServerRequest(request) {
@@ -311,8 +536,29 @@ class RuntimeAuthController {
         this.options.state.setAuth(auth);
         this.options.onDidChange();
     }
+    findChatIdForNotification(params) {
+        const turnId = extractTurnId(params);
+        if (turnId) {
+            const mapped = this.activeTurnChatId.get(turnId);
+            if (mapped) {
+                return mapped;
+            }
+            const chat = this.options.state.findChatByTurnId(turnId);
+            if (chat) {
+                return chat.id;
+            }
+        }
+        const threadId = extractThreadId(params);
+        if (threadId) {
+            const mapped = this.activeThreadChatId.get(threadId);
+            if (mapped) {
+                return mapped;
+            }
+        }
+        return this.latestChatId;
+    }
 }
-exports.RuntimeAuthController = RuntimeAuthController;
+exports.CodexRuntimeController = CodexRuntimeController;
 function resolveBundledRuntimePath(context) {
     return path.join(context.extensionUri.fsPath, "bin", "windows-x86_64", "codex.exe");
 }
@@ -404,6 +650,55 @@ function normalizeDeviceCodeChallenge(result) {
         userCode
     };
 }
+function extractThreadId(value) {
+    const root = isRecord(value) ? value : {};
+    const direct = getString(root.threadId);
+    if (direct) {
+        return direct;
+    }
+    const thread = isRecord(root.thread) ? root.thread : null;
+    return thread ? getString(thread.id) : "";
+}
+function extractTurnId(value) {
+    const root = isRecord(value) ? value : {};
+    const direct = getString(root.turnId);
+    if (direct) {
+        return direct;
+    }
+    const turn = isRecord(root.turn) ? root.turn : null;
+    return turn ? getString(turn.id) : "";
+}
+function extractTurnStatus(value) {
+    const root = isRecord(value) ? value : {};
+    const turn = isRecord(root.turn) ? root.turn : null;
+    return turn ? getString(turn.status) : "";
+}
+function extractTurnErrorMessage(value) {
+    const root = isRecord(value) ? value : {};
+    const turn = isRecord(root.turn) ? root.turn : null;
+    const error = turn && isRecord(turn.error) ? turn.error : null;
+    if (!error) {
+        return "";
+    }
+    return getString(error.message) || getString(error.additionalDetails);
+}
+function extractDelta(value) {
+    const root = isRecord(value) ? value : {};
+    return getString(root.delta);
+}
+function extractErrorNotificationMessage(value) {
+    const root = isRecord(value) ? value : {};
+    const error = isRecord(root.error) ? root.error : root;
+    return getString(error.message) || getString(error.additionalDetails) || "Codex runtime сообщил об ошибке turn.";
+}
+function extractCompletedAgentMessage(value) {
+    const root = isRecord(value) ? value : {};
+    const item = isRecord(root.item) ? root.item : null;
+    if (!item || getString(item.type) !== "agentMessage") {
+        return "";
+    }
+    return getString(item.text);
+}
 function normalizeLoginCompletedNotification(params) {
     const root = isRecord(params) ? params : {};
     const success = getBoolean(root.success, false);
@@ -432,6 +727,10 @@ function normalizeAuthError(error) {
     }
     return message;
 }
+function isThreadNotFoundError(error) {
+    const message = normalizeErrorMessage(error).toLowerCase();
+    return message.includes("turn/start") && message.includes("thread not found");
+}
 function normalizeErrorMessage(error) {
     return (0, logger_1.redact)(error instanceof Error ? error.message : "Неизвестная ошибка Codex runtime.");
 }
@@ -444,4 +743,4 @@ function getString(value) {
 function getBoolean(value, fallback) {
     return typeof value === "boolean" ? value : fallback;
 }
-//# sourceMappingURL=runtimeAuthController.js.map
+//# sourceMappingURL=codexRuntimeController.js.map

@@ -38,37 +38,42 @@ const vscode = __importStar(require("vscode"));
 const webviewHtml_1 = require("./webviewHtml");
 exports.CHAT_PANEL_VIEW_TYPE = "codexElement.chatPanel";
 class ChatPanelManager {
-    constructor(context, state, logger) {
+    constructor(context, state, logger, handlers) {
         this.context = context;
         this.state = state;
         this.logger = logger;
-        this.panels = new Map();
+        this.handlers = handlers;
     }
     registerSerializer() {
         return vscode.window.registerWebviewPanelSerializer(exports.CHAT_PANEL_VIEW_TYPE, {
             deserializeWebviewPanel: async (panel, rawState) => {
-                const state = parsePanelState(rawState);
-                if (!state) {
+                if (this.panel) {
                     panel.dispose();
                     return;
                 }
-                this.logger.info(`Restoring chat panel ${state.chatId}.`);
-                this.setupPanel(panel, state.chatId);
+                const restoredState = parsePanelState(rawState);
+                const restoredChatId = restoredState?.activeChatId ?? restoredState?.chatId;
+                if (restoredChatId && this.state.getChat(restoredChatId)) {
+                    this.state.setActiveChat(restoredChatId);
+                }
+                this.logger.info(`Restoring singleton chat panel${restoredChatId ? ` for ${restoredChatId}` : ""}.`);
+                this.setupPanel(panel);
             }
         });
     }
     openChat(chatId) {
-        const existing = this.panels.get(chatId);
-        if (existing) {
-            existing.reveal();
-            return;
-        }
         const chat = this.state.getChat(chatId);
         if (!chat) {
             vscode.window.showWarningMessage("Чат не найден.");
             return;
         }
-        const panel = vscode.window.createWebviewPanel(exports.CHAT_PANEL_VIEW_TYPE, chat.title, vscode.ViewColumn.Beside, {
+        this.state.setActiveChat(chatId);
+        if (this.panel) {
+            this.panel.reveal();
+            this.postActiveSnapshot();
+            return;
+        }
+        const panel = vscode.window.createWebviewPanel(exports.CHAT_PANEL_VIEW_TYPE, "Codex", vscode.ViewColumn.Beside, {
             enableScripts: true,
             retainContextWhenHidden: true,
             enableFindWidget: true,
@@ -77,19 +82,25 @@ class ChatPanelManager {
                 vscode.Uri.joinPath(this.context.extensionUri, "resources")
             ]
         });
-        this.setupPanel(panel, chatId);
+        this.setupPanel(panel);
     }
     postSnapshot(chatId) {
-        const panel = this.panels.get(chatId);
-        const snapshot = this.state.getChatSnapshot(chatId);
-        if (!panel || !snapshot) {
+        if (chatId && chatId !== this.state.getActiveChatId()) {
             return;
         }
-        panel.webview.postMessage({ type: "chat.snapshot", snapshot });
+        this.postActiveSnapshot();
     }
-    setupPanel(panel, chatId) {
-        const chat = this.state.getChat(chatId);
-        panel.title = chat?.title ?? "Codex";
+    postAllSnapshots() {
+        this.postActiveSnapshot();
+    }
+    postActiveSnapshot() {
+        this.panel?.webview.postMessage({
+            type: "chat.snapshot",
+            snapshot: this.state.getActiveChatSnapshot() ?? null
+        });
+    }
+    setupPanel(panel) {
+        panel.title = "Codex";
         panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "resources", "icons", "codex.svg");
         panel.webview.options = {
             enableScripts: true,
@@ -105,48 +116,81 @@ class ChatPanelManager {
             stylePath: "media/chat.css",
             title: panel.title,
             rootData: {
-                "chat-id": chatId
+                "panel-kind": "active-chat"
             }
         });
-        this.panels.set(chatId, panel);
+        this.panel = panel;
         panel.webview.onDidReceiveMessage((message) => {
-            this.handleMessage(panel, chatId, message);
+            void this.handleMessage(panel, message);
         });
         panel.onDidDispose(() => {
-            this.panels.delete(chatId);
-            this.logger.info(`Chat panel disposed: ${chatId}.`);
+            if (this.panel === panel) {
+                this.panel = undefined;
+            }
+            this.logger.info("Singleton chat panel disposed.");
         });
     }
-    handleMessage(panel, chatId, message) {
+    async handleMessage(panel, message) {
         if (!message || typeof message !== "object") {
             return;
         }
         if (message.type === "ready") {
-            this.logger.info(`Chat panel webview ready ${chatId}.`);
-            this.logger.info(`Chat panel webview assets ${chatId}: ${message.assetMode ?? "unknown"}.`);
-            panel.webview.postMessage({
-                type: "chat.snapshot",
-                snapshot: this.state.getChatSnapshot(chatId)
-            });
+            this.logger.info("Chat panel webview ready.");
+            this.logger.info(`Chat panel webview assets: ${message.assetMode ?? "unknown"}.`);
+            this.postActiveSnapshot();
             return;
         }
         if (message.type !== "command") {
             return;
         }
-        this.logger.info(`Chat panel command ${chatId}: ${message.command}`);
+        if (message.command === "chat.readToBottom") {
+            const chatId = this.state.getActiveChatId();
+            if (!chatId) {
+                return;
+            }
+            this.handlers.markReadToBottom(chatId);
+            return;
+        }
+        this.logger.info(`Chat panel command: ${message.command}`);
+        if (message.command === "chat.send") {
+            const chatId = this.state.getActiveChatId();
+            if (!chatId) {
+                panel.webview.postMessage({
+                    type: "event",
+                    event: "chat.error",
+                    payload: "Выберите диалог в sidebar или создайте новый."
+                });
+                return;
+            }
+            if (!isObject(message.payload) || typeof message.payload.prompt !== "string") {
+                panel.webview.postMessage({
+                    type: "event",
+                    event: "chat.error",
+                    payload: "Введите сообщение для Codex."
+                });
+                return;
+            }
+            await this.handlers.sendPrompt(chatId, message.payload.prompt);
+            return;
+        }
         panel.webview.postMessage({
             type: "event",
-            event: "shell.notice",
-            payload: "Команда принята UI shell. Runtime будет подключен в следующих итерациях."
+            event: "chat.error",
+            payload: `Команда ${message.command} пока не подключена.`
         });
     }
 }
 exports.ChatPanelManager = ChatPanelManager;
 function parsePanelState(rawState) {
     if (!rawState || typeof rawState !== "object") {
-        return undefined;
+        return {};
     }
     const value = rawState;
-    return typeof value.chatId === "string" ? { chatId: value.chatId } : undefined;
+    const activeChatId = typeof value.activeChatId === "string" ? value.activeChatId : undefined;
+    const chatId = typeof value.chatId === "string" ? value.chatId : undefined;
+    return { activeChatId, chatId };
+}
+function isObject(value) {
+    return typeof value === "object" && value !== null;
 }
 //# sourceMappingURL=chatPanelManager.js.map

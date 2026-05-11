@@ -80,6 +80,7 @@ class SidebarProvider {
             this.logger.info("Sidebar webview ready.");
             this.logger.info(`Sidebar webview assets: ${message.assetMode ?? "unknown"}.`);
             this.postSnapshot();
+            void this.handlers.restoreAuth();
             return;
         }
         if (message.type !== "command") {
@@ -107,9 +108,6 @@ class SidebarProvider {
                 return;
             case "logs.open":
                 this.handlers.openLogs();
-                return;
-            case "chat.newProjectPlaceholder":
-                this.postEvent("shell.notice", "Новый проектный диалог будет подключен в следующей chat-итерации.");
                 return;
             case "chat.createProject":
                 await this.handlers.createChat("project");

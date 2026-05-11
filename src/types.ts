@@ -18,7 +18,11 @@ export interface ChatSummary {
   title: string;
   createdAt: string;
   updatedAt: string;
+  lastReadAt: string;
+  hasUnread: boolean;
   status: ChatStatus;
+  backendThreadId: string | null;
+  activeTurnId: string | null;
 }
 
 export interface SidebarSnapshot {
@@ -69,8 +73,16 @@ export interface ChatTranscriptItem {
   createdAt: string;
 }
 
+export interface PersistedChatHistory {
+  version: 1;
+  activeChatId?: string;
+  chats: ChatSummary[];
+  transcripts: Record<string, ChatTranscriptItem[]>;
+}
+
 export interface ChatPanelState {
-  chatId: string;
+  activeChatId?: string;
+  chatId?: string;
 }
 
 export type WebviewCommand =

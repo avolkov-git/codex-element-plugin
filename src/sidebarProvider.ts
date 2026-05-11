@@ -58,6 +58,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       this.logger.info("Sidebar webview ready.");
       this.logger.info(`Sidebar webview assets: ${message.assetMode ?? "unknown"}.`);
       this.postSnapshot();
+      void this.handlers.restoreAuth();
       return;
     }
 
@@ -89,9 +90,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case "logs.open":
         this.handlers.openLogs();
         return;
-      case "chat.newProjectPlaceholder":
-        this.postEvent("shell.notice", "Новый проектный диалог будет подключен в следующей chat-итерации.");
-        return;
       case "chat.createProject":
         await this.handlers.createChat("project");
         return;
@@ -114,6 +112,7 @@ export interface SidebarHandlers {
   openChat(chatId: string): Promise<void>;
   openSettings(): Promise<void>;
   openLogs(): void;
+  restoreAuth(): Promise<void>;
   startDeviceCodeLogin(): Promise<void>;
   loginWithApiKey(apiKey: string): Promise<void>;
   openDeviceCodeUrl(): Promise<void>;

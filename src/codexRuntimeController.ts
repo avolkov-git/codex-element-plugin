@@ -9,13 +9,15 @@ import { StateStore } from "./stateStore";
 import { AuthAccountType } from "./types";
 import { UserProfileService } from "./userProfileService";
 
-interface RuntimeAuthControllerOptions {
+interface CodexRuntimeControllerOptions {
   context: vscode.ExtensionContext;
   settings: SettingsService;
   profiles: UserProfileService;
   state: StateStore;
   logger: Logger;
   onDidChange: () => void;
+  onDidChangeChat: (chatId: string) => void;
+  onDidResolveProfile?: (profileId: string) => Promise<void>;
 }
 
 interface NormalizedAccount {
@@ -24,11 +26,44 @@ interface NormalizedAccount {
   message: string;
 }
 
-export class RuntimeAuthController implements vscode.Disposable {
+export class CodexRuntimeController implements vscode.Disposable {
   private readonly processManager = new RuntimeProcessManager();
   private rpcClient: JsonRpcClient | undefined;
+  private activeTurnChatId = new Map<string, string>();
+  private activeThreadChatId = new Map<string, string>();
+  private latestChatId: string | undefined;
+  private restoreAttempted = false;
 
-  constructor(private readonly options: RuntimeAuthControllerOptions) {}
+  constructor(private readonly options: CodexRuntimeControllerOptions) {}
+
+  async restoreAccountIfAvailable(): Promise<void> {
+    if (this.restoreAttempted || this.options.state.getSidebarSnapshot().auth.status === "authenticated") {
+      return;
+    }
+    this.restoreAttempted = true;
+
+    const profileId = await this.options.profiles.getKnownProfileId(this.options.settings.listExistingProfileIds());
+    if (!profileId) {
+      this.options.logger.info("Auth restore skipped: no known Codex profile.");
+      return;
+    }
+
+    try {
+      this.updateAuth({
+        status: "checking",
+        profileLabel: profileId,
+        message: "Проверяем сохраненную авторизацию Codex..."
+      });
+      await this.ensureBackendProcess();
+    } catch (error) {
+      const message = normalizeAuthError(error);
+      this.updateAuth({
+        status: "error",
+        message
+      });
+      this.options.logger.warn(`Auth restore failed: ${message}`);
+    }
+  }
 
   async startDeviceCodeLogin(): Promise<void> {
     try {
@@ -145,6 +180,87 @@ export class RuntimeAuthController implements vscode.Disposable {
     this.updateAuth({ message: "Device Code скопирован." });
   }
 
+  async sendPrompt(chatId: string, prompt: string): Promise<void> {
+    const trimmed = prompt.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    const chat = this.options.state.getChat(chatId);
+    if (!chat) {
+      throw new Error("Чат не найден.");
+    }
+
+    this.latestChatId = chatId;
+    this.options.state.addTranscriptItem(chatId, "user", trimmed);
+    this.options.state.updateChat(chatId, { status: "running" });
+    this.options.onDidChange();
+    this.options.onDidChangeChat(chatId);
+
+    try {
+      await this.ensureBackendProcess();
+      await this.ensureAuthenticatedForTurn();
+
+      if (!this.options.state.getChat(chatId)?.backendThreadId) {
+        await this.startBackendThread(chatId);
+      }
+
+      const existingThreadId = this.options.state.getChat(chatId)?.backendThreadId;
+      if (existingThreadId) {
+        this.activeThreadChatId.set(existingThreadId, chatId);
+      }
+
+      let turnResult: unknown;
+      try {
+        turnResult = await this.startTurn(chatId, trimmed);
+      } catch (error) {
+        if (!isThreadNotFoundError(error) || !this.options.state.getChat(chatId)?.backendThreadId) {
+          throw error;
+        }
+
+        const staleThreadId = this.options.state.getChat(chatId)?.backendThreadId;
+        this.options.logger.warn(`Backend thread was not found by runtime, recreating: ${staleThreadId ?? "-"}.`);
+        if (staleThreadId) {
+          this.activeThreadChatId.delete(staleThreadId);
+        }
+        this.options.state.addTranscriptItem(
+          chatId,
+          "system",
+          "Предыдущая runtime-сессия недоступна, создан новый backend thread. История в интерфейсе сохранена.",
+          "immediate"
+        );
+        this.options.state.updateChat(chatId, {
+          backendThreadId: null,
+          activeTurnId: null
+        });
+        await this.startBackendThread(chatId);
+        turnResult = await this.startTurn(chatId, trimmed);
+      }
+
+      const turnId = extractTurnId(turnResult);
+      if (turnId) {
+        this.activeTurnChatId.set(turnId, chatId);
+      }
+      this.options.state.updateChat(chatId, {
+        activeTurnId: turnId || null,
+        status: "running"
+      });
+      this.options.onDidChange();
+      this.options.onDidChangeChat(chatId);
+      this.options.logger.info(`turn/start accepted: turn=${turnId || "-"}.`);
+    } catch (error) {
+      const message = normalizeErrorMessage(error);
+      this.options.state.updateChat(chatId, {
+        status: "error",
+        activeTurnId: null
+      });
+      this.options.state.addTranscriptItem(chatId, "system", message);
+      this.options.onDidChange();
+      this.options.onDidChangeChat(chatId);
+      this.options.logger.error(`sendPrompt failed: ${message}`);
+    }
+  }
+
   async readAccount(): Promise<void> {
     if (!this.processManager.isRunning) {
       await this.ensureBackendProcess();
@@ -183,6 +299,60 @@ export class RuntimeAuthController implements vscode.Disposable {
     }
   }
 
+  private async ensureAuthenticatedForTurn(): Promise<void> {
+    if (this.options.state.getSidebarSnapshot().auth.status !== "authenticated") {
+      await this.readAccount();
+    }
+    if (this.options.state.getSidebarSnapshot().auth.status !== "authenticated") {
+      throw new Error("Codex не авторизован. Сначала выполните DEVICE CODE или API KEY login.");
+    }
+  }
+
+  private async startBackendThread(chatId: string): Promise<void> {
+    const rpcClient = this.requireRpcClient();
+    const cwd = resolveWorkspaceCwd(this.options.context);
+    const result = await rpcClient.request("thread/start", {
+      cwd,
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: "read-only",
+      sessionStartSource: "startup",
+      serviceName: "codex_element_v1",
+      model: null
+    });
+    const threadId = extractThreadId(result);
+
+    if (!threadId) {
+      throw new Error("thread/start не вернул thread.id.");
+    }
+
+    this.options.state.updateChat(chatId, { backendThreadId: threadId });
+    this.activeThreadChatId.set(threadId, chatId);
+    this.options.onDidChange();
+    this.options.onDidChangeChat(chatId);
+    this.options.logger.info(`thread/start completed: thread=${threadId}.`);
+  }
+
+  private async startTurn(chatId: string, prompt: string): Promise<unknown> {
+    const chat = this.options.state.getChat(chatId);
+    if (!chat?.backendThreadId) {
+      throw new Error("Backend thread не готов.");
+    }
+
+    const cwd = resolveWorkspaceCwd(this.options.context);
+    this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}.`);
+    return this.requireRpcClient().request("turn/start", {
+      threadId: chat.backendThreadId,
+      input: [{ type: "text", text: prompt }],
+      cwd,
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "readOnly", networkAccess: true },
+      model: null,
+      effort: "medium"
+    }, 30_000);
+  }
+
   async stop(): Promise<void> {
     this.rpcClient?.dispose();
     this.rpcClient = undefined;
@@ -204,8 +374,9 @@ export class RuntimeAuthController implements vscode.Disposable {
       return;
     }
 
-    const profileId = await this.options.profiles.requireProfileId();
+    const profileId = await this.options.profiles.requireProfileId(this.options.settings.listExistingProfileIds());
     const codexHome = await this.options.settings.ensureUserCodexHome(profileId);
+    await this.options.onDidResolveProfile?.(profileId);
     const runtimePath = resolveBundledRuntimePath(this.options.context);
 
     if (!fs.existsSync(runtimePath)) {
@@ -302,6 +473,89 @@ export class RuntimeAuthController implements vscode.Disposable {
 
     if (notification.method === "account/updated") {
       void this.readAccount();
+      return;
+    }
+
+    if (notification.method === "thread/started") {
+      const threadId = extractThreadId(notification.params);
+      if (threadId) {
+        this.options.logger.info(`thread/started notification: ${threadId}.`);
+      }
+      return;
+    }
+
+    if (notification.method === "turn/started") {
+      const turnId = extractTurnId(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params);
+      if (turnId && chatId) {
+        this.activeTurnChatId.set(turnId, chatId);
+        this.options.state.updateChat(chatId, {
+          activeTurnId: turnId,
+          status: "running"
+        });
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+      }
+      return;
+    }
+
+    if (notification.method === "item/agentMessage/delta") {
+      const delta = extractDelta(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params);
+      if (chatId && delta) {
+        this.options.state.appendAssistantDelta(chatId, delta);
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+      }
+      return;
+    }
+
+    if (notification.method === "item/completed") {
+      const agentText = extractCompletedAgentMessage(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params);
+      if (chatId && agentText) {
+        this.options.state.setLastAssistantText(chatId, agentText);
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+      }
+      return;
+    }
+
+    if (notification.method === "turn/completed") {
+      const turnId = extractTurnId(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params);
+      const status = extractTurnStatus(notification.params);
+      const errorMessage = extractTurnErrorMessage(notification.params);
+      if (turnId) {
+        this.activeTurnChatId.delete(turnId);
+      }
+      if (chatId) {
+        this.options.state.updateChat(chatId, {
+          activeTurnId: null,
+          status: status === "completed" || !errorMessage ? "idle" : "error"
+        }, "immediate");
+        if (errorMessage) {
+          this.options.state.addTranscriptItem(chatId, "system", errorMessage, "immediate");
+        }
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+      }
+      return;
+    }
+
+    if (notification.method === "error") {
+      const message = extractErrorNotificationMessage(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params) ?? this.latestChatId;
+      if (chatId) {
+        this.options.state.updateChat(chatId, {
+          status: "error",
+          activeTurnId: null
+        });
+        this.options.state.addTranscriptItem(chatId, "system", message);
+        this.options.onDidChangeChat(chatId);
+      }
+      this.options.onDidChange();
+      this.options.logger.error(`App-server error: ${message}`);
     }
   }
 
@@ -331,6 +585,28 @@ export class RuntimeAuthController implements vscode.Disposable {
   private updateAuth(auth: Parameters<StateStore["setAuth"]>[0]): void {
     this.options.state.setAuth(auth);
     this.options.onDidChange();
+  }
+
+  private findChatIdForNotification(params: unknown): string | undefined {
+    const turnId = extractTurnId(params);
+    if (turnId) {
+      const mapped = this.activeTurnChatId.get(turnId);
+      if (mapped) {
+        return mapped;
+      }
+      const chat = this.options.state.findChatByTurnId(turnId);
+      if (chat) {
+        return chat.id;
+      }
+    }
+    const threadId = extractThreadId(params);
+    if (threadId) {
+      const mapped = this.activeThreadChatId.get(threadId);
+      if (mapped) {
+        return mapped;
+      }
+    }
+    return this.latestChatId;
   }
 }
 
@@ -446,6 +722,62 @@ function normalizeDeviceCodeChallenge(result: unknown): {
   };
 }
 
+function extractThreadId(value: unknown): string {
+  const root = isRecord(value) ? value : {};
+  const direct = getString(root.threadId);
+  if (direct) {
+    return direct;
+  }
+  const thread = isRecord(root.thread) ? root.thread : null;
+  return thread ? getString(thread.id) : "";
+}
+
+function extractTurnId(value: unknown): string {
+  const root = isRecord(value) ? value : {};
+  const direct = getString(root.turnId);
+  if (direct) {
+    return direct;
+  }
+  const turn = isRecord(root.turn) ? root.turn : null;
+  return turn ? getString(turn.id) : "";
+}
+
+function extractTurnStatus(value: unknown): string {
+  const root = isRecord(value) ? value : {};
+  const turn = isRecord(root.turn) ? root.turn : null;
+  return turn ? getString(turn.status) : "";
+}
+
+function extractTurnErrorMessage(value: unknown): string {
+  const root = isRecord(value) ? value : {};
+  const turn = isRecord(root.turn) ? root.turn : null;
+  const error = turn && isRecord(turn.error) ? turn.error : null;
+  if (!error) {
+    return "";
+  }
+  return getString(error.message) || getString(error.additionalDetails);
+}
+
+function extractDelta(value: unknown): string {
+  const root = isRecord(value) ? value : {};
+  return getString(root.delta);
+}
+
+function extractErrorNotificationMessage(value: unknown): string {
+  const root = isRecord(value) ? value : {};
+  const error = isRecord(root.error) ? root.error : root;
+  return getString(error.message) || getString(error.additionalDetails) || "Codex runtime сообщил об ошибке turn.";
+}
+
+function extractCompletedAgentMessage(value: unknown): string {
+  const root = isRecord(value) ? value : {};
+  const item = isRecord(root.item) ? root.item : null;
+  if (!item || getString(item.type) !== "agentMessage") {
+    return "";
+  }
+  return getString(item.text);
+}
+
 function normalizeLoginCompletedNotification(params: unknown): { success: boolean; message: string } {
   const root = isRecord(params) ? params : {};
   const success = getBoolean(root.success, false);
@@ -475,6 +807,11 @@ function normalizeAuthError(error: unknown): string {
     return `Проблема proxy при auth/account запросе: ${message}`;
   }
   return message;
+}
+
+function isThreadNotFoundError(error: unknown): boolean {
+  const message = normalizeErrorMessage(error).toLowerCase();
+  return message.includes("turn/start") && message.includes("thread not found");
 }
 
 function normalizeErrorMessage(error: unknown): string {

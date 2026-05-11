@@ -10,6 +10,14 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   background: var(--vscode-editor-background);
@@ -24,9 +32,35 @@ textarea {
 }
 
 .app {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+}
+
+.empty-app {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-state {
+  max-width: 420px;
+  padding: 28px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.empty-title {
+  color: var(--vscode-editor-foreground);
+  font-size: 24px;
+  font-weight: 750;
+  margin-bottom: 8px;
+}
+
+.empty-text {
+  line-height: 1.45;
 }
 
 .header {
@@ -68,6 +102,8 @@ textarea {
 .body {
   padding: 22px;
   overflow: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 
 .notice {
@@ -91,6 +127,11 @@ textarea {
 .message-role {
   font-weight: 700;
   margin-bottom: 6px;
+}
+
+.message-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .composer {
@@ -146,7 +187,16 @@ textarea {
   cursor: pointer;
 }
 
+.button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .event {
   color: var(--muted);
   margin-top: 8px;
+}
+
+.transcript-end {
+  height: 1px;
 }

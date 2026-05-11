@@ -36,15 +36,37 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.UserProfileService = void 0;
 const crypto = __importStar(require("crypto"));
 const vscode = __importStar(require("vscode"));
+const PROFILE_KEY = "codexElement.selectedProfileId";
 class UserProfileService {
-    async requireProfileId() {
+    constructor(context) {
+        this.context = context;
+    }
+    async getKnownProfileId(existingProfileIds = []) {
         if (this.currentProfileId) {
             return this.currentProfileId;
         }
         const resolved = resolveElementUserId();
         if (resolved) {
             this.currentProfileId = makeProfileId(resolved);
+            await this.context.globalState.update(PROFILE_KEY, this.currentProfileId);
             return this.currentProfileId;
+        }
+        const stored = this.context.globalState.get(PROFILE_KEY);
+        if (stored?.trim()) {
+            this.currentProfileId = stored.trim();
+            return this.currentProfileId;
+        }
+        if (existingProfileIds.length === 1) {
+            this.currentProfileId = existingProfileIds[0];
+            await this.context.globalState.update(PROFILE_KEY, this.currentProfileId);
+            return this.currentProfileId;
+        }
+        return undefined;
+    }
+    async requireProfileId(existingProfileIds = []) {
+        const known = await this.getKnownProfileId(existingProfileIds);
+        if (known) {
+            return known;
         }
         const input = await vscode.window.showInputBox({
             title: "Профиль Codex",
@@ -59,10 +81,14 @@ class UserProfileService {
             throw new Error("Авторизация отменена: профиль Codex не выбран.");
         }
         this.currentProfileId = makeProfileId(input.trim());
+        await this.context.globalState.update(PROFILE_KEY, this.currentProfileId);
         return this.currentProfileId;
     }
     getCurrentProfileLabel() {
         return this.currentProfileId ?? "-";
+    }
+    getCurrentProfileId() {
+        return this.currentProfileId;
     }
 }
 exports.UserProfileService = UserProfileService;

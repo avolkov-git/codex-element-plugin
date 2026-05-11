@@ -24,6 +24,11 @@
   });
 
   vscode.postMessage({ type: "ready", assetMode });
+  window.setInterval(() => {
+    if (state.snapshot && state.snapshot.auth.status === "authenticated") {
+      render();
+    }
+  }, 60000);
   render();
 
   function render() {
@@ -119,7 +124,7 @@
 
   function chatSections(snapshot) {
     return `
-      <button class="new-session" data-command="chat.newProjectPlaceholder">
+      <button class="new-session" data-command="chat.createProject">
         <span class="new-session-plus">+</span>
         <span>Новый диалог</span>
       </button>
@@ -149,10 +154,26 @@
     const active = chat.id === activeChatId ? " active" : "";
     return `
       <button class="chat-row${active}" data-command="chat.open" data-chat-id="${escapeHtml(chat.id)}">
-        <div class="chat-title">${escapeHtml(chat.title)}</div>
-        <div class="chat-meta">${formatDate(chat.updatedAt)} · ${escapeHtml(chat.status)}</div>
+        <span class="chat-title">${escapeHtml(chat.title)}</span>
+        <span class="chat-state">${chatState(chat)}</span>
       </button>
     `;
+  }
+
+  function chatState(chat) {
+    if (chat.status === "running") {
+      return `<span class="chat-spinner" title="Codex отвечает"></span>`;
+    }
+    if (chat.status === "waitingApproval") {
+      return `<span class="chat-dot warning" title="Ожидает подтверждения"></span>`;
+    }
+    if (chat.status === "error") {
+      return `<span class="chat-dot error" title="Ошибка"></span>`;
+    }
+    if (chat.hasUnread) {
+      return `<span class="chat-dot unread" title="Есть непрочитанный ответ"></span>`;
+    }
+    return `<span class="chat-time">${escapeHtml(formatRelativeTime(chat.updatedAt))}</span>`;
   }
 
   function notice() {
@@ -183,9 +204,30 @@
     });
   }
 
-  function formatDate(value) {
+  function formatRelativeTime(value) {
     try {
-      return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+      const timestamp = new Date(value).getTime();
+      if (!Number.isFinite(timestamp)) {
+        return "";
+      }
+      const elapsed = Math.max(0, Date.now() - timestamp);
+      const minute = 60 * 1000;
+      const hour = 60 * minute;
+      const day = 24 * hour;
+      const month = 30 * day;
+      if (elapsed < minute) {
+        return "сейчас";
+      }
+      if (elapsed < hour) {
+        return `${Math.floor(elapsed / minute)}м`;
+      }
+      if (elapsed < day) {
+        return `${Math.floor(elapsed / hour)}ч`;
+      }
+      if (elapsed < month) {
+        return `${Math.floor(elapsed / day)}д`;
+      }
+      return `${Math.floor(elapsed / month)}мес`;
     } catch {
       return "";
     }

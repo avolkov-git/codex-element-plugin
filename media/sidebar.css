@@ -9,6 +9,9 @@
   --accent: var(--vscode-button-background, #0e7fd2);
   --accent-hover: var(--vscode-button-hoverBackground, #0b70bd);
   --accent-fg: var(--vscode-button-foreground, #ffffff);
+  --activity-accent: var(--vscode-activityBar-activeBorder, var(--vscode-activityBarBadge-background, var(--vscode-focusBorder, var(--accent))));
+  --active-row-bg: var(--vscode-list-inactiveSelectionBackground, var(--codex-hover));
+  --unread-dot: var(--vscode-activityBarBadge-background, var(--vscode-badge-background, #5daeff));
 }
 
 body.vscode-light,
@@ -258,9 +261,13 @@ input {
   text-align: left;
   color: inherit;
   background: transparent;
-  padding: 8px;
+  padding: 7px 8px;
   border-radius: 6px;
   cursor: pointer;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
 }
 
 .chat-row:hover {
@@ -268,8 +275,9 @@ input {
 }
 
 .chat-row.active {
-  background: var(--vscode-list-activeSelectionBackground);
-  color: var(--vscode-list-activeSelectionForeground);
+  background: var(--active-row-bg);
+  color: var(--codex-fg);
+  box-shadow: inset 3px 0 0 var(--activity-accent);
 }
 
 .chat-title {
@@ -279,10 +287,56 @@ input {
   font-weight: 600;
 }
 
-.chat-meta {
+.chat-state {
+  min-width: 26px;
+  display: inline-flex;
+  justify-content: flex-end;
+  align-items: center;
   font-size: 11px;
-  margin-top: 3px;
-  opacity: 0.76;
+  color: var(--codex-muted);
+  line-height: 1;
+}
+
+.chat-time {
+  white-space: nowrap;
+}
+
+.chat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  display: inline-block;
+  background: var(--codex-muted);
+}
+
+.chat-dot.unread {
+  width: 9px;
+  height: 9px;
+  background: var(--unread-dot);
+}
+
+.chat-dot.warning {
+  background: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.chat-dot.error {
+  background: var(--vscode-errorForeground, #f14c4c);
+}
+
+.chat-spinner {
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  border: 2px solid var(--vscode-progressBar-background, var(--activity-accent));
+  border-top-color: transparent;
+  display: inline-block;
+  animation: codex-spin 0.85s linear infinite;
+}
+
+@keyframes codex-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .empty {

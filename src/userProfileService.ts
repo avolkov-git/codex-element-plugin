@@ -1,10 +1,14 @@
 import * as crypto from "crypto";
 import * as vscode from "vscode";
 
+const PROFILE_KEY = "codexElement.selectedProfileId";
+
 export class UserProfileService {
   private currentProfileId: string | undefined;
 
-  async requireProfileId(): Promise<string> {
+  constructor(private readonly context: vscode.ExtensionContext) {}
+
+  async getKnownProfileId(existingProfileIds: string[] = []): Promise<string | undefined> {
     if (this.currentProfileId) {
       return this.currentProfileId;
     }
@@ -12,7 +16,29 @@ export class UserProfileService {
     const resolved = resolveElementUserId();
     if (resolved) {
       this.currentProfileId = makeProfileId(resolved);
+      await this.context.globalState.update(PROFILE_KEY, this.currentProfileId);
       return this.currentProfileId;
+    }
+
+    const stored = this.context.globalState.get<string>(PROFILE_KEY);
+    if (stored?.trim()) {
+      this.currentProfileId = stored.trim();
+      return this.currentProfileId;
+    }
+
+    if (existingProfileIds.length === 1) {
+      this.currentProfileId = existingProfileIds[0];
+      await this.context.globalState.update(PROFILE_KEY, this.currentProfileId);
+      return this.currentProfileId;
+    }
+
+    return undefined;
+  }
+
+  async requireProfileId(existingProfileIds: string[] = []): Promise<string> {
+    const known = await this.getKnownProfileId(existingProfileIds);
+    if (known) {
+      return known;
     }
 
     const input = await vscode.window.showInputBox({
@@ -30,11 +56,16 @@ export class UserProfileService {
     }
 
     this.currentProfileId = makeProfileId(input.trim());
+    await this.context.globalState.update(PROFILE_KEY, this.currentProfileId);
     return this.currentProfileId;
   }
 
   getCurrentProfileLabel(): string {
     return this.currentProfileId ?? "-";
+  }
+
+  getCurrentProfileId(): string | undefined {
+    return this.currentProfileId;
   }
 }
 

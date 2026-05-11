@@ -80,6 +80,19 @@ export class SettingsService {
     return path.join(this.configRoot, "users", profileId, "codex-home");
   }
 
+  listExistingProfileIds(): string[] {
+    const usersRoot = path.join(this.configRoot, "users");
+    try {
+      return fs.readdirSync(usersRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .filter((profileId) => fs.existsSync(path.join(usersRoot, profileId, "codex-home")))
+        .sort();
+    } catch {
+      return [];
+    }
+  }
+
   async ensureUserCodexHome(profileId: string): Promise<string> {
     const codexHome = this.getUserCodexHome(profileId);
     await fs.promises.mkdir(codexHome, { recursive: true });
