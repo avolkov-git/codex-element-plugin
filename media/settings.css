@@ -1,0 +1,157 @@
+:root {
+  color-scheme: light dark;
+  --codex-bg: var(--vscode-editor-background, #ffffff);
+  --codex-fg: var(--vscode-foreground, var(--vscode-editor-foreground, #1f1f1f));
+  --codex-muted: var(--vscode-descriptionForeground, #6b7280);
+  --codex-border: var(--vscode-panel-border, #d0d0d0);
+  --codex-input-bg: var(--vscode-input-background, #ffffff);
+  --codex-input-fg: var(--vscode-input-foreground, var(--codex-fg));
+  --codex-input-border: var(--vscode-input-border, var(--codex-border));
+  --codex-error: var(--vscode-errorForeground, #d93025);
+  --codex-success: var(--vscode-testing-iconPassed, #16825d);
+  --accent: var(--vscode-button-background, #0e7fd2);
+  --accent-hover: var(--vscode-button-hoverBackground, #0b70bd);
+  --accent-fg: var(--vscode-button-foreground, #ffffff);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: var(--codex-bg);
+}
+
+body {
+  margin: 0;
+  color: var(--codex-fg);
+  background: var(--codex-bg);
+  font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.settings-app {
+  min-height: 100vh;
+  padding: 28px 32px;
+  color: var(--codex-fg);
+  background: var(--codex-bg);
+}
+
+.settings-header {
+  padding-bottom: 20px;
+  margin-bottom: 22px;
+  border-bottom: 1px solid var(--codex-border);
+}
+
+.eyebrow {
+  color: var(--codex-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1,
+h2 {
+  margin: 0;
+  line-height: 1.2;
+}
+
+h1 {
+  margin-top: 6px;
+  font-size: 30px;
+  font-weight: 700;
+}
+
+h2 {
+  margin-bottom: 20px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.settings-section {
+  max-width: 900px;
+}
+
+.field,
+.field-grid {
+  margin-bottom: 18px;
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+}
+
+.field span {
+  color: var(--codex-fg);
+  font-weight: 500;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  color: var(--codex-input-fg);
+  background: var(--codex-input-bg);
+  border: 1px solid var(--codex-input-border);
+  border-radius: 5px;
+  outline: none;
+}
+
+input:focus {
+  border-color: var(--vscode-focusBorder, #007fd4);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
+}
+
+.button {
+  min-width: 148px;
+  min-height: 36px;
+  padding: 8px 18px;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.button:hover {
+  background: var(--accent-hover);
+}
+
+.message {
+  margin-top: 14px;
+  line-height: 1.4;
+}
+
+.message.success {
+  color: var(--codex-success);
+}
+
+.message.error {
+  color: var(--codex-error);
+}
+
+@media (max-width: 700px) {
+  .settings-app {
+    padding: 22px;
+  }
+
+  .field-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}

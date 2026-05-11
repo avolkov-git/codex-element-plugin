@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.2",
+  "version": "0.1.12",
   "publisher": "element-ai",
   "license": "UNLICENSED",
   "private": true,
@@ -16,6 +16,7 @@
     "onStartupFinished",
     "onView:codexElement.sidebar",
     "onWebviewPanel:codexElement.chatPanel",
+    "onWebviewPanel:codexElement.settingsPanel",
     "onCommand:codexElement.open",
     "onCommand:codexElement.newProjectChat",
     "onCommand:codexElement.newGeneralChat",
@@ -71,6 +72,16 @@
           "name": "Codex"
         }
       ]
+    },
+    "configuration": {
+      "title": "Codex",
+      "properties": {
+        "codexElement.configRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Каталог хранения настроек Codex Element вне каталога плагина. Пусто = auto."
+        }
+      }
     },
     "menus": {
       "view/title": [

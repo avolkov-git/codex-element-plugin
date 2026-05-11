@@ -21,8 +21,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [
-        vscode.Uri.joinPath(this.context.extensionUri, "media"),
-        vscode.Uri.joinPath(this.context.extensionUri, "resources")
+        vscode.Uri.joinPath(this.context.extensionUri, "media")
       ]
     };
 
@@ -69,9 +68,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.logger.info(`Sidebar command: ${message.command}`);
 
     switch (message.command) {
-      case "auth.deviceCode.select":
-      case "auth.apiKey.select":
-        this.postEvent("shell.notice", "Авторизация будет подключена в следующей runtime-итерации.");
+      case "auth.deviceCode.start":
+        await this.handlers.startDeviceCodeLogin();
+        return;
+      case "auth.deviceCode.openUrl":
+        await this.handlers.openDeviceCodeUrl();
+        return;
+      case "auth.deviceCode.copyCode":
+        await this.handlers.copyDeviceCode();
+        return;
+      case "auth.apiKey.login":
+        if (isObject(message.payload) && typeof message.payload.apiKey === "string") {
+          await this.handlers.loginWithApiKey(message.payload.apiKey);
+        }
         return;
       case "settings.proxy.open":
       case "settings.open":
@@ -79,6 +88,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         return;
       case "logs.open":
         this.handlers.openLogs();
+        return;
+      case "chat.newProjectPlaceholder":
+        this.postEvent("shell.notice", "Новый проектный диалог будет подключен в следующей chat-итерации.");
         return;
       case "chat.createProject":
         await this.handlers.createChat("project");
@@ -102,6 +114,10 @@ export interface SidebarHandlers {
   openChat(chatId: string): Promise<void>;
   openSettings(): Promise<void>;
   openLogs(): void;
+  startDeviceCodeLogin(): Promise<void>;
+  loginWithApiKey(apiKey: string): Promise<void>;
+  openDeviceCodeUrl(): Promise<void>;
+  copyDeviceCode(): Promise<void>;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

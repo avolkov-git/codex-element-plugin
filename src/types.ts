@@ -1,4 +1,8 @@
-export type AuthStatus = "notAuthenticated" | "authenticated";
+export type AuthStatus = "notAuthenticated" | "authenticated" | "checking" | "error";
+
+export type AuthAccountType = "none" | "apiKey" | "chatgpt" | "unknown";
+
+export type AuthFlowStatus = "idle" | "starting" | "awaiting" | "success" | "error";
 
 export type ProxyStatus = "notConfigured" | "configured" | "error";
 
@@ -23,6 +27,18 @@ export interface SidebarSnapshot {
   auth: {
     status: AuthStatus;
     accountLabel: string;
+    accountType: AuthAccountType;
+    message: string;
+    profileLabel: string;
+    deviceCode: {
+      status: AuthFlowStatus;
+      loginId: string;
+      verificationUrl: string;
+      userCode: string;
+    };
+    apiKey: {
+      status: AuthFlowStatus;
+    };
   };
   proxy: {
     status: ProxyStatus;

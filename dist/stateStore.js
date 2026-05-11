@@ -6,26 +6,64 @@ class StateStore {
         this.version = 1;
         this.chats = [];
         this.transcripts = new Map();
+        this.auth = {
+            status: "notAuthenticated",
+            accountLabel: "Не авторизованы",
+            accountType: "none",
+            message: "Выберите способ авторизации.",
+            profileLabel: "-",
+            deviceCode: {
+                status: "idle",
+                loginId: "",
+                verificationUrl: "",
+                userCode: ""
+            },
+            apiKey: {
+                status: "idle"
+            }
+        };
+        this.proxy = {
+            status: "notConfigured",
+            label: "Proxy не настроен"
+        };
+        this.runtime = {
+            status: "notStarted",
+            label: "Backend не запускался"
+        };
     }
     getSidebarSnapshot() {
         return {
             kind: "sidebar",
             version: this.version,
-            auth: {
-                status: "notAuthenticated",
-                accountLabel: "Не авторизованы"
-            },
-            proxy: {
-                status: "notConfigured",
-                label: "Proxy не настроен"
-            },
-            runtime: {
-                status: "notStarted",
-                label: "Backend не запускался"
-            },
+            auth: this.auth,
+            proxy: this.proxy,
+            runtime: this.runtime,
             chats: [...this.chats],
             activeChatId: this.activeChatId
         };
+    }
+    setAuth(auth) {
+        this.auth = {
+            ...this.auth,
+            ...auth,
+            deviceCode: {
+                ...this.auth.deviceCode,
+                ...(auth.deviceCode ?? {})
+            },
+            apiKey: {
+                ...this.auth.apiKey,
+                ...(auth.apiKey ?? {})
+            }
+        };
+        this.version += 1;
+    }
+    setProxy(proxy) {
+        this.proxy = proxy;
+        this.version += 1;
+    }
+    setRuntime(runtime) {
+        this.runtime = runtime;
+        this.version += 1;
     }
     getChatSnapshot(chatId) {
         const chat = this.chats.find((candidate) => candidate.id === chatId);

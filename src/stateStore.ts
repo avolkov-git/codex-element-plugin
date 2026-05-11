@@ -1,30 +1,76 @@
 import { ChatKind, ChatPanelSnapshot, ChatSummary, ChatTranscriptItem, SidebarSnapshot } from "./types";
 
+type AuthPatch = Omit<Partial<SidebarSnapshot["auth"]>, "deviceCode" | "apiKey"> & {
+  deviceCode?: Partial<SidebarSnapshot["auth"]["deviceCode"]>;
+  apiKey?: Partial<SidebarSnapshot["auth"]["apiKey"]>;
+};
+
 export class StateStore {
   private version = 1;
   private activeChatId: string | undefined;
   private chats: ChatSummary[] = [];
   private transcripts = new Map<string, ChatTranscriptItem[]>();
+  private auth: SidebarSnapshot["auth"] = {
+    status: "notAuthenticated",
+    accountLabel: "Не авторизованы",
+    accountType: "none",
+    message: "Выберите способ авторизации.",
+    profileLabel: "-",
+    deviceCode: {
+      status: "idle",
+      loginId: "",
+      verificationUrl: "",
+      userCode: ""
+    },
+    apiKey: {
+      status: "idle"
+    }
+  };
+  private proxy: SidebarSnapshot["proxy"] = {
+    status: "notConfigured",
+    label: "Proxy не настроен"
+  };
+  private runtime: SidebarSnapshot["runtime"] = {
+    status: "notStarted",
+    label: "Backend не запускался"
+  };
 
   getSidebarSnapshot(): SidebarSnapshot {
     return {
       kind: "sidebar",
       version: this.version,
-      auth: {
-        status: "notAuthenticated",
-        accountLabel: "Не авторизованы"
-      },
-      proxy: {
-        status: "notConfigured",
-        label: "Proxy не настроен"
-      },
-      runtime: {
-        status: "notStarted",
-        label: "Backend не запускался"
-      },
+      auth: this.auth,
+      proxy: this.proxy,
+      runtime: this.runtime,
       chats: [...this.chats],
       activeChatId: this.activeChatId
     };
+  }
+
+  setAuth(auth: AuthPatch): void {
+    this.auth = {
+      ...this.auth,
+      ...auth,
+      deviceCode: {
+        ...this.auth.deviceCode,
+        ...(auth.deviceCode ?? {})
+      },
+      apiKey: {
+        ...this.auth.apiKey,
+        ...(auth.apiKey ?? {})
+      }
+    };
+    this.version += 1;
+  }
+
+  setProxy(proxy: SidebarSnapshot["proxy"]): void {
+    this.proxy = proxy;
+    this.version += 1;
+  }
+
+  setRuntime(runtime: SidebarSnapshot["runtime"]): void {
+    this.runtime = runtime;
+    this.version += 1;
   }
 
   getChatSnapshot(chatId: string): ChatPanelSnapshot | undefined {

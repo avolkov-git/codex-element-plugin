@@ -39,22 +39,47 @@ const vscode = __importStar(require("vscode"));
 const chatPanelManager_1 = require("./chatPanelManager");
 const logger_1 = require("./logger");
 const performance_1 = require("./performance");
+const runtimeAuthController_1 = require("./runtimeAuthController");
+const settingsPanelManager_1 = require("./settingsPanelManager");
+const settingsService_1 = require("./settingsService");
 const sidebarProvider_1 = require("./sidebarProvider");
 const stateStore_1 = require("./stateStore");
-function activate(context) {
+const userProfileService_1 = require("./userProfileService");
+async function activate(context) {
     const perf = new performance_1.PerfMarks();
     const logger = new logger_1.Logger();
     context.subscriptions.push(logger);
     logger.info("Codex Element V1 activating.");
     perf.mark("logger");
+    const settings = new settingsService_1.SettingsService(context);
     const state = new stateStore_1.StateStore();
-    const chatPanels = new chatPanelManager_1.ChatPanelManager(context, state, logger);
+    state.setProxy(await settings.getSidebarProxyStatus());
+    const profiles = new userProfileService_1.UserProfileService();
     let sidebar;
+    const runtime = new runtimeAuthController_1.RuntimeAuthController({
+        context,
+        settings,
+        profiles,
+        state,
+        logger,
+        onDidChange: () => sidebar?.postSnapshot()
+    });
+    context.subscriptions.push(runtime);
+    const chatPanels = new chatPanelManager_1.ChatPanelManager(context, state, logger);
+    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, logger, async () => {
+        state.setProxy(await settings.getSidebarProxyStatus());
+        await runtime.stop();
+        sidebar?.postSnapshot();
+    });
     sidebar = new sidebarProvider_1.SidebarProvider(context, state, logger, {
         createChat: async (kind) => createChat(kind, state, sidebar, chatPanels, logger),
         openChat: async (chatId) => openChat(chatId, state, sidebar, chatPanels, logger),
-        openSettings: async () => openSettings(logger),
-        openLogs: () => logger.show()
+        openSettings: async () => settingsPanels.open(),
+        openLogs: () => logger.show(),
+        startDeviceCodeLogin: async () => runtime.startDeviceCodeLogin(),
+        loginWithApiKey: async (apiKey) => runtime.loginWithApiKey(apiKey),
+        openDeviceCodeUrl: async () => runtime.openDeviceCodeUrl(),
+        copyDeviceCode: async () => runtime.copyDeviceCode()
     });
     perf.mark("services");
     context.subscriptions.push(vscode.window.registerWebviewViewProvider("codexElement.sidebar", sidebar, {
@@ -63,7 +88,7 @@ function activate(context) {
         }
     }));
     perf.mark("sidebarProvider");
-    context.subscriptions.push(chatPanels.registerSerializer());
+    context.subscriptions.push(chatPanels.registerSerializer(), settingsPanels.registerSerializer());
     perf.mark("panelSerializer");
     context.subscriptions.push(vscode.commands.registerCommand("codexElement.open", async () => {
         const existingChatId = state.getSidebarSnapshot().activeChatId;
@@ -77,7 +102,7 @@ function activate(context) {
     }), vscode.commands.registerCommand("codexElement.newGeneralChat", async () => {
         await createChat("general", state, sidebar, chatPanels, logger);
     }), vscode.commands.registerCommand("codexElement.openSettings", async () => {
-        await openSettings(logger);
+        settingsPanels.open();
     }), vscode.commands.registerCommand("codexElement.openLogs", () => {
         logger.show();
     }));
@@ -90,17 +115,13 @@ function deactivate() {
 async function createChat(kind, state, sidebar, chatPanels, logger) {
     const chat = state.createChat(kind);
     logger.info(`Created ${kind} chat: ${chat.title}.`);
-    sidebar.postSnapshot();
+    sidebar?.postSnapshot();
     chatPanels.openChat(chat.id);
 }
 async function openChat(chatId, state, sidebar, chatPanels, logger) {
     state.setActiveChat(chatId);
     logger.info(`Opening chat: ${chatId}.`);
-    sidebar.postSnapshot();
+    sidebar?.postSnapshot();
     chatPanels.openChat(chatId);
-}
-async function openSettings(logger) {
-    logger.info("Settings requested. Settings panel will be implemented in the next shell iteration.");
-    vscode.window.showInformationMessage("Настройки Codex будут подключены в следующей итерации UI shell.");
 }
 //# sourceMappingURL=extension.js.map
