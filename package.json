@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.27",
+  "version": "0.1.36",
   "publisher": "element-ai",
   "license": "UNLICENSED",
   "private": true,
@@ -22,7 +22,9 @@
     "onCommand:codexElement.newGeneralChat",
     "onCommand:codexElement.openProjectRules",
     "onCommand:codexElement.openSettings",
-    "onCommand:codexElement.openLogs"
+    "onCommand:codexElement.openLogs",
+    "onCommand:codexElement.explainFile",
+    "onCommand:codexElement.explainSelection"
   ],
   "main": "./dist/extension.js",
   "scripts": {
@@ -59,6 +61,24 @@
         "command": "codexElement.openProjectRules",
         "title": "Codex: Открыть правила проекта",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "codexElement.explainFile",
+        "title": "Объяснить файл",
+        "category": "Codex",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "codexElement.explainSelection",
+        "title": "Объяснить выделенный фрагмент",
+        "category": "Codex",
+        "icon": "$(selection)"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "codexElement.editorContext",
+        "label": "Codex for 1C Element"
       }
     ],
     "viewsContainers": {
@@ -102,6 +122,24 @@
           "group": "navigation@2"
         }
       ],
+      "editor/context": [
+        {
+          "submenu": "codexElement.editorContext",
+          "when": "editorTextFocus && resourceScheme == file",
+          "group": "z_codex@999"
+        }
+      ],
+      "codexElement.editorContext": [
+        {
+          "command": "codexElement.explainFile",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codexElement.explainSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@2"
+        }
+      ],
       "commandPalette": [
         {
           "command": "codexElement.open"
@@ -120,6 +158,13 @@
         },
         {
           "command": "codexElement.openProjectRules"
+        },
+        {
+          "command": "codexElement.explainFile"
+        },
+        {
+          "command": "codexElement.explainSelection",
+          "when": "editorHasSelection"
         }
       ]
     }

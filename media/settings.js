@@ -91,6 +91,7 @@
           <div class="button-row">
             <button class="button" id="save-docs" type="button" ${normalizerRunning ? "disabled" : ""}>Сохранить</button>
             <button class="button secondary" id="normalize-docs" type="button" ${normalizerRunning ? "disabled" : ""}>Нормализовать</button>
+            <button class="button secondary" id="open-base-context" type="button">Базовый контекст</button>
           </div>
         </section>
         ${message()}
@@ -143,6 +144,16 @@
           type: "command",
           command: "settings.docs.normalize",
           payload: { normalizedPath }
+        });
+      });
+    }
+
+    const openBaseContextButton = root.querySelector("#open-base-context");
+    if (openBaseContextButton) {
+      openBaseContextButton.addEventListener("click", () => {
+        vscode.postMessage({
+          type: "command",
+          command: "settings.docs.openBaseContext"
         });
       });
     }

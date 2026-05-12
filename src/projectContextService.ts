@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { Logger } from "./logger";
-import { SidebarSnapshot } from "./types";
+import { ProjectContextDetails, SidebarSnapshot } from "./types";
 
 interface ProjectIndexFile {
   path: string;
@@ -219,6 +219,89 @@ export class ProjectContextService implements vscode.Disposable {
       return {
         matchCount: 0,
         status: { status: "error", label: "Проектный контекст недоступен" }
+      };
+    }
+  }
+
+  async getDetails(profileId: string | undefined): Promise<ProjectContextDetails> {
+    if (!profileId) {
+      return {
+        kind: "project",
+        status: "disabled",
+        label: "Профиль Codex не выбран",
+        files: [],
+        count: 0,
+        error: "Индекс проекта недоступен: профиль Codex не выбран."
+      };
+    }
+
+    const workspaceRoot = getWorkspaceRoot();
+    if (!workspaceRoot) {
+      return {
+        kind: "project",
+        status: "disabled",
+        label: "Workspace не найден",
+        files: [],
+        count: 0,
+        error: "Индекс проекта недоступен: workspace не найден."
+      };
+    }
+
+    const indexPath = this.indexPath(profileId, workspaceRoot);
+    try {
+      let index: ProjectIndex | undefined;
+      if (this.cachePath === indexPath && this.cache) {
+        index = this.cache;
+      } else {
+        const raw = await fs.promises.readFile(indexPath, "utf8");
+        index = normalizeIndex(JSON.parse(raw), workspaceRoot);
+      }
+
+      if (!index) {
+        return {
+          kind: "project",
+          status: "error",
+          label: "Индекс проекта поврежден",
+          workspaceRoot,
+          indexPath,
+          files: [],
+          count: 0,
+          error: "Файл индекса проекта найден, но его формат не подходит текущему workspace."
+        };
+      }
+
+      return {
+        kind: "project",
+        status: "active",
+        label: `Проектный контекст активен: ${index.files.length} файлов`,
+        workspaceRoot,
+        indexPath,
+        updatedAt: index.updatedAt,
+        files: index.files.map((file) => file.path).sort((left, right) => left.localeCompare(right)),
+        count: index.files.length
+      };
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return {
+          kind: "project",
+          status: "notIndexed",
+          label: "Индекс проекта еще не собран",
+          workspaceRoot,
+          indexPath,
+          files: [],
+          count: 0
+        };
+      }
+
+      return {
+        kind: "project",
+        status: "error",
+        label: "Индекс проекта недоступен",
+        workspaceRoot,
+        indexPath,
+        files: [],
+        count: 0,
+        error: error instanceof Error ? error.message : String(error)
       };
     }
   }

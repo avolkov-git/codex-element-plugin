@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { BaseContextService } from "./baseContextService";
 import { ContextBlock, ContextRouterService } from "./contextRouterService";
 import { DocsContextService } from "./docsContextService";
 import { JsonRpcClient, JsonRpcNotification, JsonRpcServerRequest } from "./jsonRpcClient";
@@ -10,13 +11,14 @@ import { RulesContextService } from "./rulesContextService";
 import { RuntimeProcessManager } from "./runtimeProcessManager";
 import { RuntimeProxySettings, SettingsService } from "./settingsService";
 import { StateStore } from "./stateStore";
-import { ApprovalRequest, AuthAccountType, ChatAccessMode } from "./types";
+import { ApprovalRequest, AuthAccountType, ChatAccessMode, ChatRunMode, ModelOption } from "./types";
 import { UserProfileService } from "./userProfileService";
 
 interface CodexRuntimeControllerOptions {
   context: vscode.ExtensionContext;
   settings: SettingsService;
   contextRouter: ContextRouterService;
+  baseContext: BaseContextService;
   projectContext: ProjectContextService;
   docsContext: DocsContextService;
   rulesContext: RulesContextService;
@@ -45,6 +47,23 @@ interface NormalizedApprovalRequest {
   resolvePayload: (approved: boolean) => unknown;
 }
 
+class UserCancelledTurnError extends Error {
+  constructor() {
+    super("Turn cancelled by user.");
+    this.name = "UserCancelledTurnError";
+  }
+}
+
+const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
+  { id: null, label: "5.5" },
+  { id: "gpt-5.5", label: "GPT-5.5" },
+  { id: "gpt-5.4", label: "GPT-5.4" },
+  { id: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
+  { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
+  { id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
+  { id: "gpt-5.2", label: "GPT-5.2" }
+];
+
 export class CodexRuntimeController implements vscode.Disposable {
   private readonly processManager = new RuntimeProcessManager();
   private rpcClient: JsonRpcClient | undefined;
@@ -52,6 +71,10 @@ export class CodexRuntimeController implements vscode.Disposable {
   private activeThreadChatId = new Map<string, string>();
   private itemPayloads = new Map<string, unknown>();
   private pendingApprovals = new Map<string, PendingApprovalResolver>();
+  private cancellingChatIds = new Set<string>();
+  private cancelledTurnIds = new Set<string>();
+  private cancelEpochByChat = new Map<string, number>();
+  private suppressNextExitAsCancel = false;
   private latestChatId: string | undefined;
   private restoreAttempted = false;
 
@@ -201,29 +224,47 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.updateAuth({ message: "Device Code скопирован." });
   }
 
-  async sendPrompt(chatId: string, prompt: string): Promise<void> {
+  async sendPrompt(
+    chatId: string,
+    prompt: string,
+    mode: ChatRunMode = "normal",
+    transcriptText?: string,
+    explicitContextBlocks: readonly ContextBlock[] = []
+  ): Promise<void> {
     const trimmed = prompt.trim();
     if (!trimmed) {
       return;
     }
+    const visiblePrompt = (transcriptText ?? trimmed).trim() || trimmed;
 
     const chat = this.options.state.getChat(chatId);
     if (!chat) {
       throw new Error("Чат не найден.");
     }
+    if (chat.archivedAt) {
+      this.options.logger.warn(`sendPrompt ignored for archived chat: ${chatId}.`);
+      return;
+    }
 
     this.latestChatId = chatId;
-    this.options.state.addTranscriptItem(chatId, "user", trimmed);
-    this.options.state.updateChat(chatId, { status: "running" });
+    const cancelEpoch = this.cancelEpoch(chatId);
+    this.options.state.addTranscriptItem(chatId, "user", visiblePrompt);
+    this.options.state.updateChat(chatId, { status: "running", activeRunMode: mode });
     this.options.onDidChange();
     this.options.onDidChangeChat(chatId);
 
     try {
       await this.ensureBackendProcess();
+      this.throwIfCancelled(chatId, cancelEpoch);
       await this.ensureAuthenticatedForTurn();
+      this.throwIfCancelled(chatId, cancelEpoch);
+
+      const requestedAccessMode = getRunAccessMode(this.options.state.getChat(chatId)?.accessMode ?? chat.accessMode, mode);
+      this.ensureBackendThreadMatchesAccess(chatId, requestedAccessMode);
 
       if (!this.options.state.getChat(chatId)?.backendThreadId) {
-        await this.startBackendThread(chatId);
+        await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
+        this.throwIfCancelled(chatId, cancelEpoch);
       }
 
       const existingThreadId = this.options.state.getChat(chatId)?.backendThreadId;
@@ -233,7 +274,7 @@ export class CodexRuntimeController implements vscode.Disposable {
 
       let turnResult: unknown;
       try {
-        turnResult = await this.startTurn(chatId, trimmed);
+        turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
       } catch (error) {
         if (!isThreadNotFoundError(error) || !this.options.state.getChat(chatId)?.backendThreadId) {
           throw error;
@@ -246,11 +287,14 @@ export class CodexRuntimeController implements vscode.Disposable {
         }
         this.options.state.updateChat(chatId, {
           backendThreadId: null,
+          backendThreadAccessMode: null,
           activeTurnId: null
         });
-        await this.startBackendThread(chatId);
-        turnResult = await this.startTurn(chatId, trimmed);
+        await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
+        this.throwIfCancelled(chatId, cancelEpoch);
+        turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
       }
+      this.throwIfCancelled(chatId, cancelEpoch);
 
       const turnId = extractTurnId(turnResult);
       if (turnId) {
@@ -258,21 +302,45 @@ export class CodexRuntimeController implements vscode.Disposable {
       }
       this.options.state.updateChat(chatId, {
         activeTurnId: turnId || null,
-        status: "running"
+        status: "running",
+        activeRunMode: mode
       });
       this.options.onDidChange();
       this.options.onDidChangeChat(chatId);
       this.options.logger.info(`turn/start accepted: turn=${turnId || "-"}.`);
     } catch (error) {
+      if (error instanceof UserCancelledTurnError || this.cancelEpoch(chatId) !== cancelEpoch) {
+        this.cleanupCancelledChat(chatId, this.options.state.getChat(chatId)?.activeTurnId ?? null);
+        this.options.logger.info(`sendPrompt cancelled: chat=${chatId}.`);
+        return;
+      }
       const message = normalizeErrorMessage(error);
       this.options.state.updateChat(chatId, {
         status: "error",
-        activeTurnId: null
+        activeTurnId: null,
+        activeRunMode: null
       });
       this.options.state.addTranscriptItem(chatId, "system", message);
       this.options.onDidChange();
       this.options.onDidChangeChat(chatId);
       this.options.logger.error(`sendPrompt failed: ${message}`);
+    }
+  }
+
+  async loadModelOptions(): Promise<{ options: ModelOption[]; status: "ready" | "error" }> {
+    try {
+      await this.ensureBackendProcess();
+      const result = await this.requireRpcClient().request("model/list", undefined, 10_000);
+      const options = normalizeModelOptions(result);
+      if (!options.length) {
+        this.options.logger.warn("model/list returned no usable models; using fallback model list.");
+        return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
+      }
+      this.options.logger.info(`model/list completed: ${options.length} model options.`);
+      return { options, status: "ready" };
+    } catch (error) {
+      this.options.logger.warn(`model/list failed; using fallback model list: ${normalizeErrorMessage(error)}`);
+      return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
     }
   }
 
@@ -289,6 +357,60 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.options.onDidChangeChat(chatId);
     pending.resolve(approved);
     this.options.logger.info(`Approval ${approved ? "accepted" : "declined"}: request=${approvalId}.`);
+  }
+
+  async cancelTurn(chatId: string): Promise<void> {
+    const chat = this.options.state.getChat(chatId);
+    if (!chat || !["running", "waitingApproval", "cancelling"].includes(chat.status)) {
+      return;
+    }
+    if (this.cancellingChatIds.has(chatId)) {
+      return;
+    }
+
+    this.cancellingChatIds.add(chatId);
+    this.bumpCancelEpoch(chatId);
+    this.latestChatId = chatId;
+    const threadId = chat.backendThreadId;
+    const turnId = chat.activeTurnId;
+    if (turnId) {
+      this.cancelledTurnIds.add(turnId);
+      this.activeTurnChatId.delete(turnId);
+    }
+
+    this.declinePendingApprovalsForChat(chatId);
+    this.options.state.updateChat(chatId, {
+      status: "cancelling",
+      activeTurnId: null,
+      pendingApproval: null,
+      activeRunMode: null
+    }, "immediate");
+    this.options.onDidChange();
+    this.options.onDidChangeChat(chatId);
+
+    try {
+      if (!this.rpcClient || !threadId || !turnId) {
+        throw new Error("turn/cancel недоступен: нет активного backend thread/turn.");
+      }
+      await this.requestTurnCancel(threadId, turnId);
+      this.options.logger.info(`turn/cancel accepted: chat=${chatId}; turn=${turnId}.`);
+    } catch (error) {
+      this.options.logger.warn(`turn/cancel failed, stopping backend fallback: ${normalizeErrorMessage(error)}`);
+      await this.stopBackendAfterCancel();
+    } finally {
+      this.cancellingChatIds.delete(chatId);
+      const current = this.options.state.getChat(chatId);
+      if (current?.status === "cancelling") {
+        this.options.state.updateChat(chatId, {
+          status: "idle",
+          activeTurnId: null,
+          pendingApproval: null,
+          activeRunMode: null
+        }, "immediate");
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+      }
+    }
   }
 
   async readAccount(): Promise<void> {
@@ -338,11 +460,29 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
   }
 
-  private async startBackendThread(chatId: string): Promise<void> {
+  private ensureBackendThreadMatchesAccess(chatId: string, requestedAccessMode: ChatAccessMode): void {
+    const chat = this.options.state.getChat(chatId);
+    if (!chat?.backendThreadId || !chat.backendThreadAccessMode || chat.backendThreadAccessMode === requestedAccessMode) {
+      return;
+    }
+
+    this.options.logger.info(
+      `Backend thread access changed, recreating thread: chat=${chatId}; from=${chat.backendThreadAccessMode}; to=${requestedAccessMode}.`
+    );
+    this.activeThreadChatId.delete(chat.backendThreadId);
+    this.options.state.updateChat(chatId, {
+      backendThreadId: null,
+      backendThreadAccessMode: null,
+      activeTurnId: null
+    });
+  }
+
+  private async startBackendThread(chatId: string, accessOverride?: ChatAccessMode): Promise<void> {
     const rpcClient = this.requireRpcClient();
     const cwd = resolveWorkspaceCwd(this.options.context);
     const chat = this.options.state.getChat(chatId);
-    const accessMode = chat?.accessMode ?? (chat?.kind === "project" ? "workspace-write" : "read-only");
+    const accessMode = accessOverride ?? chat?.accessMode ?? (chat?.kind === "project" ? "workspace-write" : "read-only");
+    const model = chat?.modelId ?? null;
     const result = await rpcClient.request("thread/start", {
       cwd,
       approvalPolicy: getApprovalPolicy(accessMode),
@@ -350,7 +490,7 @@ export class CodexRuntimeController implements vscode.Disposable {
       sandbox: getThreadSandbox(accessMode),
       sessionStartSource: "startup",
       serviceName: "codex_element_v1",
-      model: null
+      model
     });
     const threadId = extractThreadId(result);
 
@@ -358,14 +498,33 @@ export class CodexRuntimeController implements vscode.Disposable {
       throw new Error("thread/start не вернул thread.id.");
     }
 
-    this.options.state.updateChat(chatId, { backendThreadId: threadId });
+    this.options.state.updateChat(chatId, { backendThreadId: threadId, backendThreadAccessMode: accessMode });
     this.activeThreadChatId.set(threadId, chatId);
     this.options.onDidChange();
     this.options.onDidChangeChat(chatId);
     this.options.logger.info(`thread/start completed: thread=${threadId}.`);
   }
 
-  private async startTurn(chatId: string, prompt: string): Promise<unknown> {
+  private async startBackendThreadWithFallback(chatId: string, accessOverride?: ChatAccessMode): Promise<void> {
+    try {
+      await this.startBackendThread(chatId, accessOverride);
+    } catch (error) {
+      if (!isModelOrEffortError(error)) {
+        throw error;
+      }
+      this.options.logger.warn(`thread/start model rejected; retrying with default model: ${normalizeErrorMessage(error)}`);
+      this.options.state.setChatModel(chatId, null, "5.5");
+      await this.startBackendThread(chatId, accessOverride);
+    }
+  }
+
+  private async startTurn(
+    chatId: string,
+    prompt: string,
+    mode: ChatRunMode,
+    explicitContextBlocks: readonly ContextBlock[] = [],
+    options: { omitSpeed?: boolean } = {}
+  ): Promise<unknown> {
     const chat = this.options.state.getChat(chatId);
     if (!chat?.backendThreadId) {
       throw new Error("Backend thread не готов.");
@@ -374,11 +533,25 @@ export class CodexRuntimeController implements vscode.Disposable {
     const cwd = resolveWorkspaceCwd(this.options.context);
     const routing = this.options.contextRouter.decide(prompt, chat.kind);
     const contextBlocks: ContextBlock[] = [];
+    let baseRulesRoute: "skip" | "added" | "missing" = "skip";
     let projectRoute: "skip" | "added" | "fallback" = "skip";
     let docsRoute: "skip" | "added" = "skip";
     let rulesRoute: "skip" | "added" | "active" | "disabled" | "missing" | "error" = "skip";
 
     if (routing.shouldUseProjectContext) {
+      const baseRules = await this.options.baseContext.buildContext();
+      if (baseRules.text) {
+        baseRulesRoute = "added";
+        contextBlocks.push({
+          source: "baseRules",
+          text: baseRules.text,
+          matchCount: baseRules.matchCount,
+          mode: "matched"
+        });
+      } else {
+        baseRulesRoute = "missing";
+      }
+
       this.options.state.setProjectContext({
         status: "indexing",
         label: "Проектный контекст индексируется"
@@ -450,25 +623,64 @@ export class CodexRuntimeController implements vscode.Disposable {
       this.options.logger.info(`Rules context skipped by router: ${routing.reason}.`);
     }
 
-    const input = contextBlocks.length
-      ? [{ type: "text", text: this.options.contextRouter.buildServiceEnvelope({ userPrompt: prompt, blocks: contextBlocks }) }]
-      : [{ type: "text", text: prompt }];
+    contextBlocks.push(...explicitContextBlocks);
+
+    const input = mode === "planning"
+      ? [{ type: "text", text: this.options.contextRouter.buildPlanningEnvelope({ userPrompt: prompt, blocks: contextBlocks }) }]
+      : contextBlocks.length
+        ? [{ type: "text", text: this.options.contextRouter.buildServiceEnvelope({ userPrompt: prompt, blocks: contextBlocks }) }]
+        : [{ type: "text", text: prompt }];
 
     this.options.logger.info(
-      `context routed: project=${projectRoute}, docs=${docsRoute}, rules=${rulesRoute}, reason=${routing.reason}, blocks=${contextBlocks.length}.`
+      `context routed: baseRules=${baseRulesRoute}, project=${projectRoute}, docs=${docsRoute}, rules=${rulesRoute}, explicit=${explicitContextBlocks.length}, reason=${routing.reason}, blocks=${contextBlocks.length}.`
     );
 
-    this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}.`);
+    const turnAccessMode = getRunAccessMode(chat.accessMode, mode);
+    this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}; mode=${mode}; model=${chat.modelId || "<default>"}; effort=${chat.effort}; speed=${options.omitSpeed ? "<omitted>" : chat.speed}.`);
     return this.requireRpcClient().request("turn/start", {
       threadId: chat.backendThreadId,
       input,
       cwd,
-      approvalPolicy: getApprovalPolicy(chat.accessMode),
+      approvalPolicy: getApprovalPolicy(turnAccessMode),
       approvalsReviewer: "user",
-      sandboxPolicy: getTurnSandboxPolicy(chat.accessMode, cwd),
-      model: null,
-      effort: "medium"
+      sandboxPolicy: getTurnSandboxPolicy(turnAccessMode, cwd),
+      model: chat.modelId ?? null,
+      effort: chat.effort,
+      ...(!options.omitSpeed ? { speed: chat.speed } : {})
     }, 30_000);
+  }
+
+  private async startTurnWithFallback(
+    chatId: string,
+    prompt: string,
+    mode: ChatRunMode,
+    explicitContextBlocks: readonly ContextBlock[] = []
+  ): Promise<unknown> {
+    try {
+      return await this.startTurn(chatId, prompt, mode, explicitContextBlocks);
+    } catch (error) {
+      if (isSpeedError(error)) {
+        this.options.logger.warn(`turn/start speed unsupported by runtime; retrying without speed: ${normalizeErrorMessage(error)}`);
+        try {
+          return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, { omitSpeed: true });
+        } catch (retryError) {
+          if (!isModelOrEffortError(retryError)) {
+            throw retryError;
+          }
+          this.options.logger.warn(`turn/start model/effort rejected after speed fallback; retrying with defaults: ${normalizeErrorMessage(retryError)}`);
+          this.options.state.setChatModel(chatId, null, "5.5");
+          this.options.state.setChatEffort(chatId, "medium");
+          return this.startTurn(chatId, prompt, mode, explicitContextBlocks, { omitSpeed: true });
+        }
+      }
+      if (!isModelOrEffortError(error)) {
+        throw error;
+      }
+      this.options.logger.warn(`turn/start model/effort rejected; retrying with defaults: ${normalizeErrorMessage(error)}`);
+      this.options.state.setChatModel(chatId, null, "5.5");
+      this.options.state.setChatEffort(chatId, "medium");
+      return this.startTurn(chatId, prompt, mode, explicitContextBlocks);
+    }
   }
 
   async stop(): Promise<void> {
@@ -478,6 +690,70 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.options.state.setRuntime({
       status: "notStarted",
       label: "Backend остановлен"
+    });
+    this.options.onDidChange();
+  }
+
+  private cancelEpoch(chatId: string): number {
+    return this.cancelEpochByChat.get(chatId) ?? 0;
+  }
+
+  private bumpCancelEpoch(chatId: string): void {
+    this.cancelEpochByChat.set(chatId, this.cancelEpoch(chatId) + 1);
+  }
+
+  private throwIfCancelled(chatId: string, epoch: number): void {
+    if (this.cancelEpoch(chatId) !== epoch || this.cancellingChatIds.has(chatId)) {
+      throw new UserCancelledTurnError();
+    }
+  }
+
+  private cleanupCancelledChat(chatId: string, turnId?: string | null): void {
+    if (turnId) {
+      this.cancelledTurnIds.add(turnId);
+      this.activeTurnChatId.delete(turnId);
+    }
+    this.declinePendingApprovalsForChat(chatId);
+    this.options.state.updateChat(chatId, {
+      status: "idle",
+      activeTurnId: null,
+      pendingApproval: null,
+      activeRunMode: null
+    }, "immediate");
+    this.options.onDidChange();
+    this.options.onDidChangeChat(chatId);
+  }
+
+  private declinePendingApprovalsForChat(chatId: string): void {
+    for (const [approvalId, pending] of this.pendingApprovals.entries()) {
+      if (pending.chatId !== chatId) {
+        continue;
+      }
+      this.pendingApprovals.delete(approvalId);
+      pending.resolve(false);
+    }
+    this.options.state.setPendingApproval(chatId, null);
+  }
+
+  private async requestTurnCancel(threadId: string, turnId: string): Promise<void> {
+    const rpcClient = this.requireRpcClient();
+    try {
+      await rpcClient.request("turn/cancel", { threadId, turnId }, 5_000);
+      return;
+    } catch (error) {
+      this.options.logger.warn(`turn/cancel with threadId failed, retrying turn-only payload: ${normalizeErrorMessage(error)}`);
+    }
+    await rpcClient.request("turn/cancel", { turnId }, 5_000);
+  }
+
+  private async stopBackendAfterCancel(): Promise<void> {
+    this.suppressNextExitAsCancel = true;
+    this.rpcClient?.dispose();
+    this.rpcClient = undefined;
+    await this.processManager.stop();
+    this.options.state.setRuntime({
+      status: "notStarted",
+      label: "Backend остановлен после отмены запроса"
     });
     this.options.onDidChange();
   }
@@ -573,6 +849,14 @@ export class CodexRuntimeController implements vscode.Disposable {
 
   private handleNotification(notification: JsonRpcNotification): void {
     this.options.logger.info(`notification ${notification.method}`);
+    const notificationTurnId = extractTurnId(notification.params);
+    if (notificationTurnId && this.cancelledTurnIds.has(notificationTurnId)) {
+      if (notification.method === "turn/completed" || notification.method === "error") {
+        this.cancelledTurnIds.delete(notificationTurnId);
+      }
+      this.options.logger.info(`Ignored notification for cancelled turn ${notificationTurnId}: ${notification.method}.`);
+      return;
+    }
 
     if (notification.method === "account/login/completed") {
       const completed = normalizeLoginCompletedNotification(notification.params);
@@ -606,6 +890,11 @@ export class CodexRuntimeController implements vscode.Disposable {
       const turnId = extractTurnId(notification.params);
       const chatId = this.findChatIdForNotification(notification.params);
       if (turnId && chatId) {
+        if (this.cancellingChatIds.has(chatId)) {
+          this.cancelledTurnIds.add(turnId);
+          this.activeTurnChatId.delete(turnId);
+          return;
+        }
         this.activeTurnChatId.set(turnId, chatId);
         this.options.state.updateChat(chatId, {
           activeTurnId: turnId,
@@ -663,7 +952,8 @@ export class CodexRuntimeController implements vscode.Disposable {
         this.options.state.updateChat(chatId, {
           activeTurnId: null,
           status: status === "completed" || !errorMessage ? "idle" : "error",
-          pendingApproval: null
+          pendingApproval: null,
+          activeRunMode: null
         }, "immediate");
         if (errorMessage) {
           this.options.state.addTranscriptItem(chatId, "system", errorMessage, "immediate");
@@ -691,10 +981,15 @@ export class CodexRuntimeController implements vscode.Disposable {
     if (notification.method === "error") {
       const message = extractErrorNotificationMessage(notification.params);
       const chatId = this.findChatIdForNotification(notification.params) ?? this.latestChatId;
+      if (chatId && (this.cancellingChatIds.has(chatId) || this.options.state.getChat(chatId)?.status === "cancelling")) {
+        this.options.logger.info(`Ignored app-server error while cancelling chat ${chatId}: ${message}`);
+        return;
+      }
       if (chatId) {
         this.options.state.updateChat(chatId, {
           status: "error",
-          activeTurnId: null
+          activeTurnId: null,
+          activeRunMode: null
         });
         this.options.state.addTranscriptItem(chatId, "system", message);
         this.options.onDidChangeChat(chatId);
@@ -735,6 +1030,8 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
+    const wasCancelFallback = this.suppressNextExitAsCancel;
+    this.suppressNextExitAsCancel = false;
     for (const pending of this.pendingApprovals.values()) {
       pending.resolve(false);
       this.options.state.setPendingApproval(pending.chatId, null);
@@ -743,11 +1040,17 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.rpcClient?.dispose();
     this.rpcClient = undefined;
     this.options.state.setRuntime({
-      status: "error",
-      label: `Backend остановлен${code === null ? "" : `, код ${code}`}${signal ? `, ${signal}` : ""}`
+      status: wasCancelFallback ? "notStarted" : "error",
+      label: wasCancelFallback
+        ? "Backend остановлен после отмены запроса"
+        : `Backend остановлен${code === null ? "" : `, код ${code}`}${signal ? `, ${signal}` : ""}`
     });
     this.options.onDidChange();
-    this.options.logger.warn(`codex app-server exited: code=${code ?? "-"} signal=${signal ?? "-"}.`);
+    if (wasCancelFallback) {
+      this.options.logger.info(`codex app-server stopped after cancel fallback: code=${code ?? "-"} signal=${signal ?? "-"}.`);
+    } else {
+      this.options.logger.warn(`codex app-server exited: code=${code ?? "-"} signal=${signal ?? "-"}.`);
+    }
   }
 
   private requireRpcClient(): JsonRpcClient {
@@ -790,15 +1093,19 @@ function resolveBundledRuntimePath(context: vscode.ExtensionContext): string {
 }
 
 function getApprovalPolicy(accessMode: ChatAccessMode): string {
-  return accessMode === "read-only" ? "never" : "unlessTrusted";
+  return accessMode === "read-only" ? "never" : "on-request";
+}
+
+function getRunAccessMode(accessMode: ChatAccessMode, mode: ChatRunMode): ChatAccessMode {
+  return mode === "planning" ? "read-only" : accessMode;
 }
 
 function getThreadSandbox(accessMode: ChatAccessMode): string {
   if (accessMode === "workspace-write") {
-    return "workspaceWrite";
+    return "workspace-write";
   }
   if (accessMode === "danger-full-access") {
-    return "dangerFullAccess";
+    return "danger-full-access";
   }
   return "read-only";
 }
@@ -1032,8 +1339,69 @@ function isThreadNotFoundError(error: unknown): boolean {
   return message.includes("turn/start") && message.includes("thread not found");
 }
 
+function isModelOrEffortError(error: unknown): boolean {
+  const message = normalizeErrorMessage(error).toLowerCase();
+  return (
+    message.includes("unknown model") ||
+    message.includes("invalid model") ||
+    message.includes("model") && message.includes("invalid request") ||
+    message.includes("unknown variant") && message.includes("effort") ||
+    message.includes("invalid effort")
+  );
+}
+
+function isSpeedError(error: unknown): boolean {
+  const message = normalizeErrorMessage(error).toLowerCase();
+  return (
+    message.includes("speed") && message.includes("invalid request") ||
+    message.includes("unknown field") && message.includes("speed") ||
+    message.includes("unknown variant") && message.includes("speed") ||
+    message.includes("invalid speed")
+  );
+}
+
 function normalizeErrorMessage(error: unknown): string {
   return redact(error instanceof Error ? error.message : "Неизвестная ошибка Codex runtime.");
+}
+
+function normalizeModelOptions(value: unknown): ModelOption[] {
+  const items = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.models)
+      ? value.models
+      : isRecord(value) && Array.isArray(value.items)
+        ? value.items
+        : [];
+  const normalized: ModelOption[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    const record = isRecord(item) ? item : {};
+    const id = getString(record.id) || getString(record.model) || getString(record.name);
+    const label = getString(record.label) || getString(record.displayName) || getString(record.title) || prettifyModelLabel(id);
+    if (!id && !label) {
+      continue;
+    }
+    const option = { id: id || null, label: label || id };
+    const key = `${option.id ?? "<default>"}:${option.label}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      normalized.push(option);
+    }
+  }
+
+  return normalized.length ? normalized : FALLBACK_MODEL_OPTIONS;
+}
+
+function prettifyModelLabel(modelId: string): string {
+  if (!modelId) {
+    return "";
+  }
+  return modelId
+    .replace(/^gpt-/i, "GPT-")
+    .replace(/-codex/i, " Codex")
+    .replace(/-spark/i, " Spark")
+    .replace(/-/g, ".");
 }
 
 function normalizeApprovalRequest(

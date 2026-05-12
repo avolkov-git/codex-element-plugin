@@ -85,6 +85,12 @@ class ChatPanelManager {
         });
         this.setupPanel(panel);
     }
+    closeIfActiveChat(chatId) {
+        if (this.state.getActiveChatId() !== chatId) {
+            return;
+        }
+        this.panel?.dispose();
+    }
     postSnapshot(chatId) {
         if (chatId && chatId !== this.state.getActiveChatId()) {
             return;
@@ -160,6 +166,100 @@ class ChatPanelManager {
             await this.handlers.toggleRules(chatId);
             return;
         }
+        if (message.command === "chat.rules.open") {
+            await this.handlers.openRules();
+            return;
+        }
+        if (message.command === "chat.restore") {
+            const chatId = this.state.getActiveChatId();
+            if (!chatId) {
+                return;
+            }
+            await this.handlers.restoreChat(chatId);
+            return;
+        }
+        if (message.command === "chat.header.toggle") {
+            await this.handlers.setChatHeaderMode(this.state.getChatHeaderMode() === "collapsed" ? "expanded" : "collapsed");
+            return;
+        }
+        if (message.command === "chat.access.set") {
+            const chatId = this.state.getActiveChatId();
+            const accessMode = isObject(message.payload) ? parseAccessMode(message.payload.accessMode) : undefined;
+            if (!chatId || !accessMode) {
+                return;
+            }
+            this.handlers.setAccessMode(chatId, accessMode);
+            return;
+        }
+        if (message.command === "chat.model.set") {
+            const chatId = this.state.getActiveChatId();
+            const model = isObject(message.payload) ? parseModelSelection(message.payload) : undefined;
+            if (!chatId || !model) {
+                return;
+            }
+            this.handlers.setModel(chatId, model.modelId, model.modelLabel);
+            return;
+        }
+        if (message.command === "chat.effort.set") {
+            const chatId = this.state.getActiveChatId();
+            const effort = isObject(message.payload) ? parseEffort(message.payload.effort) : undefined;
+            if (!chatId || !effort) {
+                return;
+            }
+            this.handlers.setEffort(chatId, effort);
+            return;
+        }
+        if (message.command === "chat.speed.set") {
+            const chatId = this.state.getActiveChatId();
+            const speed = isObject(message.payload) ? parseSpeed(message.payload.speed) : undefined;
+            if (!chatId || !speed) {
+                return;
+            }
+            this.handlers.setSpeed(chatId, speed);
+            return;
+        }
+        if (message.command === "chat.models.load") {
+            await this.handlers.loadModels();
+            return;
+        }
+        if (message.command === "chat.context.projectDetails") {
+            panel.webview.postMessage({
+                type: "event",
+                event: "chat.context.details",
+                payload: await this.handlers.getProjectContextDetails()
+            });
+            return;
+        }
+        if (message.command === "chat.context.docsDetails") {
+            panel.webview.postMessage({
+                type: "event",
+                event: "chat.context.details",
+                payload: await this.handlers.getDocsContextDetails()
+            });
+            return;
+        }
+        if (message.command === "chat.plan.revise") {
+            panel.webview.postMessage({
+                type: "event",
+                event: "chat.plan.reviseDraft",
+                payload: isObject(message.payload) && typeof message.payload.planText === "string" ? message.payload.planText : ""
+            });
+            return;
+        }
+        if (message.command === "chat.plan.implement") {
+            const chatId = this.state.getActiveChatId();
+            const planText = isObject(message.payload) && typeof message.payload.planText === "string" ? message.payload.planText : "";
+            if (!chatId || !planText.trim()) {
+                panel.webview.postMessage({
+                    type: "event",
+                    event: "chat.error",
+                    payload: "План не найден."
+                });
+                return;
+            }
+            await this.handlers.implementPlan(chatId, planText);
+            return;
+        }
         if (message.command === "approval.approve" || message.command === "approval.deny") {
             const chatId = this.state.getActiveChatId();
             if (!chatId || !isObject(message.payload) || typeof message.payload.approvalId !== "string") {
@@ -169,6 +269,14 @@ class ChatPanelManager {
             return;
         }
         this.logger.info(`Chat panel command: ${message.command}`);
+        if (message.command === "chat.cancel") {
+            const chatId = this.state.getActiveChatId();
+            if (!chatId) {
+                return;
+            }
+            await this.handlers.cancelTurn(chatId);
+            return;
+        }
         if (message.command === "chat.send") {
             const chatId = this.state.getActiveChatId();
             if (!chatId) {
@@ -176,6 +284,15 @@ class ChatPanelManager {
                     type: "event",
                     event: "chat.error",
                     payload: "Выберите диалог в sidebar или создайте новый."
+                });
+                return;
+            }
+            const chat = this.state.getChat(chatId);
+            if (chat?.archivedAt) {
+                panel.webview.postMessage({
+                    type: "event",
+                    event: "chat.error",
+                    payload: "Диалог в архиве. Восстановите его, чтобы продолжить."
                 });
                 return;
             }
@@ -187,7 +304,8 @@ class ChatPanelManager {
                 });
                 return;
             }
-            await this.handlers.sendPrompt(chatId, message.payload.prompt);
+            const mode = parseRunMode(message.payload.mode);
+            await this.handlers.sendPrompt(chatId, message.payload.prompt, mode);
             return;
         }
         panel.webview.postMessage({
@@ -209,5 +327,35 @@ function parsePanelState(rawState) {
 }
 function isObject(value) {
     return typeof value === "object" && value !== null;
+}
+function parseAccessMode(value) {
+    if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
+        return value;
+    }
+    return undefined;
+}
+function parseEffort(value) {
+    if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+        return value;
+    }
+    return undefined;
+}
+function parseSpeed(value) {
+    if (value === "standard" || value === "fast") {
+        return value;
+    }
+    return undefined;
+}
+function parseRunMode(value) {
+    return value === "planning" || value === "implementPlan" ? value : "normal";
+}
+function parseModelSelection(payload) {
+    const rawModelId = payload.modelId;
+    const modelId = typeof rawModelId === "string" && rawModelId.trim() ? rawModelId.trim() : null;
+    const modelLabel = typeof payload.modelLabel === "string" && payload.modelLabel.trim() ? payload.modelLabel.trim() : "";
+    if (!modelLabel) {
+        return undefined;
+    }
+    return { modelId, modelLabel };
 }
 //# sourceMappingURL=chatPanelManager.js.map

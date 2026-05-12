@@ -114,11 +114,7 @@ class ContextRouterService {
     }
     buildServiceEnvelope(options) {
         const sections = options.blocks.map((block) => {
-            const title = block.source === "project"
-                ? "PROJECT CONTEXT"
-                : block.source === "rules"
-                    ? "PROJECT RULES"
-                    : "DOCS CONTEXT";
+            const title = getBlockTitle(block.source);
             return `[${title}]\n${block.text.trim()}`;
         });
         return [
@@ -135,8 +131,59 @@ class ContextRouterService {
             options.userPrompt
         ].join("\n");
     }
+    buildPlanningEnvelope(options) {
+        const sections = options.blocks.map((block) => {
+            const title = getBlockTitle(block.source);
+            return `[${title}]\n${block.text.trim()}`;
+        });
+        return [
+            "СЛУЖЕБНЫЙ РЕЖИМ ПЛАНИРОВАНИЯ CODEX ELEMENT",
+            "Ты работаешь как планировщик, а не как исполнитель.",
+            "Не изменяй файлы, не запускай команды, не проси approvals и не выполняй реализацию.",
+            "Можно изучать предоставленный IDE контекст и задавать уточняющие вопросы пользователю.",
+            "Если информации недостаточно, задай короткий уточняющий вопрос и предложи 2-3 варианта ответа.",
+            "Если информации достаточно, верни финальный план строго в таком формате:",
+            "<codex_plan>",
+            "# Короткое название плана",
+            "",
+            "## Summary",
+            "Кратко опиши цель.",
+            "",
+            "## Key Changes",
+            "- Конкретные изменения.",
+            "",
+            "## Test Plan",
+            "- Проверки.",
+            "",
+            "## Assumptions",
+            "- Явные допущения.",
+            "</codex_plan>",
+            "Не добавляй текст до или после блока <codex_plan>, если план финальный.",
+            "",
+            ...sections,
+            "",
+            "[ПОСЛЕДНИЙ ЗАПРОС ПОЛЬЗОВАТЕЛЯ]",
+            options.userPrompt
+        ].join("\n");
+    }
 }
 exports.ContextRouterService = ContextRouterService;
+function getBlockTitle(source) {
+    switch (source) {
+        case "baseRules":
+            return "BASE CODEX ELEMENT RULES";
+        case "project":
+            return "PROJECT CONTEXT";
+        case "rules":
+            return "PROJECT RULES";
+        case "docs":
+            return "DOCS CONTEXT";
+        case "editorFile":
+            return "IDE FILE CONTEXT";
+        case "editorSelection":
+            return "IDE SELECTION CONTEXT";
+    }
+}
 function normalizePrompt(prompt) {
     return prompt.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
 }

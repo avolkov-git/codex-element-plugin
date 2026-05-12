@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import { DocsContextDetails } from "./types";
 
 interface ServerSettingsFile {
   version: number;
@@ -102,6 +103,39 @@ export class SettingsService {
       return { status: "error", label: "Документация недоступна" };
     }
     return { status: "configured", label: "Документация активна" };
+  }
+
+  getDocsContextDetails(): DocsContextDetails {
+    const docs = this.getDocsSettingsView();
+    if (!docs.normalizedPath) {
+      return {
+        kind: "docs",
+        status: "notConfigured",
+        label: "Документация не настроена",
+        source: "none",
+        error: "Документация не используется: путь не задан."
+      };
+    }
+
+    if (docs.validationMessage) {
+      return {
+        kind: "docs",
+        status: "error",
+        label: "Документация недоступна",
+        source: "none",
+        normalizedPath: docs.normalizedPath,
+        error: docs.validationMessage
+      };
+    }
+
+    return {
+      kind: "docs",
+      status: "configured",
+      label: "Нормализованная документация",
+      source: "normalized",
+      normalizedPath: docs.normalizedPath,
+      indexPath: resolveDocsIndexPath(docs.normalizedPath)
+    };
   }
 
   getConfigRoot(): string {
@@ -342,6 +376,11 @@ function validateDocsPath(normalizedPath: string): string {
     return "Каталог нормализованной документации недоступен.";
   }
   return "";
+}
+
+function resolveDocsIndexPath(normalizedPath: string): string {
+  const highPriority = path.join(normalizedPath, "index", "pages.high-priority.jsonl");
+  return fs.existsSync(highPriority) ? highPriority : path.join(normalizedPath, "index", "pages.jsonl");
 }
 
 function proxyPasswordSecretKey(): string {

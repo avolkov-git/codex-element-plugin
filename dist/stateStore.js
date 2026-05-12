@@ -1,12 +1,24 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.StateStore = void 0;
+const FALLBACK_MODEL_OPTIONS = [
+    { id: null, label: "5.5" },
+    { id: "gpt-5.5", label: "GPT-5.5" },
+    { id: "gpt-5.4", label: "GPT-5.4" },
+    { id: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
+    { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
+    { id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
+    { id: "gpt-5.2", label: "GPT-5.2" }
+];
 class StateStore {
     constructor(onDidMutate) {
         this.onDidMutate = onDidMutate;
         this.version = 1;
         this.chats = [];
         this.transcripts = new Map();
+        this.modelOptions = FALLBACK_MODEL_OPTIONS;
+        this.modelOptionsStatus = "idle";
+        this.chatHeaderMode = "collapsed";
         this.auth = {
             status: "notAuthenticated",
             accountLabel: "Не авторизованы",
@@ -58,6 +70,19 @@ class StateStore {
             activeChatId: this.activeChatId
         };
     }
+    getPendingApprovalCount() {
+        return this.chats.reduce((count, chat) => count + (chat.pendingApproval ? 1 : 0), 0);
+    }
+    setChatHeaderMode(mode) {
+        if (this.chatHeaderMode === mode) {
+            return;
+        }
+        this.chatHeaderMode = mode;
+        this.version += 1;
+    }
+    getChatHeaderMode() {
+        return this.chatHeaderMode;
+    }
     setAuth(auth) {
         this.auth = {
             ...this.auth,
@@ -102,14 +127,16 @@ class StateStore {
         return {
             kind: "chat",
             version: this.version,
+            chatHeaderMode: this.chatHeaderMode,
             chat,
             auth: sidebar.auth,
             runtime: sidebar.runtime,
             docs: sidebar.docs,
             projectContext: sidebar.projectContext,
             rulesContext: sidebar.rulesContext,
-            transcript: this.transcripts.get(chat.id) ?? [],
-            shellNotice: "Read-only режим: Codex отвечает в чате, но approvals, diff и правки файлов пока отключены."
+            modelOptions: this.modelOptions,
+            modelOptionsStatus: this.modelOptionsStatus,
+            transcript: this.transcripts.get(chat.id) ?? []
         };
     }
     getActiveChatId() {
@@ -128,14 +155,21 @@ class StateStore {
             title: title?.trim() || defaultTitle,
             createdAt: now,
             updatedAt: now,
+            archivedAt: null,
             lastReadAt: now,
             hasUnread: false,
             status: "idle",
             accessMode: kind === "project" ? "workspace-write" : "read-only",
+            modelId: null,
+            modelLabel: "5.5",
+            effort: "medium",
+            speed: "standard",
             rulesEnabled: kind === "project",
             pendingApproval: null,
+            backendThreadAccessMode: null,
             backendThreadId: null,
-            activeTurnId: null
+            activeTurnId: null,
+            activeRunMode: null
         };
         this.chats.unshift(chat);
         this.activeChatId = chat.id;
@@ -160,8 +194,73 @@ class StateStore {
             this.emitMutation("debounced");
         }
     }
+    clearActiveChat(chatId) {
+        if (!this.activeChatId || (chatId && this.activeChatId !== chatId)) {
+            return;
+        }
+        this.activeChatId = undefined;
+        this.version += 1;
+        this.emitMutation("immediate");
+    }
     getChat(chatId) {
         return this.chats.find((chat) => chat.id === chatId);
+    }
+    archiveChat(chatId) {
+        const chat = this.getChat(chatId);
+        if (!chat) {
+            return undefined;
+        }
+        if (chat.archivedAt) {
+            return chat;
+        }
+        const updated = {
+            ...chat,
+            archivedAt: new Date().toISOString(),
+            hasUnread: false,
+            pendingApproval: null
+        };
+        this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+        if (this.activeChatId === chatId) {
+            this.activeChatId = undefined;
+        }
+        this.version += 1;
+        this.emitMutation("immediate");
+        return updated;
+    }
+    restoreChat(chatId) {
+        const chat = this.getChat(chatId);
+        if (!chat) {
+            return undefined;
+        }
+        if (!chat.archivedAt) {
+            this.activeChatId = chatId;
+            this.version += 1;
+            this.emitMutation("immediate");
+            return chat;
+        }
+        const updated = {
+            ...chat,
+            archivedAt: null
+        };
+        this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+        this.activeChatId = chatId;
+        this.version += 1;
+        this.emitMutation("immediate");
+        return updated;
+    }
+    deleteChat(chatId) {
+        const chat = this.getChat(chatId);
+        if (!chat || !chat.archivedAt) {
+            return false;
+        }
+        this.chats = this.chats.filter((candidate) => candidate.id !== chatId);
+        this.transcripts.delete(chatId);
+        if (this.activeChatId === chatId) {
+            this.activeChatId = undefined;
+        }
+        this.version += 1;
+        this.emitMutation("immediate");
+        return true;
     }
     renameChat(chatId, title) {
         const chat = this.getChat(chatId);
@@ -194,6 +293,77 @@ class StateStore {
         this.version += 1;
         this.emitMutation("immediate");
         return updated;
+    }
+    setChatAccessMode(chatId, accessMode) {
+        const chat = this.getChat(chatId);
+        if (!chat || chat.accessMode === accessMode) {
+            return chat;
+        }
+        const updated = {
+            ...chat,
+            accessMode
+        };
+        this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+        this.version += 1;
+        this.emitMutation("immediate");
+        return updated;
+    }
+    setChatModel(chatId, modelId, modelLabel) {
+        const chat = this.getChat(chatId);
+        const label = modelLabel.trim() || "5.5";
+        if (!chat || (chat.modelId === modelId && chat.modelLabel === label)) {
+            return chat;
+        }
+        const updated = {
+            ...chat,
+            modelId,
+            modelLabel: label,
+            backendThreadAccessMode: null,
+            backendThreadId: null,
+            activeTurnId: null
+        };
+        this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+        this.version += 1;
+        this.emitMutation("immediate");
+        return updated;
+    }
+    setChatEffort(chatId, effort) {
+        const chat = this.getChat(chatId);
+        if (!chat || chat.effort === effort) {
+            return chat;
+        }
+        const updated = {
+            ...chat,
+            effort
+        };
+        this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+        this.version += 1;
+        this.emitMutation("immediate");
+        return updated;
+    }
+    setChatSpeed(chatId, speed) {
+        const chat = this.getChat(chatId);
+        if (!chat || chat.speed === speed) {
+            return chat;
+        }
+        const updated = {
+            ...chat,
+            speed
+        };
+        this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
+        this.version += 1;
+        this.emitMutation("immediate");
+        return updated;
+    }
+    setModelOptions(options, status) {
+        const normalized = normalizeModelOptions(options);
+        this.modelOptions = normalized.length ? normalized : FALLBACK_MODEL_OPTIONS;
+        this.modelOptionsStatus = status;
+        this.version += 1;
+    }
+    setModelOptionsStatus(status) {
+        this.modelOptionsStatus = status;
+        this.version += 1;
     }
     setPendingApproval(chatId, pendingApproval) {
         const status = pendingApproval ? "waitingApproval" : this.getChat(chatId)?.status === "waitingApproval" ? "running" : undefined;
@@ -307,13 +477,20 @@ class StateStore {
     replaceChatHistory(history) {
         this.chats = history?.chats.map((chat) => ({
             ...chat,
+            archivedAt: chat.archivedAt ?? null,
             lastReadAt: chat.lastReadAt || chat.updatedAt,
             hasUnread: Boolean(chat.hasUnread),
             accessMode: chat.accessMode ?? (chat.kind === "project" ? "workspace-write" : "read-only"),
+            modelId: typeof chat.modelId === "string" ? chat.modelId : null,
+            modelLabel: chat.modelLabel || "5.5",
+            effort: chat.effort ?? "medium",
+            speed: chat.speed ?? "standard",
             rulesEnabled: chat.kind === "project" ? chat.rulesEnabled !== false : false,
             pendingApproval: null,
+            backendThreadAccessMode: chat.backendThreadAccessMode ?? null,
             status: "idle",
-            activeTurnId: null
+            activeTurnId: null,
+            activeRunMode: null
         })) ?? [];
         this.activeChatId = history?.activeChatId && this.chats.some((chat) => chat.id === history.activeChatId)
             ? history.activeChatId
@@ -330,8 +507,9 @@ class StateStore {
         const chats = this.chats.map((chat) => ({
             ...chat,
             pendingApproval: null,
-            status: chat.status === "waitingApproval" || chat.status === "running" ? "idle" : chat.status,
-            activeTurnId: null
+            status: chat.status === "waitingApproval" || chat.status === "running" || chat.status === "cancelling" ? "idle" : chat.status,
+            activeTurnId: null,
+            activeRunMode: null
         }));
         return {
             version: 1,
@@ -345,4 +523,22 @@ class StateStore {
     }
 }
 exports.StateStore = StateStore;
+function normalizeModelOptions(options) {
+    const seen = new Set();
+    const normalized = [];
+    for (const option of options) {
+        const label = option.label.trim();
+        if (!label) {
+            continue;
+        }
+        const id = option.id?.trim() || null;
+        const key = `${id ?? "<default>"}:${label}`;
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        normalized.push({ id, label });
+    }
+    return normalized;
+}
 //# sourceMappingURL=stateStore.js.map

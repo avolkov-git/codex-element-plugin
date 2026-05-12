@@ -39,10 +39,11 @@ const panelIcon_1 = require("./panelIcon");
 const webviewHtml_1 = require("./webviewHtml");
 exports.SETTINGS_PANEL_VIEW_TYPE = "codexElement.settingsPanel";
 class SettingsPanelManager {
-    constructor(context, settings, normalizer, logger, onSettingsChanged) {
+    constructor(context, settings, normalizer, baseContext, logger, onSettingsChanged) {
         this.context = context;
         this.settings = settings;
         this.normalizer = normalizer;
+        this.baseContext = baseContext;
         this.logger = logger;
         this.onSettingsChanged = onSettingsChanged;
         this.normalizerProgress = {
@@ -118,6 +119,10 @@ class SettingsPanelManager {
             return;
         }
         this.logger.info(`Settings panel command: ${message.command}`);
+        if (message.command === "settings.docs.openBaseContext") {
+            await this.baseContext.openBaseContextFile();
+            return;
+        }
         if (message.command === "settings.docs.normalize") {
             await this.normalizeDocs(panel, message.payload);
             return;

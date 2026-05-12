@@ -86,6 +86,36 @@ class SettingsService {
         }
         return { status: "configured", label: "Документация активна" };
     }
+    getDocsContextDetails() {
+        const docs = this.getDocsSettingsView();
+        if (!docs.normalizedPath) {
+            return {
+                kind: "docs",
+                status: "notConfigured",
+                label: "Документация не настроена",
+                source: "none",
+                error: "Документация не используется: путь не задан."
+            };
+        }
+        if (docs.validationMessage) {
+            return {
+                kind: "docs",
+                status: "error",
+                label: "Документация недоступна",
+                source: "none",
+                normalizedPath: docs.normalizedPath,
+                error: docs.validationMessage
+            };
+        }
+        return {
+            kind: "docs",
+            status: "configured",
+            label: "Нормализованная документация",
+            source: "normalized",
+            normalizedPath: docs.normalizedPath,
+            indexPath: resolveDocsIndexPath(docs.normalizedPath)
+        };
+    }
     getConfigRoot() {
         return this.configRoot;
     }
@@ -301,6 +331,10 @@ function validateDocsPath(normalizedPath) {
         return "Каталог нормализованной документации недоступен.";
     }
     return "";
+}
+function resolveDocsIndexPath(normalizedPath) {
+    const highPriority = path.join(normalizedPath, "index", "pages.high-priority.jsonl");
+    return fs.existsSync(highPriority) ? highPriority : path.join(normalizedPath, "index", "pages.jsonl");
 }
 function proxyPasswordSecretKey() {
     return "codexElement.proxyPassword.server";

@@ -2,15 +2,27 @@ import * as vscode from "vscode";
 import { Logger } from "./logger";
 import { getCodexPanelIconPath } from "./panelIcon";
 import { StateStore } from "./stateStore";
-import { ChatPanelState, WebviewCommand } from "./types";
+import { ChatAccessMode, ChatEffort, ChatHeaderMode, ChatPanelState, ChatRunMode, ChatSpeed, DocsContextDetails, ProjectContextDetails, WebviewCommand } from "./types";
 import { renderWebviewHtml } from "./webviewHtml";
 
 export const CHAT_PANEL_VIEW_TYPE = "codexElement.chatPanel";
 
 export interface ChatPanelHandlers {
-  sendPrompt(chatId: string, prompt: string): Promise<void>;
+  sendPrompt(chatId: string, prompt: string, mode?: ChatRunMode, transcriptText?: string): Promise<void>;
+  cancelTurn(chatId: string): Promise<void>;
   markReadToBottom(chatId: string): void;
+  setAccessMode(chatId: string, accessMode: ChatAccessMode): void;
+  setModel(chatId: string, modelId: string | null, modelLabel: string): void;
+  setEffort(chatId: string, effort: ChatEffort): void;
+  setSpeed(chatId: string, speed: ChatSpeed): void;
+  setChatHeaderMode(mode: ChatHeaderMode): Promise<void> | void;
+  loadModels(): Promise<void>;
+  getProjectContextDetails(): Promise<ProjectContextDetails>;
+  getDocsContextDetails(): Promise<DocsContextDetails>;
   toggleRules(chatId: string): Promise<void>;
+  openRules(): Promise<void>;
+  restoreChat(chatId: string): Promise<void>;
+  implementPlan(chatId: string, planText: string): Promise<void>;
   resolveApproval(chatId: string, approvalId: string, approved: boolean): Promise<void> | void;
 }
 
@@ -74,6 +86,13 @@ export class ChatPanelManager {
     );
 
     this.setupPanel(panel);
+  }
+
+  closeIfActiveChat(chatId: string): void {
+    if (this.state.getActiveChatId() !== chatId) {
+      return;
+    }
+    this.panel?.dispose();
   }
 
   postSnapshot(chatId?: string): void {
@@ -163,6 +182,112 @@ export class ChatPanelManager {
       return;
     }
 
+    if (message.command === "chat.rules.open") {
+      await this.handlers.openRules();
+      return;
+    }
+
+    if (message.command === "chat.restore") {
+      const chatId = this.state.getActiveChatId();
+      if (!chatId) {
+        return;
+      }
+      await this.handlers.restoreChat(chatId);
+      return;
+    }
+
+    if (message.command === "chat.header.toggle") {
+      await this.handlers.setChatHeaderMode(this.state.getChatHeaderMode() === "collapsed" ? "expanded" : "collapsed");
+      return;
+    }
+
+    if (message.command === "chat.access.set") {
+      const chatId = this.state.getActiveChatId();
+      const accessMode = isObject(message.payload) ? parseAccessMode(message.payload.accessMode) : undefined;
+      if (!chatId || !accessMode) {
+        return;
+      }
+      this.handlers.setAccessMode(chatId, accessMode);
+      return;
+    }
+
+    if (message.command === "chat.model.set") {
+      const chatId = this.state.getActiveChatId();
+      const model = isObject(message.payload) ? parseModelSelection(message.payload) : undefined;
+      if (!chatId || !model) {
+        return;
+      }
+      this.handlers.setModel(chatId, model.modelId, model.modelLabel);
+      return;
+    }
+
+    if (message.command === "chat.effort.set") {
+      const chatId = this.state.getActiveChatId();
+      const effort = isObject(message.payload) ? parseEffort(message.payload.effort) : undefined;
+      if (!chatId || !effort) {
+        return;
+      }
+      this.handlers.setEffort(chatId, effort);
+      return;
+    }
+
+    if (message.command === "chat.speed.set") {
+      const chatId = this.state.getActiveChatId();
+      const speed = isObject(message.payload) ? parseSpeed(message.payload.speed) : undefined;
+      if (!chatId || !speed) {
+        return;
+      }
+      this.handlers.setSpeed(chatId, speed);
+      return;
+    }
+
+    if (message.command === "chat.models.load") {
+      await this.handlers.loadModels();
+      return;
+    }
+
+    if (message.command === "chat.context.projectDetails") {
+      panel.webview.postMessage({
+        type: "event",
+        event: "chat.context.details",
+        payload: await this.handlers.getProjectContextDetails()
+      });
+      return;
+    }
+
+    if (message.command === "chat.context.docsDetails") {
+      panel.webview.postMessage({
+        type: "event",
+        event: "chat.context.details",
+        payload: await this.handlers.getDocsContextDetails()
+      });
+      return;
+    }
+
+    if (message.command === "chat.plan.revise") {
+      panel.webview.postMessage({
+        type: "event",
+        event: "chat.plan.reviseDraft",
+        payload: isObject(message.payload) && typeof message.payload.planText === "string" ? message.payload.planText : ""
+      });
+      return;
+    }
+
+    if (message.command === "chat.plan.implement") {
+      const chatId = this.state.getActiveChatId();
+      const planText = isObject(message.payload) && typeof message.payload.planText === "string" ? message.payload.planText : "";
+      if (!chatId || !planText.trim()) {
+        panel.webview.postMessage({
+          type: "event",
+          event: "chat.error",
+          payload: "План не найден."
+        });
+        return;
+      }
+      await this.handlers.implementPlan(chatId, planText);
+      return;
+    }
+
     if (message.command === "approval.approve" || message.command === "approval.deny") {
       const chatId = this.state.getActiveChatId();
       if (!chatId || !isObject(message.payload) || typeof message.payload.approvalId !== "string") {
@@ -173,6 +298,15 @@ export class ChatPanelManager {
     }
 
     this.logger.info(`Chat panel command: ${message.command}`);
+    if (message.command === "chat.cancel") {
+      const chatId = this.state.getActiveChatId();
+      if (!chatId) {
+        return;
+      }
+      await this.handlers.cancelTurn(chatId);
+      return;
+    }
+
     if (message.command === "chat.send") {
       const chatId = this.state.getActiveChatId();
       if (!chatId) {
@@ -180,6 +314,15 @@ export class ChatPanelManager {
           type: "event",
           event: "chat.error",
           payload: "Выберите диалог в sidebar или создайте новый."
+        });
+        return;
+      }
+      const chat = this.state.getChat(chatId);
+      if (chat?.archivedAt) {
+        panel.webview.postMessage({
+          type: "event",
+          event: "chat.error",
+          payload: "Диалог в архиве. Восстановите его, чтобы продолжить."
         });
         return;
       }
@@ -192,7 +335,8 @@ export class ChatPanelManager {
         return;
       }
 
-      await this.handlers.sendPrompt(chatId, message.payload.prompt);
+      const mode = parseRunMode(message.payload.mode);
+      await this.handlers.sendPrompt(chatId, message.payload.prompt, mode);
       return;
     }
 
@@ -216,4 +360,39 @@ function parsePanelState(rawState: unknown): ChatPanelState | undefined {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function parseAccessMode(value: unknown): ChatAccessMode | undefined {
+  if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
+    return value;
+  }
+  return undefined;
+}
+
+function parseEffort(value: unknown): ChatEffort | undefined {
+  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+    return value;
+  }
+  return undefined;
+}
+
+function parseSpeed(value: unknown): ChatSpeed | undefined {
+  if (value === "standard" || value === "fast") {
+    return value;
+  }
+  return undefined;
+}
+
+function parseRunMode(value: unknown): ChatRunMode {
+  return value === "planning" || value === "implementPlan" ? value : "normal";
+}
+
+function parseModelSelection(payload: Record<string, unknown>): { modelId: string | null; modelLabel: string } | undefined {
+  const rawModelId = payload.modelId;
+  const modelId = typeof rawModelId === "string" && rawModelId.trim() ? rawModelId.trim() : null;
+  const modelLabel = typeof payload.modelLabel === "string" && payload.modelLabel.trim() ? payload.modelLabel.trim() : "";
+  if (!modelLabel) {
+    return undefined;
+  }
+  return { modelId, modelLabel };
 }

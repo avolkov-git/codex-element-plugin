@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { BaseContextService } from "./baseContextService";
 import { DocsNormalizerProgress, DocsNormalizerService } from "./docsNormalizerService";
 import { Logger } from "./logger";
 import { getCodexPanelIconPath } from "./panelIcon";
@@ -21,6 +22,7 @@ export class SettingsPanelManager {
     private readonly context: vscode.ExtensionContext,
     private readonly settings: SettingsService,
     private readonly normalizer: DocsNormalizerService,
+    private readonly baseContext: BaseContextService,
     private readonly logger: Logger,
     private readonly onSettingsChanged: (options?: { restartRuntime?: boolean }) => Promise<void>
   ) {}
@@ -106,6 +108,11 @@ export class SettingsPanelManager {
     }
 
     this.logger.info(`Settings panel command: ${message.command}`);
+
+    if (message.command === "settings.docs.openBaseContext") {
+      await this.baseContext.openBaseContextFile();
+      return;
+    }
 
     if (message.command === "settings.docs.normalize") {
       await this.normalizeDocs(panel, message.payload);

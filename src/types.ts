@@ -16,11 +16,24 @@ export type RuntimeStatus = "notStarted" | "starting" | "running" | "error";
 
 export type ChatKind = "project" | "general";
 
-export type ChatStatus = "idle" | "running" | "waitingApproval" | "error";
+export type ChatStatus = "idle" | "running" | "waitingApproval" | "cancelling" | "error";
 
 export type ChatAccessMode = "read-only" | "workspace-write" | "danger-full-access";
 
+export type ChatRunMode = "normal" | "planning" | "implementPlan";
+
+export type ChatEffort = "low" | "medium" | "high" | "xhigh";
+
+export type ChatSpeed = "standard" | "fast";
+
+export type ChatHeaderMode = "collapsed" | "expanded";
+
 export type ApprovalKind = "command" | "file" | "diff" | "network" | "unknown";
+
+export interface ModelOption {
+  id: string | null;
+  label: string;
+}
 
 export interface ApprovalRequest {
   id: string;
@@ -41,14 +54,21 @@ export interface ChatSummary {
   title: string;
   createdAt: string;
   updatedAt: string;
+  archivedAt: string | null;
   lastReadAt: string;
   hasUnread: boolean;
   status: ChatStatus;
   accessMode: ChatAccessMode;
+  modelId: string | null;
+  modelLabel: string;
+  effort: ChatEffort;
+  speed: ChatSpeed;
   rulesEnabled: boolean;
   pendingApproval: ApprovalRequest | null;
+  backendThreadAccessMode: ChatAccessMode | null;
   backendThreadId: string | null;
   activeTurnId: string | null;
+  activeRunMode: ChatRunMode | null;
 }
 
 export interface SidebarSnapshot {
@@ -97,15 +117,41 @@ export interface SidebarSnapshot {
 export interface ChatPanelSnapshot {
   kind: "chat";
   version: number;
+  chatHeaderMode: ChatHeaderMode;
   chat: ChatSummary;
   runtime: SidebarSnapshot["runtime"];
   auth: SidebarSnapshot["auth"];
   docs: SidebarSnapshot["docs"];
   projectContext: SidebarSnapshot["projectContext"];
   rulesContext: SidebarSnapshot["rulesContext"];
+  modelOptions: ModelOption[];
+  modelOptionsStatus: "idle" | "loading" | "ready" | "error";
   transcript: ChatTranscriptItem[];
-  shellNotice: string;
 }
+
+export interface ProjectContextDetails {
+  kind: "project";
+  status: ProjectContextStatus;
+  label: string;
+  workspaceRoot?: string;
+  indexPath?: string;
+  updatedAt?: string;
+  files: string[];
+  count: number;
+  error?: string;
+}
+
+export interface DocsContextDetails {
+  kind: "docs";
+  status: DocsStatus;
+  label: string;
+  source: "normalized" | "none";
+  normalizedPath?: string;
+  indexPath?: string;
+  error?: string;
+}
+
+export type ContextDetails = ProjectContextDetails | DocsContextDetails;
 
 export interface ChatTranscriptItem {
   id: string;

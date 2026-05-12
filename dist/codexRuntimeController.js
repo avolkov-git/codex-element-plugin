@@ -40,6 +40,21 @@ const vscode = __importStar(require("vscode"));
 const jsonRpcClient_1 = require("./jsonRpcClient");
 const logger_1 = require("./logger");
 const runtimeProcessManager_1 = require("./runtimeProcessManager");
+class UserCancelledTurnError extends Error {
+    constructor() {
+        super("Turn cancelled by user.");
+        this.name = "UserCancelledTurnError";
+    }
+}
+const FALLBACK_MODEL_OPTIONS = [
+    { id: null, label: "5.5" },
+    { id: "gpt-5.5", label: "GPT-5.5" },
+    { id: "gpt-5.4", label: "GPT-5.4" },
+    { id: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
+    { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
+    { id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
+    { id: "gpt-5.2", label: "GPT-5.2" }
+];
 class CodexRuntimeController {
     constructor(options) {
         this.options = options;
@@ -48,6 +63,10 @@ class CodexRuntimeController {
         this.activeThreadChatId = new Map();
         this.itemPayloads = new Map();
         this.pendingApprovals = new Map();
+        this.cancellingChatIds = new Set();
+        this.cancelledTurnIds = new Set();
+        this.cancelEpochByChat = new Map();
+        this.suppressNextExitAsCancel = false;
         this.restoreAttempted = false;
     }
     async restoreAccountIfAvailable() {
@@ -181,25 +200,36 @@ class CodexRuntimeController {
         await vscode.env.clipboard.writeText(code);
         this.updateAuth({ message: "Device Code скопирован." });
     }
-    async sendPrompt(chatId, prompt) {
+    async sendPrompt(chatId, prompt, mode = "normal", transcriptText, explicitContextBlocks = []) {
         const trimmed = prompt.trim();
         if (!trimmed) {
             return;
         }
+        const visiblePrompt = (transcriptText ?? trimmed).trim() || trimmed;
         const chat = this.options.state.getChat(chatId);
         if (!chat) {
             throw new Error("Чат не найден.");
         }
+        if (chat.archivedAt) {
+            this.options.logger.warn(`sendPrompt ignored for archived chat: ${chatId}.`);
+            return;
+        }
         this.latestChatId = chatId;
-        this.options.state.addTranscriptItem(chatId, "user", trimmed);
-        this.options.state.updateChat(chatId, { status: "running" });
+        const cancelEpoch = this.cancelEpoch(chatId);
+        this.options.state.addTranscriptItem(chatId, "user", visiblePrompt);
+        this.options.state.updateChat(chatId, { status: "running", activeRunMode: mode });
         this.options.onDidChange();
         this.options.onDidChangeChat(chatId);
         try {
             await this.ensureBackendProcess();
+            this.throwIfCancelled(chatId, cancelEpoch);
             await this.ensureAuthenticatedForTurn();
+            this.throwIfCancelled(chatId, cancelEpoch);
+            const requestedAccessMode = getRunAccessMode(this.options.state.getChat(chatId)?.accessMode ?? chat.accessMode, mode);
+            this.ensureBackendThreadMatchesAccess(chatId, requestedAccessMode);
             if (!this.options.state.getChat(chatId)?.backendThreadId) {
-                await this.startBackendThread(chatId);
+                await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
+                this.throwIfCancelled(chatId, cancelEpoch);
             }
             const existingThreadId = this.options.state.getChat(chatId)?.backendThreadId;
             if (existingThreadId) {
@@ -207,7 +237,7 @@ class CodexRuntimeController {
             }
             let turnResult;
             try {
-                turnResult = await this.startTurn(chatId, trimmed);
+                turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
             }
             catch (error) {
                 if (!isThreadNotFoundError(error) || !this.options.state.getChat(chatId)?.backendThreadId) {
@@ -220,33 +250,60 @@ class CodexRuntimeController {
                 }
                 this.options.state.updateChat(chatId, {
                     backendThreadId: null,
+                    backendThreadAccessMode: null,
                     activeTurnId: null
                 });
-                await this.startBackendThread(chatId);
-                turnResult = await this.startTurn(chatId, trimmed);
+                await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
+                this.throwIfCancelled(chatId, cancelEpoch);
+                turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
             }
+            this.throwIfCancelled(chatId, cancelEpoch);
             const turnId = extractTurnId(turnResult);
             if (turnId) {
                 this.activeTurnChatId.set(turnId, chatId);
             }
             this.options.state.updateChat(chatId, {
                 activeTurnId: turnId || null,
-                status: "running"
+                status: "running",
+                activeRunMode: mode
             });
             this.options.onDidChange();
             this.options.onDidChangeChat(chatId);
             this.options.logger.info(`turn/start accepted: turn=${turnId || "-"}.`);
         }
         catch (error) {
+            if (error instanceof UserCancelledTurnError || this.cancelEpoch(chatId) !== cancelEpoch) {
+                this.cleanupCancelledChat(chatId, this.options.state.getChat(chatId)?.activeTurnId ?? null);
+                this.options.logger.info(`sendPrompt cancelled: chat=${chatId}.`);
+                return;
+            }
             const message = normalizeErrorMessage(error);
             this.options.state.updateChat(chatId, {
                 status: "error",
-                activeTurnId: null
+                activeTurnId: null,
+                activeRunMode: null
             });
             this.options.state.addTranscriptItem(chatId, "system", message);
             this.options.onDidChange();
             this.options.onDidChangeChat(chatId);
             this.options.logger.error(`sendPrompt failed: ${message}`);
+        }
+    }
+    async loadModelOptions() {
+        try {
+            await this.ensureBackendProcess();
+            const result = await this.requireRpcClient().request("model/list", undefined, 10000);
+            const options = normalizeModelOptions(result);
+            if (!options.length) {
+                this.options.logger.warn("model/list returned no usable models; using fallback model list.");
+                return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
+            }
+            this.options.logger.info(`model/list completed: ${options.length} model options.`);
+            return { options, status: "ready" };
+        }
+        catch (error) {
+            this.options.logger.warn(`model/list failed; using fallback model list: ${normalizeErrorMessage(error)}`);
+            return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
         }
     }
     resolveApproval(chatId, approvalId, approved) {
@@ -261,6 +318,58 @@ class CodexRuntimeController {
         this.options.onDidChangeChat(chatId);
         pending.resolve(approved);
         this.options.logger.info(`Approval ${approved ? "accepted" : "declined"}: request=${approvalId}.`);
+    }
+    async cancelTurn(chatId) {
+        const chat = this.options.state.getChat(chatId);
+        if (!chat || !["running", "waitingApproval", "cancelling"].includes(chat.status)) {
+            return;
+        }
+        if (this.cancellingChatIds.has(chatId)) {
+            return;
+        }
+        this.cancellingChatIds.add(chatId);
+        this.bumpCancelEpoch(chatId);
+        this.latestChatId = chatId;
+        const threadId = chat.backendThreadId;
+        const turnId = chat.activeTurnId;
+        if (turnId) {
+            this.cancelledTurnIds.add(turnId);
+            this.activeTurnChatId.delete(turnId);
+        }
+        this.declinePendingApprovalsForChat(chatId);
+        this.options.state.updateChat(chatId, {
+            status: "cancelling",
+            activeTurnId: null,
+            pendingApproval: null,
+            activeRunMode: null
+        }, "immediate");
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+        try {
+            if (!this.rpcClient || !threadId || !turnId) {
+                throw new Error("turn/cancel недоступен: нет активного backend thread/turn.");
+            }
+            await this.requestTurnCancel(threadId, turnId);
+            this.options.logger.info(`turn/cancel accepted: chat=${chatId}; turn=${turnId}.`);
+        }
+        catch (error) {
+            this.options.logger.warn(`turn/cancel failed, stopping backend fallback: ${normalizeErrorMessage(error)}`);
+            await this.stopBackendAfterCancel();
+        }
+        finally {
+            this.cancellingChatIds.delete(chatId);
+            const current = this.options.state.getChat(chatId);
+            if (current?.status === "cancelling") {
+                this.options.state.updateChat(chatId, {
+                    status: "idle",
+                    activeTurnId: null,
+                    pendingApproval: null,
+                    activeRunMode: null
+                }, "immediate");
+                this.options.onDidChange();
+                this.options.onDidChangeChat(chatId);
+            }
+        }
     }
     async readAccount() {
         if (!this.processManager.isRunning) {
@@ -306,11 +415,25 @@ class CodexRuntimeController {
             throw new Error("Codex не авторизован. Сначала выполните DEVICE CODE или API KEY login.");
         }
     }
-    async startBackendThread(chatId) {
+    ensureBackendThreadMatchesAccess(chatId, requestedAccessMode) {
+        const chat = this.options.state.getChat(chatId);
+        if (!chat?.backendThreadId || !chat.backendThreadAccessMode || chat.backendThreadAccessMode === requestedAccessMode) {
+            return;
+        }
+        this.options.logger.info(`Backend thread access changed, recreating thread: chat=${chatId}; from=${chat.backendThreadAccessMode}; to=${requestedAccessMode}.`);
+        this.activeThreadChatId.delete(chat.backendThreadId);
+        this.options.state.updateChat(chatId, {
+            backendThreadId: null,
+            backendThreadAccessMode: null,
+            activeTurnId: null
+        });
+    }
+    async startBackendThread(chatId, accessOverride) {
         const rpcClient = this.requireRpcClient();
         const cwd = resolveWorkspaceCwd(this.options.context);
         const chat = this.options.state.getChat(chatId);
-        const accessMode = chat?.accessMode ?? (chat?.kind === "project" ? "workspace-write" : "read-only");
+        const accessMode = accessOverride ?? chat?.accessMode ?? (chat?.kind === "project" ? "workspace-write" : "read-only");
+        const model = chat?.modelId ?? null;
         const result = await rpcClient.request("thread/start", {
             cwd,
             approvalPolicy: getApprovalPolicy(accessMode),
@@ -318,19 +441,32 @@ class CodexRuntimeController {
             sandbox: getThreadSandbox(accessMode),
             sessionStartSource: "startup",
             serviceName: "codex_element_v1",
-            model: null
+            model
         });
         const threadId = extractThreadId(result);
         if (!threadId) {
             throw new Error("thread/start не вернул thread.id.");
         }
-        this.options.state.updateChat(chatId, { backendThreadId: threadId });
+        this.options.state.updateChat(chatId, { backendThreadId: threadId, backendThreadAccessMode: accessMode });
         this.activeThreadChatId.set(threadId, chatId);
         this.options.onDidChange();
         this.options.onDidChangeChat(chatId);
         this.options.logger.info(`thread/start completed: thread=${threadId}.`);
     }
-    async startTurn(chatId, prompt) {
+    async startBackendThreadWithFallback(chatId, accessOverride) {
+        try {
+            await this.startBackendThread(chatId, accessOverride);
+        }
+        catch (error) {
+            if (!isModelOrEffortError(error)) {
+                throw error;
+            }
+            this.options.logger.warn(`thread/start model rejected; retrying with default model: ${normalizeErrorMessage(error)}`);
+            this.options.state.setChatModel(chatId, null, "5.5");
+            await this.startBackendThread(chatId, accessOverride);
+        }
+    }
+    async startTurn(chatId, prompt, mode, explicitContextBlocks = [], options = {}) {
         const chat = this.options.state.getChat(chatId);
         if (!chat?.backendThreadId) {
             throw new Error("Backend thread не готов.");
@@ -338,10 +474,24 @@ class CodexRuntimeController {
         const cwd = resolveWorkspaceCwd(this.options.context);
         const routing = this.options.contextRouter.decide(prompt, chat.kind);
         const contextBlocks = [];
+        let baseRulesRoute = "skip";
         let projectRoute = "skip";
         let docsRoute = "skip";
         let rulesRoute = "skip";
         if (routing.shouldUseProjectContext) {
+            const baseRules = await this.options.baseContext.buildContext();
+            if (baseRules.text) {
+                baseRulesRoute = "added";
+                contextBlocks.push({
+                    source: "baseRules",
+                    text: baseRules.text,
+                    matchCount: baseRules.matchCount,
+                    mode: "matched"
+                });
+            }
+            else {
+                baseRulesRoute = "missing";
+            }
             this.options.state.setProjectContext({
                 status: "indexing",
                 label: "Проектный контекст индексируется"
@@ -413,21 +563,55 @@ class CodexRuntimeController {
         else {
             this.options.logger.info(`Rules context skipped by router: ${routing.reason}.`);
         }
-        const input = contextBlocks.length
-            ? [{ type: "text", text: this.options.contextRouter.buildServiceEnvelope({ userPrompt: prompt, blocks: contextBlocks }) }]
-            : [{ type: "text", text: prompt }];
-        this.options.logger.info(`context routed: project=${projectRoute}, docs=${docsRoute}, rules=${rulesRoute}, reason=${routing.reason}, blocks=${contextBlocks.length}.`);
-        this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}.`);
+        contextBlocks.push(...explicitContextBlocks);
+        const input = mode === "planning"
+            ? [{ type: "text", text: this.options.contextRouter.buildPlanningEnvelope({ userPrompt: prompt, blocks: contextBlocks }) }]
+            : contextBlocks.length
+                ? [{ type: "text", text: this.options.contextRouter.buildServiceEnvelope({ userPrompt: prompt, blocks: contextBlocks }) }]
+                : [{ type: "text", text: prompt }];
+        this.options.logger.info(`context routed: baseRules=${baseRulesRoute}, project=${projectRoute}, docs=${docsRoute}, rules=${rulesRoute}, explicit=${explicitContextBlocks.length}, reason=${routing.reason}, blocks=${contextBlocks.length}.`);
+        const turnAccessMode = getRunAccessMode(chat.accessMode, mode);
+        this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}; mode=${mode}; model=${chat.modelId || "<default>"}; effort=${chat.effort}; speed=${options.omitSpeed ? "<omitted>" : chat.speed}.`);
         return this.requireRpcClient().request("turn/start", {
             threadId: chat.backendThreadId,
             input,
             cwd,
-            approvalPolicy: getApprovalPolicy(chat.accessMode),
+            approvalPolicy: getApprovalPolicy(turnAccessMode),
             approvalsReviewer: "user",
-            sandboxPolicy: getTurnSandboxPolicy(chat.accessMode, cwd),
-            model: null,
-            effort: "medium"
+            sandboxPolicy: getTurnSandboxPolicy(turnAccessMode, cwd),
+            model: chat.modelId ?? null,
+            effort: chat.effort,
+            ...(!options.omitSpeed ? { speed: chat.speed } : {})
         }, 30000);
+    }
+    async startTurnWithFallback(chatId, prompt, mode, explicitContextBlocks = []) {
+        try {
+            return await this.startTurn(chatId, prompt, mode, explicitContextBlocks);
+        }
+        catch (error) {
+            if (isSpeedError(error)) {
+                this.options.logger.warn(`turn/start speed unsupported by runtime; retrying without speed: ${normalizeErrorMessage(error)}`);
+                try {
+                    return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, { omitSpeed: true });
+                }
+                catch (retryError) {
+                    if (!isModelOrEffortError(retryError)) {
+                        throw retryError;
+                    }
+                    this.options.logger.warn(`turn/start model/effort rejected after speed fallback; retrying with defaults: ${normalizeErrorMessage(retryError)}`);
+                    this.options.state.setChatModel(chatId, null, "5.5");
+                    this.options.state.setChatEffort(chatId, "medium");
+                    return this.startTurn(chatId, prompt, mode, explicitContextBlocks, { omitSpeed: true });
+                }
+            }
+            if (!isModelOrEffortError(error)) {
+                throw error;
+            }
+            this.options.logger.warn(`turn/start model/effort rejected; retrying with defaults: ${normalizeErrorMessage(error)}`);
+            this.options.state.setChatModel(chatId, null, "5.5");
+            this.options.state.setChatEffort(chatId, "medium");
+            return this.startTurn(chatId, prompt, mode, explicitContextBlocks);
+        }
     }
     async stop() {
         this.rpcClient?.dispose();
@@ -436,6 +620,64 @@ class CodexRuntimeController {
         this.options.state.setRuntime({
             status: "notStarted",
             label: "Backend остановлен"
+        });
+        this.options.onDidChange();
+    }
+    cancelEpoch(chatId) {
+        return this.cancelEpochByChat.get(chatId) ?? 0;
+    }
+    bumpCancelEpoch(chatId) {
+        this.cancelEpochByChat.set(chatId, this.cancelEpoch(chatId) + 1);
+    }
+    throwIfCancelled(chatId, epoch) {
+        if (this.cancelEpoch(chatId) !== epoch || this.cancellingChatIds.has(chatId)) {
+            throw new UserCancelledTurnError();
+        }
+    }
+    cleanupCancelledChat(chatId, turnId) {
+        if (turnId) {
+            this.cancelledTurnIds.add(turnId);
+            this.activeTurnChatId.delete(turnId);
+        }
+        this.declinePendingApprovalsForChat(chatId);
+        this.options.state.updateChat(chatId, {
+            status: "idle",
+            activeTurnId: null,
+            pendingApproval: null,
+            activeRunMode: null
+        }, "immediate");
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+    }
+    declinePendingApprovalsForChat(chatId) {
+        for (const [approvalId, pending] of this.pendingApprovals.entries()) {
+            if (pending.chatId !== chatId) {
+                continue;
+            }
+            this.pendingApprovals.delete(approvalId);
+            pending.resolve(false);
+        }
+        this.options.state.setPendingApproval(chatId, null);
+    }
+    async requestTurnCancel(threadId, turnId) {
+        const rpcClient = this.requireRpcClient();
+        try {
+            await rpcClient.request("turn/cancel", { threadId, turnId }, 5000);
+            return;
+        }
+        catch (error) {
+            this.options.logger.warn(`turn/cancel with threadId failed, retrying turn-only payload: ${normalizeErrorMessage(error)}`);
+        }
+        await rpcClient.request("turn/cancel", { turnId }, 5000);
+    }
+    async stopBackendAfterCancel() {
+        this.suppressNextExitAsCancel = true;
+        this.rpcClient?.dispose();
+        this.rpcClient = undefined;
+        await this.processManager.stop();
+        this.options.state.setRuntime({
+            status: "notStarted",
+            label: "Backend остановлен после отмены запроса"
         });
         this.options.onDidChange();
     }
@@ -514,6 +756,14 @@ class CodexRuntimeController {
     }
     handleNotification(notification) {
         this.options.logger.info(`notification ${notification.method}`);
+        const notificationTurnId = extractTurnId(notification.params);
+        if (notificationTurnId && this.cancelledTurnIds.has(notificationTurnId)) {
+            if (notification.method === "turn/completed" || notification.method === "error") {
+                this.cancelledTurnIds.delete(notificationTurnId);
+            }
+            this.options.logger.info(`Ignored notification for cancelled turn ${notificationTurnId}: ${notification.method}.`);
+            return;
+        }
         if (notification.method === "account/login/completed") {
             const completed = normalizeLoginCompletedNotification(notification.params);
             this.updateAuth({
@@ -543,6 +793,11 @@ class CodexRuntimeController {
             const turnId = extractTurnId(notification.params);
             const chatId = this.findChatIdForNotification(notification.params);
             if (turnId && chatId) {
+                if (this.cancellingChatIds.has(chatId)) {
+                    this.cancelledTurnIds.add(turnId);
+                    this.activeTurnChatId.delete(turnId);
+                    return;
+                }
                 this.activeTurnChatId.set(turnId, chatId);
                 this.options.state.updateChat(chatId, {
                     activeTurnId: turnId,
@@ -596,7 +851,8 @@ class CodexRuntimeController {
                 this.options.state.updateChat(chatId, {
                     activeTurnId: null,
                     status: status === "completed" || !errorMessage ? "idle" : "error",
-                    pendingApproval: null
+                    pendingApproval: null,
+                    activeRunMode: null
                 }, "immediate");
                 if (errorMessage) {
                     this.options.state.addTranscriptItem(chatId, "system", errorMessage, "immediate");
@@ -622,10 +878,15 @@ class CodexRuntimeController {
         if (notification.method === "error") {
             const message = extractErrorNotificationMessage(notification.params);
             const chatId = this.findChatIdForNotification(notification.params) ?? this.latestChatId;
+            if (chatId && (this.cancellingChatIds.has(chatId) || this.options.state.getChat(chatId)?.status === "cancelling")) {
+                this.options.logger.info(`Ignored app-server error while cancelling chat ${chatId}: ${message}`);
+                return;
+            }
             if (chatId) {
                 this.options.state.updateChat(chatId, {
                     status: "error",
-                    activeTurnId: null
+                    activeTurnId: null,
+                    activeRunMode: null
                 });
                 this.options.state.addTranscriptItem(chatId, "system", message);
                 this.options.onDidChangeChat(chatId);
@@ -659,6 +920,8 @@ class CodexRuntimeController {
         });
     }
     handleExit(code, signal) {
+        const wasCancelFallback = this.suppressNextExitAsCancel;
+        this.suppressNextExitAsCancel = false;
         for (const pending of this.pendingApprovals.values()) {
             pending.resolve(false);
             this.options.state.setPendingApproval(pending.chatId, null);
@@ -667,11 +930,18 @@ class CodexRuntimeController {
         this.rpcClient?.dispose();
         this.rpcClient = undefined;
         this.options.state.setRuntime({
-            status: "error",
-            label: `Backend остановлен${code === null ? "" : `, код ${code}`}${signal ? `, ${signal}` : ""}`
+            status: wasCancelFallback ? "notStarted" : "error",
+            label: wasCancelFallback
+                ? "Backend остановлен после отмены запроса"
+                : `Backend остановлен${code === null ? "" : `, код ${code}`}${signal ? `, ${signal}` : ""}`
         });
         this.options.onDidChange();
-        this.options.logger.warn(`codex app-server exited: code=${code ?? "-"} signal=${signal ?? "-"}.`);
+        if (wasCancelFallback) {
+            this.options.logger.info(`codex app-server stopped after cancel fallback: code=${code ?? "-"} signal=${signal ?? "-"}.`);
+        }
+        else {
+            this.options.logger.warn(`codex app-server exited: code=${code ?? "-"} signal=${signal ?? "-"}.`);
+        }
     }
     requireRpcClient() {
         if (!this.rpcClient) {
@@ -710,14 +980,17 @@ function resolveBundledRuntimePath(context) {
     return path.join(context.extensionUri.fsPath, "bin", "windows-x86_64", "codex.exe");
 }
 function getApprovalPolicy(accessMode) {
-    return accessMode === "read-only" ? "never" : "unlessTrusted";
+    return accessMode === "read-only" ? "never" : "on-request";
+}
+function getRunAccessMode(accessMode, mode) {
+    return mode === "planning" ? "read-only" : accessMode;
 }
 function getThreadSandbox(accessMode) {
     if (accessMode === "workspace-write") {
-        return "workspaceWrite";
+        return "workspace-write";
     }
     if (accessMode === "danger-full-access") {
-        return "dangerFullAccess";
+        return "danger-full-access";
     }
     return "read-only";
 }
@@ -916,8 +1189,59 @@ function isThreadNotFoundError(error) {
     const message = normalizeErrorMessage(error).toLowerCase();
     return message.includes("turn/start") && message.includes("thread not found");
 }
+function isModelOrEffortError(error) {
+    const message = normalizeErrorMessage(error).toLowerCase();
+    return (message.includes("unknown model") ||
+        message.includes("invalid model") ||
+        message.includes("model") && message.includes("invalid request") ||
+        message.includes("unknown variant") && message.includes("effort") ||
+        message.includes("invalid effort"));
+}
+function isSpeedError(error) {
+    const message = normalizeErrorMessage(error).toLowerCase();
+    return (message.includes("speed") && message.includes("invalid request") ||
+        message.includes("unknown field") && message.includes("speed") ||
+        message.includes("unknown variant") && message.includes("speed") ||
+        message.includes("invalid speed"));
+}
 function normalizeErrorMessage(error) {
     return (0, logger_1.redact)(error instanceof Error ? error.message : "Неизвестная ошибка Codex runtime.");
+}
+function normalizeModelOptions(value) {
+    const items = Array.isArray(value)
+        ? value
+        : isRecord(value) && Array.isArray(value.models)
+            ? value.models
+            : isRecord(value) && Array.isArray(value.items)
+                ? value.items
+                : [];
+    const normalized = [];
+    const seen = new Set();
+    for (const item of items) {
+        const record = isRecord(item) ? item : {};
+        const id = getString(record.id) || getString(record.model) || getString(record.name);
+        const label = getString(record.label) || getString(record.displayName) || getString(record.title) || prettifyModelLabel(id);
+        if (!id && !label) {
+            continue;
+        }
+        const option = { id: id || null, label: label || id };
+        const key = `${option.id ?? "<default>"}:${option.label}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            normalized.push(option);
+        }
+    }
+    return normalized.length ? normalized : FALLBACK_MODEL_OPTIONS;
+}
+function prettifyModelLabel(modelId) {
+    if (!modelId) {
+        return "";
+    }
+    return modelId
+        .replace(/^gpt-/i, "GPT-")
+        .replace(/-codex/i, " Codex")
+        .replace(/-spark/i, " Spark")
+        .replace(/-/g, ".");
 }
 function normalizeApprovalRequest(request, itemPayloads) {
     const method = request.method;

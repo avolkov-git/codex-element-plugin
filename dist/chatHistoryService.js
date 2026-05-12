@@ -163,14 +163,21 @@ function normalizeChat(value) {
             : kind === "project" ? "Проектный чат" : "Общий чат",
         createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
         updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : now,
+        archivedAt: typeof value.archivedAt === "string" ? value.archivedAt : null,
         lastReadAt: typeof value.lastReadAt === "string" ? value.lastReadAt : typeof value.updatedAt === "string" ? value.updatedAt : now,
         hasUnread: value.hasUnread === true,
         status: normalizeChatStatus(value.status),
         accessMode: normalizeChatAccessMode(value.accessMode, kind),
+        modelId: typeof value.modelId === "string" ? value.modelId : null,
+        modelLabel: typeof value.modelLabel === "string" && value.modelLabel.trim() ? value.modelLabel.trim() : "5.5",
+        effort: normalizeChatEffort(value.effort),
+        speed: normalizeChatSpeed(value.speed),
         rulesEnabled: kind === "project" ? value.rulesEnabled !== false : false,
         pendingApproval: null,
+        backendThreadAccessMode: normalizeOptionalChatAccessMode(value.backendThreadAccessMode),
         backendThreadId: typeof value.backendThreadId === "string" ? value.backendThreadId : null,
-        activeTurnId: null
+        activeTurnId: null,
+        activeRunMode: null
     };
 }
 function normalizeTranscriptItem(value) {
@@ -199,6 +206,24 @@ function normalizeChatAccessMode(value, kind) {
         return value;
     }
     return kind === "project" ? "workspace-write" : "read-only";
+}
+function normalizeOptionalChatAccessMode(value) {
+    if (value === "workspace-write" || value === "danger-full-access" || value === "read-only") {
+        return value;
+    }
+    return null;
+}
+function normalizeChatEffort(value) {
+    if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+        return value;
+    }
+    return "medium";
+}
+function normalizeChatSpeed(value) {
+    if (value === "standard" || value === "fast") {
+        return value;
+    }
+    return "standard";
 }
 function isObject(value) {
     return typeof value === "object" && value !== null;

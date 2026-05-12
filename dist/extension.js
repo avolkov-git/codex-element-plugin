@@ -36,12 +36,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
+const approvalAttentionService_1 = require("./approvalAttentionService");
+const baseContextService_1 = require("./baseContextService");
 const chatPanelManager_1 = require("./chatPanelManager");
 const chatHistoryService_1 = require("./chatHistoryService");
 const contextRouterService_1 = require("./contextRouterService");
 const codexRuntimeController_1 = require("./codexRuntimeController");
 const docsContextService_1 = require("./docsContextService");
 const docsNormalizerService_1 = require("./docsNormalizerService");
+const editorContextService_1 = require("./editorContextService");
 const logger_1 = require("./logger");
 const performance_1 = require("./performance");
 const projectContextService_1 = require("./projectContextService");
@@ -51,6 +54,7 @@ const settingsService_1 = require("./settingsService");
 const sidebarProvider_1 = require("./sidebarProvider");
 const stateStore_1 = require("./stateStore");
 const userProfileService_1 = require("./userProfileService");
+const CHAT_HEADER_MODE_KEY = "codexElement.chatHeaderMode";
 async function activate(context) {
     const perf = new performance_1.PerfMarks();
     const logger = new logger_1.Logger();
@@ -59,7 +63,9 @@ async function activate(context) {
     perf.mark("logger");
     const settings = new settingsService_1.SettingsService(context);
     const contextRouter = new contextRouterService_1.ContextRouterService();
+    const baseContext = new baseContextService_1.BaseContextService(context, logger);
     const docsContext = new docsContextService_1.DocsContextService(settings, logger);
+    const editorContext = new editorContextService_1.EditorContextService();
     const projectContext = new projectContextService_1.ProjectContextService(context, settings.getConfigRoot(), logger);
     const rulesContext = new rulesContextService_1.RulesContextService(logger);
     const docsNormalizer = new docsNormalizerService_1.DocsNormalizerService(context, settings, logger);
@@ -70,6 +76,7 @@ async function activate(context) {
     let sidebar;
     let runtime;
     let chatPanels;
+    let approvalAttention;
     const state = new stateStore_1.StateStore((mode) => {
         if (!historyProfileId) {
             return;
@@ -81,15 +88,68 @@ async function activate(context) {
         }
         history.scheduleSave(historyProfileId, snapshot);
     });
+    state.setChatHeaderMode(readChatHeaderMode(context));
     state.setProxy(await settings.getSidebarProxyStatus());
     state.setDocs(settings.getSidebarDocsStatus());
     chatPanels = new chatPanelManager_1.ChatPanelManager(context, state, logger, {
-        sendPrompt: async (chatId, prompt) => runtime.sendPrompt(chatId, prompt),
+        sendPrompt: async (chatId, prompt, mode, transcriptText) => runtime.sendPrompt(chatId, prompt, mode, transcriptText),
+        cancelTurn: async (chatId) => runtime.cancelTurn(chatId),
         markReadToBottom: (chatId) => {
             if (state.markChatRead(chatId)) {
                 sidebar?.postSnapshot();
             }
         },
+        setAccessMode: (chatId, accessMode) => {
+            const updated = state.setChatAccessMode(chatId, accessMode);
+            if (!updated) {
+                return;
+            }
+            logger.info(`Chat access mode changed: chat=${chatId}; mode=${accessMode}.`);
+            sidebar?.postSnapshot();
+            chatPanels.postSnapshot(chatId);
+        },
+        setModel: (chatId, modelId, modelLabel) => {
+            const updated = state.setChatModel(chatId, modelId, modelLabel);
+            if (!updated) {
+                return;
+            }
+            logger.info(`Chat model changed: chat=${chatId}; model=${modelId || "<default>"}; label=${modelLabel}.`);
+            sidebar?.postSnapshot();
+            chatPanels.postSnapshot(chatId);
+        },
+        setEffort: (chatId, effort) => {
+            const updated = state.setChatEffort(chatId, effort);
+            if (!updated) {
+                return;
+            }
+            logger.info(`Chat effort changed: chat=${chatId}; effort=${effort}.`);
+            sidebar?.postSnapshot();
+            chatPanels.postSnapshot(chatId);
+        },
+        setSpeed: (chatId, speed) => {
+            const updated = state.setChatSpeed(chatId, speed);
+            if (!updated) {
+                return;
+            }
+            logger.info(`Chat speed changed: chat=${chatId}; speed=${speed}.`);
+            sidebar?.postSnapshot();
+            chatPanels.postSnapshot(chatId);
+        },
+        setChatHeaderMode: async (mode) => {
+            state.setChatHeaderMode(mode);
+            await context.globalState.update(CHAT_HEADER_MODE_KEY, mode);
+            logger.info(`Chat header mode changed: ${mode}.`);
+            chatPanels.postSnapshot();
+        },
+        loadModels: async () => {
+            state.setModelOptionsStatus("loading");
+            chatPanels.postSnapshot();
+            const result = await runtime.loadModelOptions();
+            state.setModelOptions(result.options, result.status);
+            chatPanels.postSnapshot();
+        },
+        getProjectContextDetails: async () => projectContext.getDetails(profiles.getCurrentProfileId()),
+        getDocsContextDetails: async () => settings.getDocsContextDetails(),
         toggleRules: async (chatId) => {
             const updated = state.toggleChatRules(chatId);
             if (!updated) {
@@ -99,6 +159,22 @@ async function activate(context) {
             state.setRulesContext(rulesContext.getStatus(updated.kind, updated.rulesEnabled));
             sidebar?.postSnapshot();
             chatPanels.postSnapshot(chatId);
+        },
+        openRules: async () => {
+            await rulesContext.openRulesFile();
+            refreshRulesContext(state, rulesContext);
+            sidebar?.postSnapshot();
+            chatPanels.postSnapshot();
+        },
+        restoreChat: async (chatId) => restoreChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
+        implementPlan: async (chatId, planText) => {
+            const prompt = [
+                "Реализуй утвержденный план ниже.",
+                "Следуй текущему режиму доступа и запрашивай подтверждения через IDE, если они потребуются.",
+                "",
+                planText.trim()
+            ].join("\n");
+            await runtime.sendPrompt(chatId, prompt, "implementPlan", "Реализовать утвержденный план.");
         },
         resolveApproval: (chatId, approvalId, approved) => runtime.resolveApproval(chatId, approvalId, approved)
     });
@@ -125,6 +201,7 @@ async function activate(context) {
         context,
         settings,
         contextRouter,
+        baseContext,
         projectContext,
         docsContext,
         rulesContext,
@@ -134,12 +211,13 @@ async function activate(context) {
         onDidChange: () => {
             sidebar?.postSnapshot();
             chatPanels.postSnapshot();
+            approvalAttention?.sync();
         },
         onDidChangeChat: (chatId) => chatPanels.postSnapshot(chatId),
         onDidResolveProfile: ensureHistoryLoaded
     });
     context.subscriptions.push(runtime);
-    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, docsNormalizer, logger, async (options) => {
+    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, docsNormalizer, baseContext, logger, async (options) => {
         state.setProxy(await settings.getSidebarProxyStatus());
         state.setDocs(settings.getSidebarDocsStatus());
         if (options?.restartRuntime) {
@@ -152,6 +230,9 @@ async function activate(context) {
         createChat: async (kind) => createChat(kind, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
         openChat: async (chatId) => openChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
         renameChat: async (chatId) => renameChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
+        archiveChat: async (chatId) => archiveChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
+        restoreChat: async (chatId) => restoreChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
+        deleteChat: async (chatId) => deleteChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
         openSettings: async () => settingsPanels.open(),
         openLogs: () => logger.show(),
         restoreAuth: async () => runtime.restoreAccountIfAvailable(),
@@ -160,6 +241,14 @@ async function activate(context) {
         openDeviceCodeUrl: async () => runtime.openDeviceCodeUrl(),
         copyDeviceCode: async () => runtime.copyDeviceCode()
     });
+    approvalAttention = new approvalAttentionService_1.ApprovalAttentionService(state, logger, async () => {
+        const pendingChat = state.getSidebarSnapshot().chats.find((chat) => chat.pendingApproval);
+        if (!pendingChat) {
+            return;
+        }
+        await openChat(pendingChat.id, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded);
+    });
+    approvalAttention.sync();
     perf.mark("services");
     context.subscriptions.push(vscode.window.registerWebviewViewProvider("codexElement.sidebar", sidebar, {
         webviewOptions: {
@@ -189,12 +278,20 @@ async function activate(context) {
         refreshRulesContext(state, rulesContext);
         sidebar?.postSnapshot();
         chatPanels.postSnapshot();
+    }), vscode.commands.registerCommand("codexElement.explainFile", async () => {
+        await explainEditorContext("file", editorContext, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded, runtime);
+    }), vscode.commands.registerCommand("codexElement.explainSelection", async () => {
+        await explainEditorContext("selection", editorContext, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded, runtime);
     }));
     perf.mark("commands");
     perf.flush(logger, "Codex activation");
 }
 function deactivate() {
     // All disposables are owned by the extension context.
+}
+function readChatHeaderMode(context) {
+    const stored = context.globalState.get(CHAT_HEADER_MODE_KEY);
+    return stored === "expanded" || stored === "collapsed" ? stored : "collapsed";
 }
 async function createChat(kind, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded) {
     await ensureHistoryLoaded();
@@ -211,6 +308,35 @@ async function openChat(chatId, state, sidebar, chatPanels, logger, rulesContext
     logger.info(`Opening chat: ${chatId}.`);
     sidebar?.postSnapshot();
     chatPanels.openChat(chatId);
+}
+async function explainEditorContext(kind, editorContext, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded, runtime) {
+    await ensureHistoryLoaded();
+    const request = await editorContext.buildRequest(kind);
+    if (!request) {
+        return;
+    }
+    const chat = getOrCreateIdleProjectChat(state, rulesContext);
+    if (!chat) {
+        vscode.window.showWarningMessage("Сначала остановите или завершите текущий запрос в проектном чате.");
+        return;
+    }
+    refreshRulesContext(state, rulesContext, chat.id);
+    sidebar?.postSnapshot();
+    chatPanels.openChat(chat.id);
+    logger.info(`Editor context requested: kind=${kind}; chat=${chat.id}; file=${request.relativePath}; bytes=${request.byteLength}.`);
+    await runtime.sendPrompt(chat.id, request.userPrompt, "normal", request.visiblePrompt, [request.contextBlock]);
+}
+function getOrCreateIdleProjectChat(state, rulesContext) {
+    const activeChatId = state.getActiveChatId();
+    const activeChat = activeChatId ? state.getChat(activeChatId) : undefined;
+    if (activeChat?.kind === "project" && !activeChat.archivedAt) {
+        return activeChat.status === "running" || activeChat.status === "waitingApproval" || activeChat.status === "cancelling"
+            ? undefined
+            : activeChat;
+    }
+    const chat = state.createChat("project");
+    refreshRulesContext(state, rulesContext, chat.id);
+    return chat;
 }
 async function renameChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded) {
     await ensureHistoryLoaded();
@@ -234,6 +360,76 @@ async function renameChat(chatId, state, sidebar, chatPanels, logger, ensureHist
         return;
     }
     logger.info(`Renamed chat: ${chatId}.`);
+    sidebar?.postSnapshot();
+    chatPanels.postSnapshot(chatId);
+}
+async function archiveChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded) {
+    await ensureHistoryLoaded();
+    const chat = state.getChat(chatId);
+    if (!chat) {
+        vscode.window.showWarningMessage("Чат не найден.");
+        return;
+    }
+    if (chat.archivedAt) {
+        return;
+    }
+    if (chat.status !== "idle") {
+        vscode.window.showWarningMessage("Сначала остановите или завершите запрос.");
+        return;
+    }
+    const wasActive = state.getActiveChatId() === chatId;
+    if (wasActive) {
+        chatPanels.closeIfActiveChat(chatId);
+    }
+    const archived = state.archiveChat(chatId);
+    if (!archived) {
+        return;
+    }
+    logger.info(`Archived chat: ${chatId}.`);
+    refreshRulesContext(state, rulesContext);
+    sidebar?.postSnapshot();
+    chatPanels.postSnapshot(chatId);
+    const action = await vscode.window.showInformationMessage("Диалог перемещен в архив.", "Вернуть");
+    if (action === "Вернуть") {
+        await restoreChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded);
+    }
+}
+async function restoreChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded) {
+    await ensureHistoryLoaded();
+    const restored = state.restoreChat(chatId);
+    if (!restored) {
+        vscode.window.showWarningMessage("Чат не найден.");
+        return;
+    }
+    refreshRulesContext(state, rulesContext, chatId);
+    logger.info(`Restored chat: ${chatId}.`);
+    sidebar?.postSnapshot();
+    chatPanels.openChat(chatId);
+}
+async function deleteChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded) {
+    await ensureHistoryLoaded();
+    const chat = state.getChat(chatId);
+    if (!chat) {
+        vscode.window.showWarningMessage("Чат не найден.");
+        return;
+    }
+    if (!chat.archivedAt) {
+        vscode.window.showWarningMessage("Удаление доступно только для архивных чатов.");
+        return;
+    }
+    const action = await vscode.window.showWarningMessage(`Удалить диалог «${chat.title}» без возможности восстановления?`, { modal: true }, "Удалить");
+    if (action !== "Удалить") {
+        return;
+    }
+    const wasActive = state.getActiveChatId() === chatId;
+    if (wasActive) {
+        chatPanels.closeIfActiveChat(chatId);
+    }
+    if (!state.deleteChat(chatId)) {
+        vscode.window.showWarningMessage("Чат не найден или уже удален.");
+        return;
+    }
+    logger.info(`Deleted archived chat from local history: ${chatId}.`);
     sidebar?.postSnapshot();
     chatPanels.postSnapshot(chatId);
 }
