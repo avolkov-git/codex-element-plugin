@@ -67,6 +67,8 @@ input {
   padding: 14px;
   background: var(--codex-bg);
   color: var(--codex-fg);
+  display: flex;
+  flex-direction: column;
 }
 
 .brand {
@@ -465,6 +467,37 @@ input {
   margin-top: 10px;
   color: var(--codex-muted);
   line-height: 1.4;
+}
+
+.rate-limits {
+  margin-top: auto;
+  padding: 12px 0 4px;
+  display: grid;
+  gap: 6px;
+  color: var(--codex-fg);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.rate-limit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.rate-limit-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.rate-limit-value {
+  color: var(--codex-muted);
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .auth-panel {

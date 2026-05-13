@@ -10,12 +10,19 @@ const FALLBACK_MODEL_OPTIONS = [
     { id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
     { id: "gpt-5.2", label: "GPT-5.2" }
 ];
+const EMPTY_CONTEXT_WINDOW = {
+    status: "unknown",
+    usedTokens: null,
+    maxTokens: null,
+    usedPercent: null
+};
 class StateStore {
     constructor(onDidMutate) {
         this.onDidMutate = onDidMutate;
         this.version = 1;
         this.chats = [];
         this.transcripts = new Map();
+        this.contextWindows = new Map();
         this.modelOptions = FALLBACK_MODEL_OPTIONS;
         this.modelOptionsStatus = "idle";
         this.chatHeaderMode = "collapsed";
@@ -55,6 +62,10 @@ class StateStore {
             status: "notStarted",
             label: "Backend не запускался"
         };
+        this.rateLimits = {
+            status: "unknown",
+            rows: []
+        };
     }
     getSidebarSnapshot() {
         return {
@@ -66,6 +77,7 @@ class StateStore {
             projectContext: this.projectContext,
             rulesContext: this.rulesContext,
             runtime: this.runtime,
+            rateLimits: this.rateLimits,
             chats: [...this.chats],
             activeChatId: this.activeChatId
         };
@@ -118,6 +130,20 @@ class StateStore {
         this.runtime = runtime;
         this.version += 1;
     }
+    setRateLimits(rateLimits) {
+        this.rateLimits = rateLimits;
+        this.version += 1;
+    }
+    setChatContextWindow(chatId, contextWindow) {
+        if (!this.getChat(chatId)) {
+            return;
+        }
+        this.contextWindows.set(chatId, contextWindow);
+        this.version += 1;
+    }
+    getChatContextWindow(chatId) {
+        return this.contextWindows.get(chatId) ?? EMPTY_CONTEXT_WINDOW;
+    }
     getChatSnapshot(chatId) {
         const chat = this.chats.find((candidate) => candidate.id === chatId);
         if (!chat) {
@@ -134,6 +160,7 @@ class StateStore {
             docs: sidebar.docs,
             projectContext: sidebar.projectContext,
             rulesContext: sidebar.rulesContext,
+            contextWindow: this.contextWindows.get(chat.id) ?? EMPTY_CONTEXT_WINDOW,
             modelOptions: this.modelOptions,
             modelOptionsStatus: this.modelOptionsStatus,
             transcript: this.transcripts.get(chat.id) ?? []
@@ -255,6 +282,7 @@ class StateStore {
         }
         this.chats = this.chats.filter((candidate) => candidate.id !== chatId);
         this.transcripts.delete(chatId);
+        this.contextWindows.delete(chatId);
         if (this.activeChatId === chatId) {
             this.activeChatId = undefined;
         }
@@ -317,10 +345,7 @@ class StateStore {
         const updated = {
             ...chat,
             modelId,
-            modelLabel: label,
-            backendThreadAccessMode: null,
-            backendThreadId: null,
-            activeTurnId: null
+            modelLabel: label
         };
         this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
         this.version += 1;
@@ -475,6 +500,7 @@ class StateStore {
         return this.chats.length > 0;
     }
     replaceChatHistory(history) {
+        this.contextWindows.clear();
         this.chats = history?.chats.map((chat) => ({
             ...chat,
             archivedAt: chat.archivedAt ?? null,

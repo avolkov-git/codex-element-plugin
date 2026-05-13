@@ -1,4 +1,4 @@
-import { ChatEffort, ChatHeaderMode, ChatKind, ChatPanelSnapshot, ChatSpeed, ChatSummary, ChatTranscriptItem, ModelOption, PersistedChatHistory, SidebarSnapshot } from "./types";
+import { ChatEffort, ChatHeaderMode, ChatKind, ChatPanelSnapshot, ChatSpeed, ChatSummary, ChatTranscriptItem, ContextWindowUsage, ModelOption, PersistedChatHistory, SidebarSnapshot } from "./types";
 
 type AuthPatch = Omit<Partial<SidebarSnapshot["auth"]>, "deviceCode" | "apiKey"> & {
   deviceCode?: Partial<SidebarSnapshot["auth"]["deviceCode"]>;
@@ -17,11 +17,19 @@ const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
   { id: "gpt-5.2", label: "GPT-5.2" }
 ];
 
+const EMPTY_CONTEXT_WINDOW: ContextWindowUsage = {
+  status: "unknown",
+  usedTokens: null,
+  maxTokens: null,
+  usedPercent: null
+};
+
 export class StateStore {
   private version = 1;
   private activeChatId: string | undefined;
   private chats: ChatSummary[] = [];
   private transcripts = new Map<string, ChatTranscriptItem[]>();
+  private contextWindows = new Map<string, ContextWindowUsage>();
   private modelOptions: ModelOption[] = FALLBACK_MODEL_OPTIONS;
   private modelOptionsStatus: ChatPanelSnapshot["modelOptionsStatus"] = "idle";
   private chatHeaderMode: ChatHeaderMode = "collapsed";
@@ -61,6 +69,10 @@ export class StateStore {
     status: "notStarted",
     label: "Backend не запускался"
   };
+  private rateLimits: SidebarSnapshot["rateLimits"] = {
+    status: "unknown",
+    rows: []
+  };
 
   constructor(private readonly onDidMutate?: (mode: StateMutationMode) => void) {}
 
@@ -74,6 +86,7 @@ export class StateStore {
       projectContext: this.projectContext,
       rulesContext: this.rulesContext,
       runtime: this.runtime,
+      rateLimits: this.rateLimits,
       chats: [...this.chats],
       activeChatId: this.activeChatId
     };
@@ -136,6 +149,23 @@ export class StateStore {
     this.version += 1;
   }
 
+  setRateLimits(rateLimits: SidebarSnapshot["rateLimits"]): void {
+    this.rateLimits = rateLimits;
+    this.version += 1;
+  }
+
+  setChatContextWindow(chatId: string, contextWindow: ContextWindowUsage): void {
+    if (!this.getChat(chatId)) {
+      return;
+    }
+    this.contextWindows.set(chatId, contextWindow);
+    this.version += 1;
+  }
+
+  getChatContextWindow(chatId: string): ContextWindowUsage {
+    return this.contextWindows.get(chatId) ?? EMPTY_CONTEXT_WINDOW;
+  }
+
   getChatSnapshot(chatId: string): ChatPanelSnapshot | undefined {
     const chat = this.chats.find((candidate) => candidate.id === chatId);
     if (!chat) {
@@ -153,6 +183,7 @@ export class StateStore {
       docs: sidebar.docs,
       projectContext: sidebar.projectContext,
       rulesContext: sidebar.rulesContext,
+      contextWindow: this.contextWindows.get(chat.id) ?? EMPTY_CONTEXT_WINDOW,
       modelOptions: this.modelOptions,
       modelOptionsStatus: this.modelOptionsStatus,
       transcript: this.transcripts.get(chat.id) ?? []
@@ -287,6 +318,7 @@ export class StateStore {
 
     this.chats = this.chats.filter((candidate) => candidate.id !== chatId);
     this.transcripts.delete(chatId);
+    this.contextWindows.delete(chatId);
     if (this.activeChatId === chatId) {
       this.activeChatId = undefined;
     }
@@ -357,10 +389,7 @@ export class StateStore {
     const updated: ChatSummary = {
       ...chat,
       modelId,
-      modelLabel: label,
-      backendThreadAccessMode: null,
-      backendThreadId: null,
-      activeTurnId: null
+      modelLabel: label
     };
     this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
     this.version += 1;
@@ -542,6 +571,7 @@ export class StateStore {
   }
 
   replaceChatHistory(history: PersistedChatHistory | undefined): void {
+    this.contextWindows.clear();
     this.chats = history?.chats.map((chat) => ({
       ...chat,
       archivedAt: chat.archivedAt ?? null,

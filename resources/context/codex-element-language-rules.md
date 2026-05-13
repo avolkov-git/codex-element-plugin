@@ -1,6 +1,6 @@
 # Правила Codex для разработки на 1С:Предприятие.Элемент
 
-Этот документ фиксирует рабочие правила для Codex при генерации и правке кода `1С:Элемент` (`.xbsl`) и YAML-описаний элементов проекта. Правила собраны по локальной документации из `docs/help/ru` и нормализованному языковому корпусу `ai-docs-lang/out`.
+Этот документ фиксирует рабочие правила для Codex при генерации и правке кода `1С:Элемент` (`.xbsl`) и YAML-описаний элементов проекта. Правила являются базовым контекстом поставки Codex Element.
 
 ## Базовые установки
 
@@ -220,11 +220,9 @@
 - Не потерян ли импорт: YAML `Импорт` отдельно, `.xbsl` `импорт` отдельно.
 - Не поднята ли видимость выше необходимой.
 
-## Основные локальные источники
+## Источник документации
 
-- `ai-docs-lang/out/documents.jsonl`: страницы `topics-keywords`, `topics-variable-declaration-statement`, `topics-type-description-and-initialization`, `topics-structure`, `topics-methods-in-built-in-script-language`, `topics-annotations`, `topics-namespaces`, `topics-general-design`, `topics-string-interpolation`.
-- `docs/help/ru/topics/attribute/index.html`: типы и ограничения реквизитов.
-- `docs/help/ru/topics/catalog-properties/index.html`, `document-properties/index.html`, `information-register-properties/index.html`, `accumulation-register-properties/index.html`: YAML-свойства реквизитов, ссылочные типы, значения по умолчанию.
-- `docs/help/ru/topics/structure-properties/index.html`, `structures-examples/index.html`, `data-model-description/index.html`: проектные структуры, поля, значения по умолчанию.
-- `docs/help/ru/topics/custom-component/index.html`, `list-form-component/index.html`, `calculated-property-values-for-ui-components/index.html`: YAML интерфейсных компонентов, собственные свойства, вычисляемые значения.
-- `docs/help/ru/topics/modular-development/index.html`: области видимости, квалифицированные имена, импорт в YAML и `.xbsl`.
+- Не искать локальные каталоги документации самостоятельно.
+- Не использовать старые или примерные пути к корпусам документации из истории диалога, правил проекта или файлов workspace.
+- Если нужна справка по платформе, языку или API, использовать только фрагменты документации, которые Codex Element добавляет в служебный контекст текущего запроса.
+- Актуальный путь к нормализованной документации выбирает сам плагин из настроек `Codex: Настройки -> Документация -> Нормализованная документация`.

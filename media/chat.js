@@ -339,6 +339,7 @@
               ${planningSelector(snapshot)}
             </div>
             <div class="composer-right">
+              ${contextWindowIndicator(snapshot.contextWindow)}
               ${modelSelector(snapshot)}
               ${effortSelector(snapshot.chat.effort)}
               ${speedSelector(snapshot.chat.speed)}
@@ -351,6 +352,69 @@
         </div>
       </footer>
     `;
+  }
+
+  function contextWindowIndicator(contextWindow) {
+    const usage = contextWindow || {};
+    const percent = typeof usage.usedPercent === "number" ? Math.max(0, Math.min(100, usage.usedPercent)) : null;
+    const angle = percent === null ? 0 : Math.round(percent * 3.6);
+    const status = usage.status || "unknown";
+    return `
+      <div class="context-window-control ${escapeAttribute(status)}" style="--context-angle: ${angle}deg;" aria-label="Контекстное окно">
+        <span class="context-window-ring" aria-hidden="true"></span>
+        <div class="context-window-tooltip" role="tooltip">
+          ${contextWindowTooltip(usage, percent)}
+        </div>
+      </div>
+    `;
+  }
+
+  function contextWindowTooltip(usage, percent) {
+    if (!usage || usage.status === "unknown") {
+      return `
+        <div class="context-window-muted">Контекстное окно:</div>
+        <div>данные появятся после первого ответа Codex</div>
+      `;
+    }
+    if (usage.status === "compacting") {
+      return `
+        <div class="context-window-muted">Контекстное окно:</div>
+        <div>Codex сжимает контекст</div>
+      `;
+    }
+    if (usage.status === "error") {
+      return `
+        <div class="context-window-muted">Контекстное окно:</div>
+        <div>${escapeHtml(usage.message || "не удалось получить данные")}</div>
+      `;
+    }
+
+    const filled = percent === null ? "неизвестно" : `${Math.round(percent)}% заполнено`;
+    const used = formatTokenCount(usage.usedTokens);
+    const max = formatTokenCount(usage.maxTokens);
+    const usageLine = used && max
+      ? `Использовано ${used} /<br>${max} токенов`
+      : max
+        ? `Размер окна ${max} токенов,<br>использование уточняется`
+        : used
+          ? `Использовано ${used} токенов,<br>размер окна уточняется`
+          : "Использование токенов уточняется";
+    return `
+      <div class="context-window-muted">Контекстное окно:</div>
+      <div class="context-window-muted">${escapeHtml(filled)}</div>
+      <div class="context-window-strong">${usageLine}</div>
+      <div class="context-window-strong">Codex автоматически<br>сжимает свой контекст</div>
+    `;
+  }
+
+  function formatTokenCount(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return "";
+    }
+    if (value >= 1000) {
+      return `${Math.round(value / 1000)} к`;
+    }
+    return String(Math.round(value));
   }
 
   function archivedFooter() {

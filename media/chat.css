@@ -334,6 +334,90 @@ textarea {
   margin-left: auto;
 }
 
+.context-window-control {
+  --context-angle: 0deg;
+  position: relative;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.context-window-control.compacting {
+  color: #3db4eb;
+}
+
+.context-window-control.error {
+  color: #ec5766;
+}
+
+.context-window-ring {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background:
+    conic-gradient(currentColor var(--context-angle), color-mix(in srgb, currentColor 24%, transparent) 0);
+}
+
+.context-window-ring::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 999px;
+  background: var(--vscode-editorWidget-background, #f3f4f6);
+}
+
+.context-window-control.unknown .context-window-ring {
+  background: conic-gradient(color-mix(in srgb, currentColor 24%, transparent) 360deg, transparent 0);
+}
+
+.context-window-control.compacting .context-window-ring {
+  animation: context-ring-spin 1s linear infinite;
+}
+
+.context-window-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  z-index: 24;
+  display: none;
+  width: 210px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  color: var(--vscode-editor-foreground);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.24);
+  text-align: center;
+  line-height: 1.35;
+  transform: translateX(-50%);
+}
+
+.context-window-control:hover .context-window-tooltip,
+.context-window-control:focus-within .context-window-tooltip {
+  display: grid;
+  gap: 8px;
+}
+
+.context-window-muted {
+  color: var(--muted);
+}
+
+.context-window-strong {
+  font-weight: 700;
+}
+
+@keyframes context-ring-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .chips {
   position: relative;
   display: flex;

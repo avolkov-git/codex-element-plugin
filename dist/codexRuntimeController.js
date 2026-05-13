@@ -63,6 +63,9 @@ class CodexRuntimeController {
         this.activeThreadChatId = new Map();
         this.itemPayloads = new Map();
         this.pendingApprovals = new Map();
+        this.loadedThreadIds = new Set();
+        this.contextCompactionItemThreads = new Map();
+        this.compactionWaiters = new Map();
         this.cancellingChatIds = new Set();
         this.cancelledTurnIds = new Set();
         this.cancelEpochByChat = new Map();
@@ -226,36 +229,46 @@ class CodexRuntimeController {
             await this.ensureAuthenticatedForTurn();
             this.throwIfCancelled(chatId, cancelEpoch);
             const requestedAccessMode = getRunAccessMode(this.options.state.getChat(chatId)?.accessMode ?? chat.accessMode, mode);
-            this.ensureBackendThreadMatchesAccess(chatId, requestedAccessMode);
-            if (!this.options.state.getChat(chatId)?.backendThreadId) {
-                await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
-                this.throwIfCancelled(chatId, cancelEpoch);
-            }
-            const existingThreadId = this.options.state.getChat(chatId)?.backendThreadId;
-            if (existingThreadId) {
-                this.activeThreadChatId.set(existingThreadId, chatId);
-            }
+            await this.ensureBackendThreadReady(chatId, requestedAccessMode);
+            this.throwIfCancelled(chatId, cancelEpoch);
             let turnResult;
             try {
                 turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
             }
             catch (error) {
-                if (!isThreadNotFoundError(error) || !this.options.state.getChat(chatId)?.backendThreadId) {
+                if (isContextWindowError(error) && this.options.state.getChat(chatId)?.backendThreadId) {
+                    this.options.logger.warn(`Context window exhausted, requesting app-server compaction before retry: ${normalizeErrorMessage(error)}`);
+                    await this.compactBackendThread(chatId);
+                    this.throwIfCancelled(chatId, cancelEpoch);
+                    turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
+                }
+                else if (isThreadNotFoundError(error) && this.options.state.getChat(chatId)?.backendThreadId) {
+                    const staleThreadId = this.options.state.getChat(chatId)?.backendThreadId;
+                    this.options.logger.warn(`Backend thread was not loaded by runtime, trying thread/resume: ${staleThreadId ?? "-"}.`);
+                    const resumed = await this.tryResumeBackendThread(chatId, requestedAccessMode);
+                    this.throwIfCancelled(chatId, cancelEpoch);
+                    if (resumed) {
+                        turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
+                    }
+                    else {
+                        this.options.logger.warn(`thread/resume failed, recreating backend thread: ${staleThreadId ?? "-"}.`);
+                        if (staleThreadId) {
+                            this.activeThreadChatId.delete(staleThreadId);
+                            this.loadedThreadIds.delete(staleThreadId);
+                        }
+                        this.options.state.updateChat(chatId, {
+                            backendThreadId: null,
+                            backendThreadAccessMode: null,
+                            activeTurnId: null
+                        });
+                        await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
+                        this.throwIfCancelled(chatId, cancelEpoch);
+                        turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
+                    }
+                }
+                else {
                     throw error;
                 }
-                const staleThreadId = this.options.state.getChat(chatId)?.backendThreadId;
-                this.options.logger.warn(`Backend thread was not found by runtime, recreating: ${staleThreadId ?? "-"}.`);
-                if (staleThreadId) {
-                    this.activeThreadChatId.delete(staleThreadId);
-                }
-                this.options.state.updateChat(chatId, {
-                    backendThreadId: null,
-                    backendThreadAccessMode: null,
-                    activeTurnId: null
-                });
-                await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
-                this.throwIfCancelled(chatId, cancelEpoch);
-                turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
             }
             this.throwIfCancelled(chatId, cancelEpoch);
             const turnId = extractTurnId(turnResult);
@@ -397,6 +410,12 @@ class CodexRuntimeController {
                 }
             });
             this.options.logger.info(`account/read completed: account=${account.accountType}.`);
+            if (account.accountType === "chatgpt") {
+                void this.readRateLimits();
+            }
+            else {
+                this.updateRateLimits({ status: "unknown", rows: [] });
+            }
         }
         catch (error) {
             const message = normalizeAuthError(error);
@@ -407,6 +426,27 @@ class CodexRuntimeController {
             this.options.logger.warn(`account/read failed: ${message}`);
         }
     }
+    async readRateLimits() {
+        if (!this.processManager.isRunning || !this.rpcClient) {
+            return;
+        }
+        try {
+            const result = await this.rpcClient.request("account/rateLimits/read", undefined, 10000);
+            const rateLimits = normalizeRateLimitsResult(result);
+            this.updateRateLimits(rateLimits);
+            this.options.logger.info(`account/rateLimits/read completed: rows=${rateLimits.rows.length}${rateLimits.rateLimitReachedType ? `, reached=${rateLimits.rateLimitReachedType}` : ""}.`);
+        }
+        catch (error) {
+            const message = normalizeErrorMessage(error);
+            this.updateRateLimits({
+                status: "error",
+                rows: [],
+                message,
+                updatedAt: new Date().toISOString()
+            });
+            this.options.logger.warn(`account/rateLimits/read failed: ${message}`);
+        }
+    }
     async ensureAuthenticatedForTurn() {
         if (this.options.state.getSidebarSnapshot().auth.status !== "authenticated") {
             await this.readAccount();
@@ -415,18 +455,62 @@ class CodexRuntimeController {
             throw new Error("Codex не авторизован. Сначала выполните DEVICE CODE или API KEY login.");
         }
     }
-    ensureBackendThreadMatchesAccess(chatId, requestedAccessMode) {
+    async ensureBackendThreadReady(chatId, requestedAccessMode) {
         const chat = this.options.state.getChat(chatId);
-        if (!chat?.backendThreadId || !chat.backendThreadAccessMode || chat.backendThreadAccessMode === requestedAccessMode) {
+        if (!chat?.backendThreadId) {
+            await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
             return;
         }
-        this.options.logger.info(`Backend thread access changed, recreating thread: chat=${chatId}; from=${chat.backendThreadAccessMode}; to=${requestedAccessMode}.`);
-        this.activeThreadChatId.delete(chat.backendThreadId);
-        this.options.state.updateChat(chatId, {
-            backendThreadId: null,
-            backendThreadAccessMode: null,
-            activeTurnId: null
-        });
+        this.activeThreadChatId.set(chat.backendThreadId, chatId);
+        if (!this.loadedThreadIds.has(chat.backendThreadId)) {
+            await this.tryResumeBackendThread(chatId, requestedAccessMode);
+        }
+    }
+    async tryResumeBackendThread(chatId, accessOverride) {
+        try {
+            await this.resumeBackendThread(chatId, accessOverride);
+            return true;
+        }
+        catch (error) {
+            this.options.logger.warn(`thread/resume failed: ${normalizeErrorMessage(error)}`);
+            return false;
+        }
+    }
+    async resumeBackendThread(chatId, accessOverride) {
+        const rpcClient = this.requireRpcClient();
+        const chat = this.options.state.getChat(chatId);
+        if (!chat?.backendThreadId) {
+            throw new Error("thread/resume skipped: chat has no backend thread.");
+        }
+        const cwd = resolveWorkspaceCwd(this.options.context);
+        const accessMode = accessOverride ?? chat.accessMode;
+        const model = chat.modelId ?? null;
+        const fullPayload = {
+            threadId: chat.backendThreadId,
+            cwd,
+            approvalPolicy: getApprovalPolicy(accessMode),
+            approvalsReviewer: "user",
+            sandbox: getThreadSandbox(accessMode),
+            model
+        };
+        let result;
+        try {
+            result = await rpcClient.request("thread/resume", fullPayload, 10000);
+        }
+        catch (error) {
+            if (!isInvalidRequestError(error)) {
+                throw error;
+            }
+            this.options.logger.warn(`thread/resume full payload rejected; retrying with threadId only: ${normalizeErrorMessage(error)}`);
+            result = await rpcClient.request("thread/resume", { threadId: chat.backendThreadId }, 10000);
+        }
+        const threadId = extractThreadId(result) || chat.backendThreadId;
+        this.options.state.updateChat(chatId, { backendThreadId: threadId, backendThreadAccessMode: accessMode });
+        this.activeThreadChatId.set(threadId, chatId);
+        this.loadedThreadIds.add(threadId);
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+        this.options.logger.info(`thread/resume completed: thread=${threadId}.`);
     }
     async startBackendThread(chatId, accessOverride) {
         const rpcClient = this.requireRpcClient();
@@ -449,6 +533,7 @@ class CodexRuntimeController {
         }
         this.options.state.updateChat(chatId, { backendThreadId: threadId, backendThreadAccessMode: accessMode });
         this.activeThreadChatId.set(threadId, chatId);
+        this.loadedThreadIds.add(threadId);
         this.options.onDidChange();
         this.options.onDidChangeChat(chatId);
         this.options.logger.info(`thread/start completed: thread=${threadId}.`);
@@ -613,6 +698,66 @@ class CodexRuntimeController {
             return this.startTurn(chatId, prompt, mode, explicitContextBlocks);
         }
     }
+    async compactBackendThread(chatId) {
+        const chat = this.options.state.getChat(chatId);
+        const threadId = chat?.backendThreadId;
+        if (!threadId) {
+            return;
+        }
+        this.setContextWindow(chatId, {
+            ...this.options.state.getChatContextWindow(chatId),
+            status: "compacting",
+            message: "Codex сжимает контекст..."
+        });
+        try {
+            await this.requireRpcClient().request("thread/compact/start", { threadId }, 10000);
+            this.options.logger.info(`thread/compact/start requested: thread=${threadId}.`);
+            await this.waitForCompaction(threadId, 60000);
+        }
+        catch (error) {
+            this.setContextWindow(chatId, {
+                ...this.options.state.getChatContextWindow(chatId),
+                status: "error",
+                message: normalizeErrorMessage(error)
+            });
+            throw error;
+        }
+    }
+    waitForCompaction(threadId, timeoutMs) {
+        return new Promise((resolve) => {
+            const waiters = this.compactionWaiters.get(threadId) ?? [];
+            waiters.push(resolve);
+            this.compactionWaiters.set(threadId, waiters);
+            setTimeout(() => {
+                const current = this.compactionWaiters.get(threadId);
+                if (!current?.includes(resolve)) {
+                    return;
+                }
+                this.compactionWaiters.set(threadId, current.filter((candidate) => candidate !== resolve));
+                this.options.logger.warn(`thread/compact/start wait timed out, continuing turn retry: thread=${threadId}.`);
+                resolve();
+            }, timeoutMs);
+        });
+    }
+    resolveCompactionWaiters(threadId) {
+        const waiters = this.compactionWaiters.get(threadId);
+        if (!waiters?.length) {
+            return;
+        }
+        this.compactionWaiters.delete(threadId);
+        for (const resolve of waiters) {
+            resolve();
+        }
+    }
+    resolveAllCompactionWaiters() {
+        for (const threadId of this.compactionWaiters.keys()) {
+            this.resolveCompactionWaiters(threadId);
+        }
+    }
+    setContextWindow(chatId, contextWindow) {
+        this.options.state.setChatContextWindow(chatId, contextWindow);
+        this.options.onDidChangeChat(chatId);
+    }
     async stop() {
         this.rpcClient?.dispose();
         this.rpcClient = undefined;
@@ -689,6 +834,9 @@ class CodexRuntimeController {
         if (this.processManager.isRunning) {
             return;
         }
+        this.loadedThreadIds.clear();
+        this.contextCompactionItemThreads.clear();
+        this.resolveAllCompactionWaiters();
         const profileId = await this.options.profiles.requireProfileId(this.options.settings.listExistingProfileIds());
         const codexHome = await this.options.settings.ensureUserCodexHome(profileId);
         await this.options.onDidResolveProfile?.(profileId);
@@ -782,6 +930,36 @@ class CodexRuntimeController {
             void this.readAccount();
             return;
         }
+        if (notification.method === "account/rateLimits/updated") {
+            try {
+                const rateLimits = normalizeRateLimitsNotification(notification.params);
+                this.updateRateLimits(rateLimits);
+                this.options.logger.info(`Rate limits updated: rows=${rateLimits.rows.length}${rateLimits.rateLimitReachedType ? `, reached=${rateLimits.rateLimitReachedType}` : ""}.`);
+            }
+            catch (error) {
+                const message = normalizeErrorMessage(error);
+                this.updateRateLimits({
+                    status: "error",
+                    rows: [],
+                    message,
+                    updatedAt: new Date().toISOString()
+                });
+                this.options.logger.warn(`Rate limits update ignored: ${message}`);
+            }
+            return;
+        }
+        if (notification.method === "thread/tokenUsage/updated") {
+            const usage = normalizeThreadTokenUsage(notification.params);
+            const chatId = usage ? this.findChatIdForNotification(notification.params) : undefined;
+            if (usage && chatId) {
+                this.setContextWindow(chatId, usage.contextWindow);
+                this.options.logger.info(`Thread token usage updated: thread=${usage.threadId || "-"}; contextInputTokens=${usage.contextWindow.usedTokens ?? "-"}; modelContextWindow=${usage.contextWindow.maxTokens ?? "-"}; contextPercent=${usage.contextWindow.usedPercent ?? "-"}; threadTotalTokens=${usage.threadTotalTokens ?? "-"}.`);
+            }
+            else if (!usage) {
+                this.options.logger.warn(`Thread token usage ignored: unsupported payload shape ${describePayloadShape(notification.params)}.`);
+            }
+            return;
+        }
         if (notification.method === "thread/started") {
             const threadId = extractThreadId(notification.params);
             if (threadId) {
@@ -813,6 +991,20 @@ class CodexRuntimeController {
             if (itemId) {
                 this.itemPayloads.set(itemId, notification.params);
             }
+            if (itemId && extractItemType(notification.params) === "contextCompaction") {
+                const threadId = extractThreadId(notification.params);
+                const chatId = this.findChatIdForNotification(notification.params);
+                if (threadId) {
+                    this.contextCompactionItemThreads.set(itemId, threadId);
+                }
+                if (chatId) {
+                    this.setContextWindow(chatId, {
+                        ...this.options.state.getChatContextWindow(chatId),
+                        status: "compacting",
+                        message: "Codex сжимает контекст..."
+                    });
+                }
+            }
             return;
         }
         if (notification.method === "item/agentMessage/delta") {
@@ -827,6 +1019,26 @@ class CodexRuntimeController {
         }
         if (notification.method === "item/completed") {
             const itemId = extractItemId(notification.params);
+            const itemType = extractItemType(notification.params);
+            if (itemId && (itemType === "contextCompaction" || this.contextCompactionItemThreads.has(itemId))) {
+                const threadId = extractThreadId(notification.params) || this.contextCompactionItemThreads.get(itemId) || "";
+                const chatId = this.findChatIdForNotification(notification.params);
+                if (itemId) {
+                    this.itemPayloads.delete(itemId);
+                    this.contextCompactionItemThreads.delete(itemId);
+                }
+                if (chatId) {
+                    this.setContextWindow(chatId, {
+                        ...this.options.state.getChatContextWindow(chatId),
+                        status: "ready",
+                        message: undefined
+                    });
+                }
+                if (threadId) {
+                    this.resolveCompactionWaiters(threadId);
+                }
+                return;
+            }
             if (itemId) {
                 this.itemPayloads.delete(itemId);
             }
@@ -927,6 +1139,9 @@ class CodexRuntimeController {
             this.options.state.setPendingApproval(pending.chatId, null);
         }
         this.pendingApprovals.clear();
+        this.loadedThreadIds.clear();
+        this.contextCompactionItemThreads.clear();
+        this.resolveAllCompactionWaiters();
         this.rpcClient?.dispose();
         this.rpcClient = undefined;
         this.options.state.setRuntime({
@@ -951,6 +1166,10 @@ class CodexRuntimeController {
     }
     updateAuth(auth) {
         this.options.state.setAuth(auth);
+        this.options.onDidChange();
+    }
+    updateRateLimits(rateLimits) {
+        this.options.state.setRateLimits(rateLimits);
         this.options.onDidChange();
     }
     findChatIdForNotification(params) {
@@ -987,12 +1206,12 @@ function getRunAccessMode(accessMode, mode) {
 }
 function getThreadSandbox(accessMode) {
     if (accessMode === "workspace-write") {
-        return "workspace-write";
+        return "workspaceWrite";
     }
     if (accessMode === "danger-full-access") {
-        return "danger-full-access";
+        return "dangerFullAccess";
     }
-    return "read-only";
+    return "readOnly";
 }
 function getTurnSandboxPolicy(accessMode, cwd) {
     if (accessMode === "workspace-write") {
@@ -1078,6 +1297,103 @@ function normalizeAccountReadResult(result) {
         message: `Codex runtime вернул неизвестный account type: ${type || "empty"}.`
     };
 }
+function normalizeRateLimitsResult(result) {
+    const root = isRecord(result) ? result : {};
+    return normalizeRateLimits(root.rateLimits ?? root);
+}
+function normalizeRateLimitsNotification(params) {
+    const root = isRecord(params) ? params : {};
+    return normalizeRateLimits(root.rateLimits ?? root);
+}
+function normalizeRateLimits(value) {
+    const root = isRecord(value) ? value : {};
+    const rows = [
+        normalizeRateLimitRow("primary", root.primary),
+        normalizeRateLimitRow("secondary", root.secondary)
+    ].filter((row) => Boolean(row));
+    return {
+        status: "ready",
+        rows,
+        updatedAt: new Date().toISOString(),
+        rateLimitReachedType: getString(root.rateLimitReachedType) || undefined
+    };
+}
+function normalizeRateLimitRow(kind, value) {
+    if (!isRecord(value)) {
+        return undefined;
+    }
+    const usedPercent = clampPercent(getNumber(value.usedPercent, 0));
+    const windowDurationMins = getOptionalNumber(value.windowDurationMins);
+    const resetsAt = getOptionalNumber(value.resetsAt);
+    return {
+        kind,
+        usedPercent,
+        remainingPercent: clampPercent(100 - usedPercent),
+        windowDurationMins,
+        resetsAt
+    };
+}
+function normalizeThreadTokenUsage(params) {
+    const root = isRecord(params) ? params : {};
+    const threadId = extractThreadId(root);
+    const tokenUsage = isRecord(root.tokenUsage) ? root.tokenUsage : null;
+    const totalUsage = tokenUsage && isRecord(tokenUsage.total) ? tokenUsage.total : null;
+    const lastUsage = tokenUsage && isRecord(tokenUsage.last) ? tokenUsage.last : null;
+    const fallbackUsedTokens = findFirstNumber(root, [
+        "contextUsedTokens",
+        "usedTokens",
+        "tokensUsed",
+        "inputTokens",
+        "totalInputTokens"
+    ]);
+    const contextInputTokens = getOptionalNumber(lastUsage?.inputTokens) ?? fallbackUsedTokens;
+    const threadTotalTokens = getOptionalNumber(totalUsage?.totalTokens);
+    const maxTokens = getOptionalNumber(tokenUsage?.modelContextWindow) ?? findFirstNumber(root, [
+        "maxTokens",
+        "tokenLimit",
+        "modelContextWindow",
+        "contextWindow",
+        "contextWindowTokens",
+        "contextWindowSize",
+        "maxContextTokens"
+    ]);
+    const rawPercent = findFirstNumber(root, ["usedPercent", "percentUsed", "contextWindowPercent"]);
+    const derivedPercent = contextInputTokens !== null && maxTokens && maxTokens > 0
+        ? contextInputTokens / maxTokens * 100
+        : rawPercent !== null
+            ? normalizePercentValue(rawPercent)
+            : null;
+    if (!threadId && contextInputTokens === null && maxTokens === null && derivedPercent === null && threadTotalTokens === null) {
+        return undefined;
+    }
+    return {
+        threadId,
+        contextWindow: {
+            status: "ready",
+            usedTokens: contextInputTokens,
+            maxTokens,
+            usedPercent: derivedPercent === null ? null : clampPercent(derivedPercent),
+            updatedAt: new Date().toISOString()
+        },
+        threadTotalTokens
+    };
+}
+function describePayloadShape(value) {
+    if (!isRecord(value)) {
+        return Array.isArray(value) ? "array" : typeof value;
+    }
+    const keys = Object.keys(value).slice(0, 12);
+    const nested = keys
+        .map((key) => {
+        const nestedValue = value[key];
+        return isRecord(nestedValue) ? `${key}{${Object.keys(nestedValue).slice(0, 8).join(",")}}` : key;
+    })
+        .join(",");
+    return nested || "empty-object";
+}
+function normalizePercentValue(value) {
+    return value > 0 && value <= 1 ? value * 100 : value;
+}
 function normalizeDeviceCodeChallenge(result) {
     const root = isRecord(result) ? result : {};
     const type = getString(root.type);
@@ -1112,6 +1428,15 @@ function extractItemId(value) {
     }
     const item = isRecord(root.item) ? root.item : null;
     return item ? getString(item.id) : "";
+}
+function extractItemType(value) {
+    const root = isRecord(value) ? value : {};
+    const direct = getString(root.type);
+    if (direct) {
+        return direct;
+    }
+    const item = isRecord(root.item) ? root.item : null;
+    return item ? getString(item.type) : "";
 }
 function extractRequestId(value) {
     const root = isRecord(value) ? value : {};
@@ -1188,6 +1513,15 @@ function normalizeAuthError(error) {
 function isThreadNotFoundError(error) {
     const message = normalizeErrorMessage(error).toLowerCase();
     return message.includes("turn/start") && message.includes("thread not found");
+}
+function isContextWindowError(error) {
+    const message = normalizeErrorMessage(error).toLowerCase();
+    return (message.includes("context") && (message.includes("exceed") || message.includes("full") || message.includes("too large")) ||
+        message.includes("token") && (message.includes("exceed") || message.includes("too many") || message.includes("maximum")));
+}
+function isInvalidRequestError(error) {
+    const message = normalizeErrorMessage(error).toLowerCase();
+    return message.includes("invalid request") || message.includes("unknown field") || message.includes("unknown variant");
 }
 function isModelOrEffortError(error) {
     const message = normalizeErrorMessage(error).toLowerCase();
@@ -1391,6 +1725,41 @@ function isRecord(value) {
 }
 function getString(value) {
     return typeof value === "string" ? value : "";
+}
+function getNumber(value, fallback) {
+    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+function getOptionalNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function findFirstNumber(value, keys) {
+    if (!isRecord(value)) {
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                const found = findFirstNumber(item, keys);
+                if (found !== null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+    for (const key of keys) {
+        const direct = value[key];
+        if (typeof direct === "number" && Number.isFinite(direct)) {
+            return direct;
+        }
+    }
+    for (const nested of Object.values(value)) {
+        const found = findFirstNumber(nested, keys);
+        if (found !== null) {
+            return found;
+        }
+    }
+    return null;
+}
+function clampPercent(value) {
+    return Math.max(0, Math.min(100, value));
 }
 function getBoolean(value, fallback) {
     return typeof value === "boolean" ? value : fallback;

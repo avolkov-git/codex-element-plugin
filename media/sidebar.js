@@ -31,7 +31,7 @@
     if (state.snapshot && state.snapshot.auth.status === "authenticated") {
       render();
     }
-  }, 60000);
+  }, 30000);
   render();
 
   function render() {
@@ -169,6 +169,7 @@
       ${chatSection("Чаты", "general", snapshot)}
       ${archiveSection(snapshot)}
       ${notice()}
+      ${rateLimits(snapshot)}
     `;
   }
 
@@ -264,6 +265,36 @@
     return state.notice ? `<div class="notice">${escapeHtml(state.notice)}</div>` : "";
   }
 
+  function rateLimits(snapshot) {
+    const limits = snapshot.rateLimits;
+    if (!limits || limits.status !== "ready" || !Array.isArray(limits.rows) || !limits.rows.length) {
+      return "";
+    }
+
+    return `
+      <section class="rate-limits" aria-label="Остатки лимитов Codex">
+        ${limits.rows.map((row) => rateLimitRow(row)).join("")}
+      </section>
+    `;
+  }
+
+  function rateLimitRow(row) {
+    const label = row.kind === "secondary"
+      ? "Еженедельно"
+      : formatWindowDuration(row.windowDurationMins);
+    const right = [
+      formatRemainingPercent(row.remainingPercent),
+      formatResetAt(row.resetsAt)
+    ].filter(Boolean).join(" ");
+
+    return `
+      <div class="rate-limit-row">
+        <span class="rate-limit-label">${escapeHtml(label)}</span>
+        <span class="rate-limit-value">${escapeHtml(right)}</span>
+      </div>
+    `;
+  }
+
   function bind(root) {
     root.querySelectorAll("[data-mode]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -344,6 +375,56 @@
     } catch {
       return "";
     }
+  }
+
+  function formatWindowDuration(value) {
+    const minutes = Number(value);
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      return "Лимит";
+    }
+    if (minutes < 60) {
+      return `${Math.round(minutes)}м`;
+    }
+    if (minutes < 24 * 60) {
+      return `${Math.round(minutes / 60)}ч`;
+    }
+    return `${Math.round(minutes / (24 * 60))}д`;
+  }
+
+  function formatRemainingPercent(value) {
+    const percent = Number(value);
+    if (!Number.isFinite(percent)) {
+      return "";
+    }
+    return `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+  }
+
+  function formatResetAt(value) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      return "";
+    }
+
+    const reset = new Date(seconds * 1000);
+    if (!Number.isFinite(reset.getTime())) {
+      return "";
+    }
+
+    const now = new Date();
+    if (
+      reset.getFullYear() === now.getFullYear() &&
+      reset.getMonth() === now.getMonth() &&
+      reset.getDate() === now.getDate()
+    ) {
+      return `${pad2(reset.getHours())}:${pad2(reset.getMinutes())}`;
+    }
+
+    const months = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+    return `${reset.getDate()} ${months[reset.getMonth()] || ""}`.trim();
+  }
+
+  function pad2(value) {
+    return String(value).padStart(2, "0");
   }
 
   function escapeHtml(value) {

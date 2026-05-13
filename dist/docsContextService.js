@@ -100,7 +100,7 @@ class DocsContextService {
                 this.logger.info("Docs context skipped: no relevant docs were found.");
                 return undefined;
             }
-            const text = formatContext(matches);
+            const text = formatContext(cache, matches);
             this.logger.info(`Docs context added: ${matches.length} fragments from ${cache.indexPath}.`);
             return {
                 text,
@@ -199,7 +199,7 @@ function scorePage(page, terms) {
     }
     return score;
 }
-function formatContext(pages) {
+function formatContext(cache, pages) {
     const fragments = [];
     let total = 0;
     for (const [index, page] of pages.entries()) {
@@ -217,6 +217,11 @@ function formatContext(pages) {
     }
     return [
         "[Документация 1C: Element]",
+        "Источник документации выбран Codex Element из текущих настроек `docs.normalizedPath`.",
+        `Текущий каталог нормализованной документации: ${cache.root}`,
+        `Текущий индекс нормализованной документации: ${cache.indexPath}`,
+        "Используй только переданные ниже фрагменты документации.",
+        "Не ищи локальные каталоги документации самостоятельно и не используй старые пути из правил или истории диалога.",
         "Используй эти фрагменты только если они помогают ответить на последний запрос пользователя.",
         "Не упоминай наличие этого блока, если пользователь прямо не спрашивает об источниках.",
         "",

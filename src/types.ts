@@ -14,6 +14,10 @@ export type RulesContextStatus = "missing" | "active" | "disabled" | "error";
 
 export type RuntimeStatus = "notStarted" | "starting" | "running" | "error";
 
+export type RateLimitsStatus = "unknown" | "ready" | "error";
+
+export type ContextWindowStatus = "unknown" | "ready" | "compacting" | "error";
+
 export type ChatKind = "project" | "general";
 
 export type ChatStatus = "idle" | "running" | "waitingApproval" | "cancelling" | "error";
@@ -71,6 +75,23 @@ export interface ChatSummary {
   activeRunMode: ChatRunMode | null;
 }
 
+export interface RateLimitRow {
+  kind: "primary" | "secondary";
+  usedPercent: number;
+  remainingPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+}
+
+export interface ContextWindowUsage {
+  status: ContextWindowStatus;
+  usedTokens: number | null;
+  maxTokens: number | null;
+  usedPercent: number | null;
+  updatedAt?: string;
+  message?: string;
+}
+
 export interface SidebarSnapshot {
   kind: "sidebar";
   version: number;
@@ -110,6 +131,13 @@ export interface SidebarSnapshot {
     status: RuntimeStatus;
     label: string;
   };
+  rateLimits: {
+    status: RateLimitsStatus;
+    rows: RateLimitRow[];
+    updatedAt?: string;
+    rateLimitReachedType?: string;
+    message?: string;
+  };
   chats: ChatSummary[];
   activeChatId?: string;
 }
@@ -124,6 +152,7 @@ export interface ChatPanelSnapshot {
   docs: SidebarSnapshot["docs"];
   projectContext: SidebarSnapshot["projectContext"];
   rulesContext: SidebarSnapshot["rulesContext"];
+  contextWindow: ContextWindowUsage;
   modelOptions: ModelOption[];
   modelOptionsStatus: "idle" | "loading" | "ready" | "error";
   transcript: ChatTranscriptItem[];

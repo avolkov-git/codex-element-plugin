@@ -95,7 +95,7 @@ export class DocsContextService {
         return undefined;
       }
 
-      const text = formatContext(matches);
+      const text = formatContext(cache, matches);
       this.logger.info(`Docs context added: ${matches.length} fragments from ${cache.indexPath}.`);
       return {
         text,
@@ -203,7 +203,7 @@ function scorePage(page: DocsPage, terms: string[]): number {
   return score;
 }
 
-function formatContext(pages: DocsPage[]): string {
+function formatContext(cache: DocsCache, pages: DocsPage[]): string {
   const fragments: string[] = [];
   let total = 0;
 
@@ -224,6 +224,11 @@ function formatContext(pages: DocsPage[]): string {
 
   return [
     "[Документация 1C: Element]",
+    "Источник документации выбран Codex Element из текущих настроек `docs.normalizedPath`.",
+    `Текущий каталог нормализованной документации: ${cache.root}`,
+    `Текущий индекс нормализованной документации: ${cache.indexPath}`,
+    "Используй только переданные ниже фрагменты документации.",
+    "Не ищи локальные каталоги документации самостоятельно и не используй старые пути из правил или истории диалога.",
     "Используй эти фрагменты только если они помогают ответить на последний запрос пользователя.",
     "Не упоминай наличие этого блока, если пользователь прямо не спрашивает об источниках.",
     "",
