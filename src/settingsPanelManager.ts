@@ -24,7 +24,7 @@ export class SettingsPanelManager {
     private readonly normalizer: DocsNormalizerService,
     private readonly baseContext: BaseContextService,
     private readonly logger: Logger,
-    private readonly onSettingsChanged: (options?: { restartRuntime?: boolean }) => Promise<void>
+    private readonly onSettingsChanged: (options?: { restartRuntime?: boolean; docsChanged?: boolean }) => Promise<void>
   ) {}
 
   registerSerializer(): vscode.Disposable {
@@ -131,7 +131,7 @@ export class SettingsPanelManager {
       }
 
       this.settings.saveDocsNormalizedPath(normalizedPath);
-      await this.onSettingsChanged({ restartRuntime: false });
+      await this.onSettingsChanged({ restartRuntime: false, docsChanged: true });
       await panel.webview.postMessage({
         type: "event",
         event: "settings.saved",
@@ -239,7 +239,7 @@ export class SettingsPanelManager {
         }
       });
       this.settings.saveDocsPaths(result.sourcePath, result.outputPath);
-      await this.onSettingsChanged({ restartRuntime: false });
+      await this.onSettingsChanged({ restartRuntime: false, docsChanged: true });
       await panel.webview.postMessage({
         type: "event",
         event: "settings.saved",

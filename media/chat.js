@@ -6,8 +6,13 @@
   const assetMode = window.__codexElementWebviewAssetMode || "external";
   const vscode = acquireVsCodeApi();
   const root = document.getElementById("root");
+  const TRANSCRIPT_INITIAL_WINDOW_SIZE = 40;
+  const TRANSCRIPT_PAGE_SIZE = 20;
+  const TRANSCRIPT_MAX_RENDERED_ITEMS = 40;
+  const TRANSCRIPT_LOAD_THRESHOLD = 280;
   const state = {
     snapshot: undefined,
+    transcriptWindow: undefined,
     notice: "",
     lastTranscriptSignature: "",
     lastReadSignal: "",
@@ -21,7 +26,15 @@
     contextDetails: null,
     contextDetailsLoading: false,
     drafts: Object.create(null),
-    planningArmedByChat: Object.create(null)
+    planningArmedByChat: Object.create(null),
+    liveDurationTimer: 0,
+    showScrollToBottom: false,
+    loadingBefore: false,
+    loadingAfter: false,
+    pendingScrollAnchor: null,
+    scrollToBottomAfterWindow: false,
+    lastTranscriptUserNavigationAt: 0,
+    lastTranscriptNavigationDirection: "both"
   };
 
   document.addEventListener("click", (event) => {
@@ -35,6 +48,7 @@
       state.contextPopup = null;
       state.contextDetails = null;
       state.contextDetailsLoading = false;
+      state.showScrollToBottom = false;
       render();
       return;
     }
@@ -48,7 +62,9 @@
   window.addEventListener("message", (event) => {
     const message = event.data;
     if (message.type === "chat.snapshot") {
+      const previousChatId = state.snapshot && state.snapshot.chat ? state.snapshot.chat.id : "";
       state.snapshot = message.snapshot || undefined;
+      syncTranscriptWindowFromSnapshot(previousChatId);
       if (state.snapshot && state.snapshot.chat) {
         vscode.setState({ activeChatId: state.snapshot.chat.id });
       }
@@ -66,6 +82,10 @@
       state.contextDetails = message.payload || null;
       state.contextPopup = state.contextDetails && state.contextDetails.kind ? state.contextDetails.kind : state.contextPopup;
       state.contextDetailsLoading = false;
+      render();
+    }
+    if (message.type === "event" && message.event === "chat.transcript.window") {
+      applyTranscriptWindowEvent(message.payload || {});
       render();
     }
     if (message.type === "event" && message.event === "chat.plan.reviseDraft") {
@@ -86,6 +106,152 @@
     }
   });
 
+  function syncTranscriptWindowFromSnapshot(previousChatId) {
+    const snapshot = state.snapshot;
+    if (!snapshot || !snapshot.chat) {
+      state.transcriptWindow = undefined;
+      state.loadingBefore = false;
+      state.loadingAfter = false;
+      state.pendingScrollAnchor = null;
+      state.scrollToBottomAfterWindow = false;
+      return;
+    }
+
+    const incoming = normalizeTranscriptWindow(snapshot.transcriptWindow || windowFromLegacyTranscript(snapshot.transcript));
+    const chatChanged = previousChatId !== snapshot.chat.id;
+    if (chatChanged || !state.transcriptWindow) {
+      state.transcriptWindow = incoming;
+      state.loadingBefore = false;
+      state.loadingAfter = false;
+      state.pendingScrollAnchor = null;
+      state.scrollToBottomAfterWindow = false;
+      return;
+    }
+
+    if ((!state.stickToBottom || state.transcriptWindow.hasAfter) && state.showScrollToBottom) {
+      state.transcriptWindow = {
+        ...state.transcriptWindow,
+        totalCount: Math.max(state.transcriptWindow.totalCount || 0, incoming.totalCount || 0),
+        hasAfter: true
+      };
+      return;
+    }
+
+    state.transcriptWindow = incoming;
+    state.loadingBefore = false;
+    state.loadingAfter = false;
+  }
+
+  function applyTranscriptWindowEvent(payload) {
+    const mode = payload.mode || "tail";
+    const incoming = normalizeTranscriptWindow(payload.window);
+    if (!state.snapshot || !state.snapshot.chat) {
+      return;
+    }
+
+    if (mode === "tail" || !state.transcriptWindow) {
+      state.transcriptWindow = incoming;
+      state.loadingBefore = false;
+      state.loadingAfter = false;
+      state.pendingScrollAnchor = null;
+      state.scrollToBottomAfterWindow = mode === "tail";
+      state.stickToBottom = true;
+      state.showScrollToBottom = false;
+      return;
+    }
+
+    if (mode === "before") {
+      state.transcriptWindow = mergeTranscriptBefore(state.transcriptWindow, incoming);
+      state.loadingBefore = false;
+      return;
+    }
+
+    if (mode === "after") {
+      state.transcriptWindow = mergeTranscriptAfter(state.transcriptWindow, incoming);
+      state.loadingAfter = false;
+    }
+  }
+
+  function normalizeTranscriptWindow(raw) {
+    let items = Array.isArray(raw && raw.items) ? raw.items.filter(Boolean) : [];
+    let offset = typeof raw?.offset === "number" && Number.isFinite(raw.offset) ? Math.max(0, raw.offset) : 0;
+    if (items.length > TRANSCRIPT_MAX_RENDERED_ITEMS) {
+      const removeCount = items.length - TRANSCRIPT_MAX_RENDERED_ITEMS;
+      items = items.slice(removeCount);
+      offset += removeCount;
+    }
+    const firstItemId = raw && typeof raw.firstItemId === "string" ? raw.firstItemId : items[0]?.id;
+    const lastItemId = raw && typeof raw.lastItemId === "string" ? raw.lastItemId : items[items.length - 1]?.id;
+    return {
+      items,
+      offset,
+      totalCount: typeof raw?.totalCount === "number" && Number.isFinite(raw.totalCount) ? Math.max(0, raw.totalCount) : items.length,
+      hasBefore: Boolean(raw?.hasBefore) || offset > 0,
+      hasAfter: Boolean(raw?.hasAfter),
+      firstItemId,
+      lastItemId
+    };
+  }
+
+  function windowFromLegacyTranscript(transcript) {
+    const allItems = Array.isArray(transcript) ? transcript : [];
+    const offset = Math.max(0, allItems.length - TRANSCRIPT_INITIAL_WINDOW_SIZE);
+    const items = allItems.slice(offset);
+    return {
+      items,
+      offset,
+      totalCount: allItems.length,
+      hasBefore: offset > 0,
+      hasAfter: false,
+      firstItemId: items[0]?.id,
+      lastItemId: items[items.length - 1]?.id
+    };
+  }
+
+  function mergeTranscriptBefore(current, incoming) {
+    const currentItems = Array.isArray(current.items) ? current.items : [];
+    const known = new Set(currentItems.map((item) => item.id));
+    const incomingItems = (incoming.items || []).filter((item) => item && !known.has(item.id));
+    let items = [...incomingItems, ...currentItems];
+    let offset = incoming.offset || 0;
+    let hasBefore = incoming.hasBefore;
+    let hasAfter = current.hasAfter;
+    if (items.length > TRANSCRIPT_MAX_RENDERED_ITEMS) {
+      items = items.slice(0, TRANSCRIPT_MAX_RENDERED_ITEMS);
+      hasAfter = true;
+    }
+    return buildClientTranscriptWindow(items, offset, Math.max(current.totalCount || 0, incoming.totalCount || 0), hasBefore, hasAfter);
+  }
+
+  function mergeTranscriptAfter(current, incoming) {
+    const currentItems = Array.isArray(current.items) ? current.items : [];
+    const known = new Set(currentItems.map((item) => item.id));
+    const incomingItems = (incoming.items || []).filter((item) => item && !known.has(item.id));
+    let items = [...currentItems, ...incomingItems];
+    let offset = current.offset || 0;
+    let hasBefore = current.hasBefore;
+    let hasAfter = incoming.hasAfter;
+    if (items.length > TRANSCRIPT_MAX_RENDERED_ITEMS) {
+      const removeCount = items.length - TRANSCRIPT_MAX_RENDERED_ITEMS;
+      items = items.slice(removeCount);
+      offset += removeCount;
+      hasBefore = true;
+    }
+    return buildClientTranscriptWindow(items, offset, Math.max(current.totalCount || 0, incoming.totalCount || 0), hasBefore, hasAfter);
+  }
+
+  function buildClientTranscriptWindow(items, offset, totalCount, hasBefore, hasAfter) {
+    return {
+      items,
+      offset,
+      totalCount,
+      hasBefore,
+      hasAfter,
+      firstItemId: items[0]?.id,
+      lastItemId: items[items.length - 1]?.id
+    };
+  }
+
   vscode.postMessage({ type: "ready", assetMode });
   render();
 
@@ -100,6 +266,7 @@
           </section>
         </main>
       `;
+      syncLiveDurationTimer();
       return;
     }
 
@@ -107,7 +274,8 @@
     const focusState = capturePromptFocus(previousChatId);
     const previousBody = root.querySelector("[data-role='transcript']");
     const previousScrollTop = previousBody ? previousBody.scrollTop : 0;
-    const previousWasNearBottom = previousBody ? isNearBottom(previousBody) : true;
+    const previousWasNearBottom = previousBody ? isAtTranscriptTail(previousBody) : true;
+    const previousAnchor = captureTranscriptAnchor(previousBody);
     if (state.renderedChatId !== snapshot.chat.id) {
       state.renderedChatId = snapshot.chat.id;
       state.hasRenderedCurrentChat = false;
@@ -115,6 +283,11 @@
       state.lastTranscriptSignature = "";
       state.notice = "";
       state.stickToBottom = !snapshot.chat.hasUnread;
+      state.transcriptWindow = normalizeTranscriptWindow(snapshot.transcriptWindow || windowFromLegacyTranscript(snapshot.transcript));
+      state.loadingBefore = false;
+      state.loadingAfter = false;
+      state.pendingScrollAnchor = null;
+      state.scrollToBottomAfterWindow = false;
       state.openMenu = null;
       state.openModelSubmenu = null;
       state.contextPopup = null;
@@ -128,10 +301,11 @@
       <main class="app">
         ${chatHeader(snapshot)}
         <section class="body" data-role="transcript">
-          ${snapshot.transcript.map(message).join("")}
+          ${renderTranscriptWindow(getTranscriptWindow())}
           ${state.notice ? `<div class="event">${escapeHtml(state.notice)}</div>` : ""}
           <div class="transcript-end" data-role="transcript-end"></div>
         </section>
+        ${scrollToBottomButton()}
         ${snapshot.chat.archivedAt ? archivedFooter() : composerFooter(snapshot)}
         ${snapshot.chat.pendingApproval ? approvalModal(snapshot.chat.pendingApproval) : ""}
       </main>
@@ -146,23 +320,40 @@
         if (state.suppressScrollEvents) {
           return;
         }
-        state.stickToBottom = isNearBottom(body);
+        state.stickToBottom = isAtTranscriptTail(body);
+        maybeRequestTranscriptWindow(body, {
+          userInitiated: wasRecentTranscriptUserNavigation(),
+          direction: state.lastTranscriptNavigationDirection
+        });
         notifyReadToBottomIfNeeded(body, snapshot);
+        updateScrollToBottomButton(body);
       });
-      body.addEventListener("wheel", () => {
+      body.addEventListener("wheel", (event) => {
+        markTranscriptUserNavigation(event.deltaY < 0 ? "before" : "after");
         requestAnimationFrame(() => {
-          state.stickToBottom = isNearBottom(body);
+          state.stickToBottom = isAtTranscriptTail(body);
+          maybeRequestTranscriptWindow(body, {
+            userInitiated: true,
+            direction: state.lastTranscriptNavigationDirection
+          });
           notifyReadToBottomIfNeeded(body, snapshot);
+          updateScrollToBottomButton(body);
         });
       });
+      body.addEventListener("pointerdown", () => {
+        markTranscriptUserNavigation("both");
+      });
       requestAnimationFrame(() => {
-        restoreTranscriptScroll(body, end, previousScrollTop, shouldStickToBottom, transcriptChanged);
+        restoreTranscriptScroll(body, end, previousScrollTop, shouldStickToBottom, transcriptChanged, state.pendingScrollAnchor || previousAnchor);
+        state.pendingScrollAnchor = null;
         notifyReadToBottomIfNeeded(body, snapshot);
+        updateScrollToBottomButton(body);
       });
     }
     state.lastTranscriptSignature = signature;
     state.hasRenderedCurrentChat = true;
     restorePromptFocus(focusState, snapshot.chat.id);
+    syncLiveDurationTimer();
 
     root.querySelectorAll("[data-command]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -170,6 +361,28 @@
         if (command === "chat.cancel") {
           state.notice = "";
           vscode.postMessage({ type: "command", command });
+          return;
+        }
+        if (command === "chat.scrollToBottom") {
+          const transcript = root.querySelector("[data-role='transcript']");
+          const transcriptEnd = root.querySelector("[data-role='transcript-end']");
+          if (transcript) {
+            state.stickToBottom = true;
+            if (state.transcriptWindow && state.transcriptWindow.hasAfter) {
+              state.scrollToBottomAfterWindow = true;
+              state.showScrollToBottom = false;
+              state.loadingAfter = false;
+              vscode.postMessage({
+                type: "command",
+                command: "chat.transcript.tail",
+                payload: { count: TRANSCRIPT_INITIAL_WINDOW_SIZE }
+              });
+            } else {
+              scrollTranscriptToBottom(transcript, transcriptEnd, true);
+              notifyReadToBottomIfNeeded(transcript, snapshot);
+              updateScrollToBottomButton(transcript);
+            }
+          }
           return;
         }
         if (command === "chat.send") {
@@ -427,6 +640,22 @@
     `;
   }
 
+  function scrollToBottomButton() {
+    return `
+      <button class="scroll-to-bottom${state.showScrollToBottom ? " visible" : ""}" type="button" data-command="chat.scrollToBottom" data-role="scroll-to-bottom" aria-label="В конец диалога" title="В конец диалога">
+        ${scrollDownIcon()}
+      </button>
+    `;
+  }
+
+  function scrollDownIcon() {
+    return `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M12 18.5c-.38 0-.76-.15-1.05-.44l-6-6a1.5 1.5 0 0 1 2.1-2.12l3.45 3.44V4.5a1.5 1.5 0 0 1 3 0v8.88l3.45-3.44a1.5 1.5 0 1 1 2.1 2.12l-6 6c-.29.29-.67.44-1.05.44Z"/>
+      </svg>
+    `;
+  }
+
   function chatHeader(snapshot) {
     const mode = snapshot.chatHeaderMode === "expanded" ? "expanded" : "collapsed";
     const status = chatStatusPill(snapshot.chat);
@@ -572,15 +801,17 @@
   }
 
   function getPlanText(planId) {
-    const snapshot = state.snapshot;
-    if (!snapshot || !Array.isArray(snapshot.transcript)) {
-      return "";
-    }
-    const item = snapshot.transcript.find((candidate) => candidate.id === planId);
+    const item = getTranscriptItems().find((candidate) => candidate.id === planId);
     if (!item) {
       return "";
     }
-    return extractPlan(item.text)?.plan || "";
+    if (item.kind === "plan") {
+      return item.markdown || "";
+    }
+    if ((item.kind || "message") === "message") {
+      return extractPlan(item.text)?.plan || "";
+    }
+    return "";
   }
 
   function toggleMenu(menu) {
@@ -675,11 +906,15 @@
     return `
       <div class="context-details-title">Проектный контекст</div>
       <div class="context-details-row"><span>Статус</span><strong>${escapeHtml(details.label || statusLabel(details.status))}</strong></div>
-      ${details.workspaceRoot ? `<div class="context-details-row"><span>Workspace</span><code>${escapeHtml(details.workspaceRoot)}</code></div>` : ""}
-      ${details.indexPath ? `<div class="context-details-row"><span>Индекс</span><code>${escapeHtml(details.indexPath)}</code></div>` : ""}
-      ${details.updatedAt ? `<div class="context-details-row"><span>Обновлен</span><span>${escapeHtml(formatDetailsDate(details.updatedAt))}</span></div>` : ""}
-      ${details.error ? `<div class="context-details-error">${escapeHtml(details.error)}</div>` : ""}
-      <div class="context-details-subtitle">Индексированные файлы (${Number(details.count || files.length)})</div>
+	      ${details.workspaceRoot ? `<div class="context-details-row"><span>Workspace</span><code>${escapeHtml(details.workspaceRoot)}</code></div>` : ""}
+	      ${details.indexPath ? `<div class="context-details-row"><span>Индекс</span><code>${escapeHtml(details.indexPath)}</code></div>` : ""}
+	      ${details.version ? `<div class="context-details-row"><span>Версия индекса</span><span>v${Number(details.version)}</span></div>` : ""}
+	      ${details.chunkCount !== undefined ? `<div class="context-details-row"><span>Chunks</span><span>${Number(details.chunkCount)}</span></div>` : ""}
+	      ${details.dirty !== undefined ? `<div class="context-details-row"><span>Состояние</span><span>${details.dirty ? "требует обновления" : "актуален"}</span></div>` : ""}
+	      ${details.updatedAt ? `<div class="context-details-row"><span>Обновлен</span><span>${escapeHtml(formatDetailsDate(details.updatedAt))}</span></div>` : ""}
+	      ${details.error ? `<div class="context-details-error">${escapeHtml(details.error)}</div>` : ""}
+	      ${projectLastUsedChunks(details)}
+	      <div class="context-details-subtitle">Индексированные файлы (${Number(details.count || files.length)})</div>
       ${files.length ? `
         <div class="context-file-list">
           ${files.map((file) => `<div class="context-file-item">${escapeHtml(file)}</div>`).join("")}
@@ -688,22 +923,105 @@
     `;
   }
 
-  function projectDetailsEmptyText(details) {
-    return details.status === "notIndexed"
-      ? "Индекс проекта еще не собран. Он будет создан при первом проектном запросе."
-      : "В индексе проекта пока нет файлов.";
-  }
+	  function projectDetailsEmptyText(details) {
+	    return details.status === "notIndexed"
+	      ? "Индекс проекта еще не собран. Он будет создан при первом проектном запросе."
+	      : "В индексе проекта пока нет файлов.";
+	  }
+
+	  function projectLastUsedChunks(details) {
+	    const chunks = Array.isArray(details.lastUsedChunks) ? details.lastUsedChunks : [];
+	    if (!chunks.length) {
+	      return `<div class="context-details-row"><span>Последний turn</span><span>project chunks не использовались</span></div>`;
+	    }
+	    return `
+	      <div class="context-details-subtitle">Последние использованные chunks (${chunks.length})</div>
+	      <div class="context-file-list compact">
+	        ${chunks.map((chunk) => `
+	          <div class="context-file-item">
+	            <strong>${escapeHtml(chunk.path || "project chunk")}</strong>
+	            <span>${Number(chunk.startLine || 0)}-${Number(chunk.endLine || 0)}${chunk.score !== undefined ? ` · score ${escapeHtml(formatScore(chunk.score))}` : ""}</span>
+	            ${Array.isArray(chunk.symbols) && chunk.symbols.length ? `<span>${chunk.symbols.map((symbol) => escapeHtml(symbol)).join(", ")}</span>` : ""}
+	          </div>
+	        `).join("")}
+	      </div>
+	    `;
+	  }
 
   function docsDetailsBody(details) {
-    const sourceLabel = details.source === "normalized" ? "Нормализованная документация" : "Документация не используется";
+    const sourceLabel = details.source === "normalized"
+      ? "Нормализованная документация"
+      : details.source === "multiple"
+        ? "Несколько разрешенных источников"
+        : "Документация не используется";
+    const corpora = Array.isArray(details.corpora) ? details.corpora : [];
+    const roots = Array.isArray(details.allowedRoots) ? details.allowedRoots : [];
     return `
-      <div class="context-details-title">Документация</div>
-      <div class="context-details-row"><span>Источник</span><strong>${escapeHtml(sourceLabel)}</strong></div>
-      ${details.normalizedPath ? `<div class="context-details-row"><span>Каталог</span><code>${escapeHtml(details.normalizedPath)}</code></div>` : ""}
+	      <div class="context-details-title">Документация</div>
+	      <div class="context-details-row"><span>Источник</span><strong>${escapeHtml(sourceLabel)}</strong></div>
+	      <div class="context-details-row"><span>Retrieval</span><strong>${escapeHtml(docsRetrievalModeLabel(details.lastRetrievalMode))}</strong></div>
+	      ${details.lastRetrievalAt ? `<div class="context-details-row"><span>Последний поиск</span><span>${escapeHtml(formatDetailsDate(details.lastRetrievalAt))}</span></div>` : ""}
+	      ${details.lastQueryCount !== undefined ? `<div class="context-details-row"><span>Запросов</span><span>${Number(details.lastQueryCount)}</span></div>` : ""}
+	      ${details.lastSelectedFragments !== undefined ? `<div class="context-details-row"><span>Фрагментов выбрано</span><span>${Number(details.lastSelectedFragments)}</span></div>` : ""}
+	      ${details.normalizedPath ? `<div class="context-details-row"><span>Каталог</span><code>${escapeHtml(details.normalizedPath)}</code></div>` : ""}
+      ${details.sourcePath ? `<div class="context-details-row"><span>Исходный каталог</span><code>${escapeHtml(details.sourcePath)}</code></div>` : ""}
       ${details.indexPath ? `<div class="context-details-row"><span>Индекс</span><code>${escapeHtml(details.indexPath)}</code></div>` : ""}
+      ${details.fingerprint ? `<div class="context-details-row"><span>Fingerprint</span><code>${escapeHtml(details.fingerprint)}</code></div>` : ""}
+      ${details.fingerprintLatestMtimeMs ? `<div class="context-details-row"><span>Обновлен</span><span>${escapeHtml(formatDetailsDate(details.fingerprintLatestMtimeMs))}</span></div>` : ""}
+      ${details.fingerprintFiles ? `<div class="context-details-row"><span>Файлов индекса</span><span>${Number(details.fingerprintFiles)}</span></div>` : ""}
+      ${roots.length ? `
+        <div class="context-details-subtitle">Разрешенные roots (${roots.length})</div>
+        <div class="context-file-list">
+          ${roots.map((root) => `
+            <div class="context-file-item">
+              <strong>${escapeHtml(root.label || docsRootKindLabel(root.kind))}</strong>
+              <span>${escapeHtml(root.status === "configured" ? "активен" : "ошибка")}${root.fingerprint ? ` · fingerprint ${escapeHtml(root.fingerprint)}` : ""}</span>
+              <code>${escapeHtml(root.path || "")}</code>
+              ${root.fingerprintLatestMtimeMs ? `<span>Обновлен: ${escapeHtml(formatDetailsDate(root.fingerprintLatestMtimeMs))}</span>` : ""}
+              ${Array.isArray(root.corpora) && root.corpora.length ? `<span>Корпуса: ${root.corpora.map((item) => escapeHtml(item.corpus || item.label || "corpus")).join(", ")}</span>` : ""}
+              ${root.error ? `<span class="context-details-error">${escapeHtml(root.error)}</span>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
+      ${corpora.length ? `
+        <div class="context-details-subtitle">Активные корпуса (${corpora.length})</div>
+        <div class="context-file-list">
+          ${corpora.map((corpus) => `
+            <div class="context-file-item">
+              <strong>${escapeHtml(corpus.label || corpus.corpus || "Корпус")}</strong>
+              <span>${escapeHtml(corpus.corpus || "")}${corpus.format ? ` · ${escapeHtml(corpus.format)}` : ""}</span>
+              ${corpus.indexPath ? `<code>${escapeHtml(corpus.indexPath)}</code>` : ""}
+              ${Array.isArray(corpus.files) && corpus.files.length ? `<span>${corpus.files.length} файлов индекса</span>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
       ${details.error ? `<div class="context-details-error">${escapeHtml(details.error)}</div>` : ""}
     `;
   }
+
+	  function docsRootKindLabel(kind) {
+    if (kind === "normalized") return "Нормализованная документация";
+    if (kind === "source") return "Исходная документация";
+    if (kind === "serverDocs") return "Документация server/docs";
+    return "Источник документации";
+	  }
+
+	  function docsRetrievalModeLabel(mode) {
+	    if (mode === "model-assisted") return "model-assisted";
+	    if (mode === "deterministic") return "deterministic";
+	    if (mode === "fallback") return "fallback";
+	    return "не запускался";
+	  }
+
+	  function formatScore(value) {
+	    const number = Number(value);
+	    if (!Number.isFinite(number)) {
+	      return String(value);
+	    }
+	    return number.toFixed(number >= 10 ? 0 : 2);
+	  }
 
   function statusLabel(status) {
     if (status === "active" || status === "configured") return "Активен";
@@ -1038,26 +1356,178 @@
     `;
   }
 
-  function message(item) {
-    const plan = item.role === "assistant" ? extractPlan(item.text) : undefined;
+  function getTranscriptWindow() {
+    if (state.transcriptWindow) {
+      return state.transcriptWindow;
+    }
+    const snapshot = state.snapshot;
+    return normalizeTranscriptWindow(snapshot?.transcriptWindow || windowFromLegacyTranscript(snapshot?.transcript));
+  }
+
+  function getTranscriptItems() {
+    return getTranscriptWindow().items || [];
+  }
+
+  function renderTranscriptWindow(windowState) {
+    const window = normalizeTranscriptWindow(windowState);
+    return `
+      ${window.hasBefore ? `<div class="transcript-window-sentinel before" data-role="transcript-before">Загрузить предыдущие сообщения</div>` : ""}
+      ${renderTranscript(window.items)}
+      ${window.hasAfter ? `<div class="transcript-window-sentinel after" data-role="transcript-after">Ниже есть новые сообщения</div>` : ""}
+    `;
+  }
+
+  function renderTranscript(items) {
+    const source = Array.isArray(items) ? items : [];
+    return source
+      .filter((item, index) => item && (item.kind !== "connection" || !source[index + 1] || source[index + 1].kind !== "connection"))
+      .map(transcriptItem)
+      .filter(Boolean)
+      .join("");
+  }
+
+  function transcriptItem(item) {
+    const kind = item.kind || "message";
+    if (kind === "message") return messageBlock(item);
+    if (kind === "activity") return activityBlock(item);
+    if (kind === "diff") return diffBlock(item);
+    if (kind === "plan") return planBlock(item);
+    if (kind === "compaction") return compactionBlock(item);
+    if (kind === "connection") return connectionBlock(item);
+    if (kind === "error") return errorBlock(item);
+    return "";
+  }
+
+  function messageBlock(item) {
+    const roleValue = item.role || "assistant";
+    const text = String(item.text || "");
+    const plan = roleValue === "assistant" ? extractPlan(text) : undefined;
     if (plan) {
+      return planBlock({
+        kind: "plan",
+        id: item.id,
+        markdown: plan.plan,
+        createdAt: item.createdAt,
+        updatedAt: item.completedAt
+      });
+    }
+    if (roleValue === "user") {
       return `
-        <article class="message plan-message">
-          <div class="plan-card">
-            <div class="plan-kicker">План</div>
-            <div class="plan-text">${escapeHtml(plan.plan)}</div>
-            <div class="plan-actions">
-              <button class="button secondary" data-command="chat.plan.revise" data-plan-id="${escapeAttribute(item.id)}">Изменить</button>
-              <button class="button" data-command="chat.plan.implement" data-plan-id="${escapeAttribute(item.id)}">Реализовать</button>
-            </div>
-          </div>
+        <article class="transcript-item user-message" data-item-id="${escapeAttribute(item.id)}">
+          <div class="user-bubble">${markdownInline(text)}</div>
         </article>
       `;
     }
+    if (roleValue === "system") {
+      return `
+        <article class="transcript-item system-message" data-item-id="${escapeAttribute(item.id)}">
+          <div class="system-role">Система</div>
+          <div class="markdown-body">${markdown(text)}</div>
+        </article>
+      `;
+    }
+    const duration = messageDurationHtml(item);
     return `
-      <article class="message">
-        <div class="message-role">${role(item.role)}</div>
-        <div class="message-text">${escapeHtml(item.text)}</div>
+      <article class="transcript-item assistant-message ${item.status === "streaming" ? "streaming" : ""}" data-item-id="${escapeAttribute(item.id)}">
+        ${duration ? `<div class="assistant-meta">${duration}</div>` : ""}
+        <div class="markdown-body">${markdown(text || (item.status === "streaming" ? "Думаю" : ""))}</div>
+      </article>
+    `;
+  }
+
+  function activityBlock(item) {
+    if (isHiddenActivity(item)) {
+      return "";
+    }
+    const label = activityLabelHtml(item);
+    const elapsed = activityTimeHtml(item);
+    return `
+      <article class="transcript-item activity-row ${escapeAttribute(item.status || "completed")}" data-item-id="${escapeAttribute(item.id)}">
+        <div class="activity-line">
+          ${activityIcon(item.activityKind)}
+          <span class="activity-label">${label}</span>
+          ${elapsed}
+        </div>
+        ${item.outputPreview ? `<pre class="activity-output">${escapeHtml(item.outputPreview)}</pre>` : ""}
+      </article>
+    `;
+  }
+
+  function diffBlock(item) {
+    const files = Array.isArray(item.files) ? item.files : [];
+    const hasDiff = files.some((file) => file.diff);
+    return `
+      <article class="transcript-item diff-card" data-item-id="${escapeAttribute(item.id)}">
+        <div class="diff-header">
+          <div>
+            <span>${escapeHtml(item.title || "Изменения")}</span>
+            <span class="diff-count">${escapeHtml(formatFilesCount(files.length))}</span>
+            <span class="diff-add">+${escapeHtml(item.additions ?? 0)}</span>
+            <span class="diff-del">-${escapeHtml(item.deletions ?? 0)}</span>
+          </div>
+          <button class="diff-review-button" type="button" disabled>Просмотреть изменения</button>
+        </div>
+        <div class="diff-file-list">
+          ${files.map((file, index) => diffFileRow(file, hasDiff && index === 0)).join("")}
+        </div>
+      </article>
+    `;
+  }
+
+  function diffFileRow(file, expanded) {
+    const diff = file.diff ? renderDiff(file.diff) : "";
+    return `
+      <section class="diff-file ${expanded ? "expanded" : ""}">
+        <div class="diff-file-header">
+          <code>${escapeHtml(file.path || "unknown")}</code>
+          <span class="diff-add">+${escapeHtml(file.additions ?? 0)}</span>
+          <span class="diff-del">-${escapeHtml(file.deletions ?? 0)}</span>
+        </div>
+        ${expanded && diff ? `<pre class="diff-code">${diff}</pre>` : ""}
+      </section>
+    `;
+  }
+
+  function planBlock(item) {
+    return `
+      <article class="transcript-item plan-message" data-item-id="${escapeAttribute(item.id)}">
+        <div class="plan-card">
+          <div class="plan-kicker">План</div>
+          <div class="plan-text markdown-body">${markdown(item.markdown || "")}</div>
+          <div class="plan-actions">
+            <button class="button secondary" data-command="chat.plan.revise" data-plan-id="${escapeAttribute(item.id)}">Изменить</button>
+            <button class="button" data-command="chat.plan.implement" data-plan-id="${escapeAttribute(item.id)}">Реализовать</button>
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  function compactionBlock(item) {
+    return `
+      <div class="transcript-item compaction-divider" data-item-id="${escapeAttribute(item.id)}">
+        <span></span>
+        <strong>${documentRegIcon()}${escapeHtml(item.label || "Контекст автоматически сжат")}</strong>
+        <span></span>
+      </div>
+    `;
+  }
+
+  function connectionBlock(item) {
+    const message = item.message || connectionStatusLabel(item);
+    return `
+      <article class="transcript-item connection-row ${escapeAttribute(item.status || "reconnecting")}" data-item-id="${escapeAttribute(item.id)}">
+        ${escapeHtml(message)}
+      </article>
+    `;
+  }
+
+  function errorBlock(item) {
+    return `
+      <article class="transcript-item error-block" data-item-id="${escapeAttribute(item.id)}">
+        <div class="error-title">Ошибка</div>
+        <div class="markdown-body">${markdown(item.message || "Codex сообщил об ошибке.")}</div>
+        ${item.details ? `<pre class="error-details">${escapeHtml(item.details)}</pre>` : ""}
       </article>
     `;
   }
@@ -1098,45 +1568,225 @@
   }
 
   function transcriptSignature(snapshot) {
-    return snapshot.transcript
-      .map((item) => `${item.id}:${item.text.length}:${item.role}`)
-      .join("|");
+    const window = getTranscriptWindow();
+    return [
+      window.offset,
+      window.totalCount,
+      window.hasBefore ? "before" : "",
+      window.hasAfter ? "after" : "",
+      ...getTranscriptItems().map((item) => {
+        const kind = item.kind || "message";
+        if (kind === "message") {
+          return `${item.id}:message:${item.role}:${String(item.text || "").length}:${item.status || ""}:${item.completedAt || ""}`;
+        }
+        if (kind === "activity") {
+          return `${item.id}:activity:${item.activityKind}:${item.status}:${item.label}:${String(item.outputPreview || "").length}:${item.updatedAt || ""}`;
+        }
+        if (kind === "diff") {
+          const files = Array.isArray(item.files) ? item.files : [];
+          return `${item.id}:diff:${files.length}:${item.additions}:${item.deletions}:${item.updatedAt || ""}:${files.map((file) => `${file.path}:${file.additions}:${file.deletions}:${String(file.diff || "").length}`).join(",")}`;
+        }
+        if (kind === "plan") {
+          return `${item.id}:plan:${String(item.markdown || "").length}:${item.updatedAt || ""}`;
+        }
+        if (kind === "compaction") {
+          return `${item.id}:compaction:${item.label || ""}`;
+        }
+        if (kind === "connection") {
+          return `${item.id}:connection:${item.message || ""}:${item.status || ""}:${item.attempt || ""}`;
+        }
+        if (kind === "error") {
+          return `${item.id}:error:${item.message || ""}:${item.details || ""}`;
+        }
+        return `${item.id}:${kind}`;
+      })
+    ].join("|");
   }
 
   function isNearBottom(element) {
     return element.scrollHeight - element.scrollTop - element.clientHeight < 160;
   }
 
-  function restoreTranscriptScroll(body, end, previousScrollTop, shouldStickToBottom, transcriptChanged) {
-    if (shouldStickToBottom) {
+  function isAtTranscriptTail(element) {
+    return isNearBottom(element) && !(state.transcriptWindow && state.transcriptWindow.hasAfter);
+  }
+
+  function captureTranscriptAnchor(body) {
+    if (!body) {
+      return null;
+    }
+    const bodyRect = body.getBoundingClientRect();
+    const items = Array.from(body.querySelectorAll("[data-item-id]"));
+    for (const item of items) {
+      const rect = item.getBoundingClientRect();
+      if (rect.bottom >= bodyRect.top + 1) {
+        return {
+          id: item.dataset.itemId || "",
+          offset: rect.top - bodyRect.top
+        };
+      }
+    }
+    return null;
+  }
+
+  function restoreTranscriptAnchor(body, anchor) {
+    if (!body || !anchor || !anchor.id) {
+      return false;
+    }
+    const item = Array.from(body.querySelectorAll("[data-item-id]")).find((candidate) => candidate.dataset.itemId === anchor.id);
+    if (!item) {
+      return false;
+    }
+    const bodyRect = body.getBoundingClientRect();
+    const rect = item.getBoundingClientRect();
+    body.scrollTop += rect.top - bodyRect.top - anchor.offset;
+    return true;
+  }
+
+  function markTranscriptUserNavigation(direction) {
+    state.lastTranscriptUserNavigationAt = Date.now();
+    state.lastTranscriptNavigationDirection = direction || "both";
+  }
+
+  function wasRecentTranscriptUserNavigation() {
+    return Date.now() - state.lastTranscriptUserNavigationAt < 900;
+  }
+
+  function maybeRequestTranscriptWindow(body, options) {
+    const windowState = state.transcriptWindow;
+    if (!body || !windowState || !state.snapshot || !state.snapshot.chat) {
+      return;
+    }
+    const userInitiated = Boolean(options && options.userInitiated);
+    if (!userInitiated) {
+      return;
+    }
+
+    const direction = options && options.direction ? options.direction : "both";
+    const nearBottom = isNearBottom(body);
+    const canLoadBefore = direction !== "after" && (!nearBottom || direction === "before");
+    if (canLoadBefore && body.scrollTop < TRANSCRIPT_LOAD_THRESHOLD && windowState.hasBefore && !state.loadingBefore) {
+      const beforeItemId = windowState.firstItemId || windowState.items?.[0]?.id;
+      if (beforeItemId) {
+        state.loadingBefore = true;
+        state.pendingScrollAnchor = captureTranscriptAnchor(body);
+        vscode.postMessage({
+          type: "command",
+          command: "chat.transcript.loadBefore",
+          payload: { beforeItemId, count: TRANSCRIPT_PAGE_SIZE }
+        });
+      }
+    }
+
+    const distanceToBottom = body.scrollHeight - body.scrollTop - body.clientHeight;
+    if (direction !== "before" && distanceToBottom < TRANSCRIPT_LOAD_THRESHOLD && windowState.hasAfter && !state.loadingAfter && !state.scrollToBottomAfterWindow) {
+      const afterItemId = windowState.lastItemId || windowState.items?.[windowState.items.length - 1]?.id;
+      if (afterItemId) {
+        state.loadingAfter = true;
+        state.pendingScrollAnchor = captureTranscriptAnchor(body);
+        vscode.postMessage({
+          type: "command",
+          command: "chat.transcript.loadAfter",
+          payload: { afterItemId, count: TRANSCRIPT_PAGE_SIZE }
+        });
+      }
+    }
+  }
+
+  function restoreTranscriptScroll(body, end, previousScrollTop, shouldStickToBottom, transcriptChanged, anchor) {
+    if (state.scrollToBottomAfterWindow || shouldStickToBottom) {
+      state.scrollToBottomAfterWindow = false;
       scrollTranscriptToBottom(body, end);
       return;
     }
 
-    body.scrollTop = Math.min(previousScrollTop, body.scrollHeight);
+    if (!restoreTranscriptAnchor(body, anchor)) {
+      body.scrollTop = Math.min(previousScrollTop, body.scrollHeight);
+    }
     if (transcriptChanged) {
-      state.stickToBottom = isNearBottom(body);
+      state.stickToBottom = isAtTranscriptTail(body);
     }
   }
 
-  function scrollTranscriptToBottom(body, end) {
+  function scrollTranscriptToBottom(body, end, smooth) {
     state.suppressScrollEvents = true;
-    body.scrollTop = body.scrollHeight;
-    if (end && typeof end.scrollIntoView === "function") {
-      end.scrollIntoView({ block: "end" });
+    const behavior = smooth ? "smooth" : "auto";
+    if (typeof body.scrollTo === "function") {
+      body.scrollTo({ top: body.scrollHeight, behavior });
+    } else {
+      body.scrollTop = body.scrollHeight;
     }
-    requestAnimationFrame(() => {
+    if (end && typeof end.scrollIntoView === "function") {
+      end.scrollIntoView({ block: "end", behavior });
+    }
+    const settle = () => {
       body.scrollTop = body.scrollHeight;
       if (end && typeof end.scrollIntoView === "function") {
         end.scrollIntoView({ block: "end" });
       }
       state.stickToBottom = true;
       state.suppressScrollEvents = false;
+      updateScrollToBottomButton(body);
+    };
+    if (smooth) {
+      window.setTimeout(settle, 260);
+    } else {
+      requestAnimationFrame(settle);
+    }
+  }
+
+  function updateScrollToBottomButton(body) {
+    syncComposerHeight();
+    if (!body) {
+      return;
+    }
+    const hasOverflow = body.scrollHeight - body.clientHeight > 24;
+    const hasAfter = Boolean(state.transcriptWindow && state.transcriptWindow.hasAfter);
+    const visible = hasAfter || (hasOverflow && !isNearBottom(body));
+    state.showScrollToBottom = visible;
+    const button = root.querySelector("[data-role='scroll-to-bottom']");
+    if (button) {
+      button.classList.toggle("visible", visible);
+    }
+  }
+
+  function syncComposerHeight() {
+    const app = root.querySelector(".app");
+    const footer = root.querySelector(".composer");
+    if (!app || !footer) {
+      return;
+    }
+    app.style.setProperty("--composer-height", `${Math.ceil(footer.getBoundingClientRect().height)}px`);
+  }
+
+  function syncLiveDurationTimer() {
+    updateLiveDurationNodes();
+    const hasLiveNodes = Boolean(root.querySelector("[data-live-duration]"));
+    if (hasLiveNodes && !state.liveDurationTimer) {
+      state.liveDurationTimer = window.setInterval(updateLiveDurationNodes, 1000);
+    }
+    if (!hasLiveNodes && state.liveDurationTimer) {
+      window.clearInterval(state.liveDurationTimer);
+      state.liveDurationTimer = 0;
+    }
+  }
+
+  function updateLiveDurationNodes() {
+    root.querySelectorAll("[data-live-duration]").forEach((node) => {
+      const mode = node.dataset.liveDuration || "";
+      const createdAt = node.dataset.createdAt || "";
+      if (mode === "turn-running" || mode === "assistant-streaming") {
+        node.textContent = turnRunningLabel(createdAt);
+        return;
+      }
+      if (mode === "activity-time") {
+        node.textContent = elapsedLabel(createdAt);
+      }
     });
   }
 
   function notifyReadToBottomIfNeeded(body, snapshot) {
-    if (!snapshot.chat.hasUnread || !isNearBottom(body)) {
+    if (!snapshot.chat.hasUnread || !isNearBottom(body) || (state.transcriptWindow && state.transcriptWindow.hasAfter)) {
       return;
     }
     const readSignal = `${snapshot.chat.id}:${snapshot.chat.updatedAt}`;
@@ -1145,12 +1795,6 @@
     }
     state.lastReadSignal = readSignal;
     vscode.postMessage({ type: "command", command: "chat.readToBottom" });
-  }
-
-  function role(value) {
-    if (value === "user") return "Пользователь";
-    if (value === "assistant") return "Codex";
-    return "Система";
   }
 
   function extractPlan(text) {
@@ -1166,6 +1810,217 @@
     }
     const partial = value.slice(open + "<codex_plan>".length).replace(/<\/codex_plan>\s*$/i, "").trim();
     return { plan: partial || "Codex готовит план..." };
+  }
+
+  function markdown(value) {
+    const text = String(value || "");
+    if (!text.trim()) {
+      return "";
+    }
+    const lines = text.replace(/\r\n/g, "\n").split("\n");
+    const html = [];
+    let paragraph = [];
+    let list = [];
+    let inCode = false;
+    let codeLines = [];
+
+    const flushParagraph = () => {
+      if (!paragraph.length) return;
+      html.push(`<p>${markdownInline(paragraph.join(" "))}</p>`);
+      paragraph = [];
+    };
+    const flushList = () => {
+      if (!list.length) return;
+      html.push(`<ul>${list.map((item) => `<li>${markdownInline(item)}</li>`).join("")}</ul>`);
+      list = [];
+    };
+    const flushCode = () => {
+      html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      codeLines = [];
+    };
+
+    for (const line of lines) {
+      if (line.trim().startsWith("```")) {
+        if (inCode) {
+          flushCode();
+          inCode = false;
+        } else {
+          flushParagraph();
+          flushList();
+          inCode = true;
+        }
+        continue;
+      }
+      if (inCode) {
+        codeLines.push(line);
+        continue;
+      }
+      if (!line.trim()) {
+        flushParagraph();
+        flushList();
+        continue;
+      }
+      const heading = line.match(/^(#{1,4})\s+(.+)$/);
+      if (heading) {
+        flushParagraph();
+        flushList();
+        const level = Math.min(4, heading[1].length + 2);
+        html.push(`<h${level}>${markdownInline(heading[2])}</h${level}>`);
+        continue;
+      }
+      const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+      if (bullet) {
+        flushParagraph();
+        list.push(bullet[1]);
+        continue;
+      }
+      const numbered = line.match(/^\s*\d+\.\s+(.+)$/);
+      if (numbered) {
+        flushParagraph();
+        list.push(numbered[1]);
+        continue;
+      }
+      paragraph.push(line.trim());
+    }
+    if (inCode) flushCode();
+    flushParagraph();
+    flushList();
+    return html.join("");
+  }
+
+  function markdownInline(value) {
+    return escapeHtml(value)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  }
+
+  function renderDiff(diff) {
+    return String(diff || "")
+      .split("\n")
+      .slice(0, 220)
+      .map((line) => {
+        const css = line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "remove" : line.startsWith("@@") ? "hunk" : "context";
+        return `<span class="diff-line ${css}">${escapeHtml(line || " ")}</span>`;
+      })
+      .join("");
+  }
+
+  function activityIcon(kind) {
+    const path = kind === "search"
+      ? "M10.5 3a7.5 7.5 0 0 1 5.96 12.06l4.24 4.24-1.4 1.4-4.24-4.24A7.5 7.5 0 1 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z"
+      : kind === "file"
+        ? "M6 2h8l5 5v15H6a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3Zm7 2H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h11V8h-4V4Z"
+        : kind === "reasoning"
+          ? "M12 2a7 7 0 0 1 4 12.74V17a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2.26A7 7 0 0 1 12 2Zm-2 19h4v2h-4v-2Z"
+          : "M4 4h16v16H4V4Zm2 2v12h12V6H6Zm2 3 4 3-4 3v-2l2-1-2-1V9Zm5 6h4v1.5h-4V15Z";
+    return `<svg class="activity-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="${path}"/></svg>`;
+  }
+
+  function isHiddenActivity(item) {
+    const label = String(item.label || "").trim();
+    return (
+      label === "userMessage"
+      || label === "agentMessage"
+      || label === "hookPrompt"
+      || label === "contextCompaction"
+      || label === "plan"
+      || (item.activityKind === "unknown" && /^userMessage\b/i.test(label))
+    );
+  }
+
+  function activityLabelHtml(item) {
+    if (item.status === "running" && item.activityKind === "turn") {
+      return `<span data-live-duration="turn-running" data-created-at="${escapeAttribute(item.createdAt || "")}">${escapeHtml(turnRunningLabel(item.createdAt))}</span>`;
+    }
+    if (item.status === "completed" && item.activityKind === "turn") {
+      return escapeHtml(turnCompletedLabel(item));
+    }
+    if (item.status === "error" && item.activityKind === "turn") {
+      return escapeHtml("Завершено с ошибкой");
+    }
+    return escapeHtml(normalizeActivityLabel(item));
+  }
+
+  function activityTimeHtml(item) {
+    if (item.activityKind === "turn") {
+      return "";
+    }
+    if (item.status === "running") {
+      return `<span class="activity-time" data-live-duration="activity-time" data-created-at="${escapeAttribute(item.createdAt || "")}">${escapeHtml(elapsedLabel(item.createdAt))}</span>`;
+    }
+    const duration = durationLabel(item.createdAt, item.completedAt || item.updatedAt, { hideZero: true });
+    return duration ? `<span class="activity-time">${escapeHtml(duration)}</span>` : "";
+  }
+
+  function normalizeActivityLabel(item) {
+    const label = String(item.label || "").trim();
+    if (item.status === "completed") {
+      if (item.activityKind === "command") return item.command ? `Выполнено ${item.command}` : "Выполнена команда";
+      if (item.activityKind === "file") return item.path ? `Изменён ${item.path}` : "Изменены файлы";
+      if (item.activityKind === "search") return item.summary || "Выполнен поиск";
+      if (item.activityKind === "reasoning") return item.summary || "Думал";
+      if (item.activityKind === "context") return item.summary || "Контекст обработан";
+      if (item.activityKind === "tool") return item.summary || "Инструмент выполнен";
+    }
+    if (item.status === "error") {
+      if (item.activityKind === "command") return item.command ? `Команда завершилась с ошибкой: ${item.command}` : "Команда завершилась с ошибкой";
+      return label || "Действие завершилось с ошибкой";
+    }
+    return label || "Действие Codex";
+  }
+
+  function turnRunningLabel(createdAt) {
+    const elapsed = elapsedLabel(createdAt);
+    return elapsed ? `Работает уже ${elapsed}` : "Работает";
+  }
+
+  function turnCompletedLabel(item) {
+    const duration = durationLabel(item.createdAt, item.completedAt || item.updatedAt, { hideZero: true });
+    return duration ? `Работал на протяжении ${duration}` : "Работал";
+  }
+
+  function messageDurationHtml(item) {
+    if (item.status === "streaming") {
+      return `<span data-live-duration="assistant-streaming" data-created-at="${escapeAttribute(item.createdAt || "")}">${escapeHtml(turnRunningLabel(item.createdAt))}</span>`;
+    }
+    return item.durationMs ? escapeHtml(`Работал на протяжении ${formatDuration(item.durationMs)}`) : "";
+  }
+
+  function elapsedLabel(createdAt) {
+    const start = Date.parse(createdAt || "");
+    if (!Number.isFinite(start)) return "";
+    return formatDuration(Date.now() - start);
+  }
+
+  function durationLabel(createdAt, completedAt, options) {
+    const start = Date.parse(createdAt || "");
+    const end = Date.parse(completedAt || "");
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return "";
+    if (options && options.hideZero && end - start < 1000) return "";
+    return formatDuration(end - start);
+  }
+
+  function formatDuration(ms) {
+    const totalSeconds = Math.max(0, Math.round(ms / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const restMinutes = minutes % 60;
+    return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
+  }
+
+  function formatFilesCount(count) {
+    if (count % 10 === 1 && count % 100 !== 11) return `${count} файл`;
+    if ([2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)) return `${count} файла`;
+    return `${count} файлов`;
+  }
+
+  function connectionStatusLabel(item) {
+    if (item.status === "failed") return "Соединение не восстановлено";
+    if (item.status === "recovered") return "Соединение восстановлено";
+    return item.attempt && item.maxAttempts ? `Повторное подключение... ${item.attempt}/${item.maxAttempts}` : "Повторное подключение...";
   }
 
   function escapeHtml(value) {

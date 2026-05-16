@@ -44,6 +44,21 @@ const DOCS_TERMS = [
     "метод",
     "свойств",
     "тип",
+    "структур",
+    "справочник",
+    "документ",
+    "регистр",
+    "перечислен",
+    "реквизит",
+    "табличн",
+    "подсистем",
+    "файл",
+    "каталог",
+    "папк",
+    "путь",
+    "существ",
+    "проверить",
+    "проверка",
     "класс",
     "функц",
     "процедур",
@@ -51,43 +66,55 @@ const DOCS_TERMS = [
     "модуль",
     "форма",
     "тема",
+    "темаоформления",
     "пример",
     "код"
 ];
-const PROJECT_TERMS = [
+const EXPLICIT_PROJECT_TERMS = [
     "проект",
     "workspace",
     "воркспейс",
-    "файл",
-    "каталог",
-    "папк",
-    "модуль",
-    "метод",
-    "компонент",
-    "класс",
-    "функц",
-    "процедур",
-    "код",
+    "рабоч",
+    "в коде",
+    "в файлах",
+    "в приложении",
+    "в тестовом приложении",
+    "где используется",
+    "объясни файл",
+    "выделенный фрагмент"
+];
+const TECHNICAL_PROJECT_TERMS = [
     "реализ",
     "исправ",
+    "создай",
+    "создать",
+    "добавь",
+    "добавить",
+    "измени",
+    "изменить",
+    "удали",
+    "удалить",
     "ошибк",
     "сборк",
-    "найди",
-    "проверь",
-    "объясни",
-    "почему"
+    "тест"
 ];
 class ContextRouterService {
     decide(prompt, chatKind) {
         const normalized = normalizePrompt(prompt);
+        const docsOverview = isDocsOverviewPrompt(normalized);
         const docsLike = isDocsPrompt(prompt, normalized);
-        const projectLike = isProjectPrompt(normalized);
+        const explicitProject = isExplicitProjectPrompt(normalized);
+        const technicalProject = isTechnicalProjectPrompt(normalized);
+        const projectLike = explicitProject || technicalProject;
         const smallTalk = !docsLike && !projectLike && isSmallTalk(normalized);
         if (chatKind === "general") {
             return {
                 isSmallTalk: smallTalk,
                 isProjectLike: projectLike,
                 isDocsLike: docsLike,
+                route: "generalChat",
+                docsMode: "skip",
+                projectMode: "skip",
                 shouldUseProjectContext: false,
                 shouldUseDocsContext: false,
                 reason: "general-chat"
@@ -98,18 +125,63 @@ class ContextRouterService {
                 isSmallTalk: true,
                 isProjectLike: false,
                 isDocsLike: false,
+                route: "smallTalk",
+                docsMode: "skip",
+                projectMode: "skip",
                 shouldUseProjectContext: false,
                 shouldUseDocsContext: false,
                 reason: "small-talk"
             };
         }
+        if (explicitProject) {
+            return {
+                isSmallTalk: false,
+                isProjectLike: true,
+                isDocsLike: docsLike,
+                route: "explicitProject",
+                docsMode: docsOverview ? "overview" : docsLike ? "lookup" : "skip",
+                projectMode: "explicit",
+                shouldUseProjectContext: true,
+                shouldUseDocsContext: docsLike,
+                reason: docsLike ? "explicit-project-docs-like" : "explicit-project"
+            };
+        }
+        if (technicalProject) {
+            return {
+                isSmallTalk: false,
+                isProjectLike: true,
+                isDocsLike: docsLike,
+                route: "technicalProject",
+                docsMode: docsOverview ? "overview" : docsLike ? "lookup" : "skip",
+                projectMode: "technical",
+                shouldUseProjectContext: true,
+                shouldUseDocsContext: docsLike,
+                reason: docsLike ? "technical-project-docs-like" : "technical-project"
+            };
+        }
+        if (docsLike) {
+            return {
+                isSmallTalk: false,
+                isProjectLike: false,
+                isDocsLike: true,
+                route: docsOverview ? "docsOverview" : "docsLookup",
+                docsMode: docsOverview ? "overview" : "lookup",
+                projectMode: "skip",
+                shouldUseProjectContext: false,
+                shouldUseDocsContext: true,
+                reason: docsOverview ? "docs-overview" : "docs-lookup"
+            };
+        }
         return {
             isSmallTalk: false,
-            isProjectLike: true,
-            isDocsLike: docsLike,
-            shouldUseProjectContext: true,
-            shouldUseDocsContext: docsLike,
-            reason: docsLike ? "project-chat-docs-like" : "project-chat"
+            isProjectLike: false,
+            isDocsLike: false,
+            route: "projectNoContext",
+            docsMode: "skip",
+            projectMode: "skip",
+            shouldUseProjectContext: false,
+            shouldUseDocsContext: false,
+            reason: "project-chat-no-context"
         };
     }
     buildServiceEnvelope(options) {
@@ -178,6 +250,8 @@ function getBlockTitle(source) {
             return "PROJECT RULES";
         case "docs":
             return "DOCS CONTEXT";
+        case "diagnostics":
+            return "IDE DIAGNOSTICS";
         case "editorFile":
             return "IDE FILE CONTEXT";
         case "editorSelection":
@@ -204,16 +278,37 @@ function isSmallTalk(prompt) {
     return /^(привет|здравствуй|здравствуйте|добрый день|доброе утро|добрый вечер|ок|окей|спасибо|благодарю|пока|hello|hi|hey|thanks|bye)\b/u.test(prompt);
 }
 function isDocsPrompt(originalPrompt, normalizedPrompt) {
+    if (isDocsOverviewPrompt(normalizedPrompt)) {
+        return true;
+    }
     if (DOCS_TERMS.some((term) => normalizedPrompt.includes(term))) {
         return true;
     }
     if (/(что такое|как использовать|как работает|покажи пример|напиши пример|объясни api|синтаксис)/u.test(normalizedPrompt)) {
         return true;
     }
+    if (/(как|чем|где|можно ли|проверь|проверить|покажи|объясни|создай|создать|добавь|сгенерируй).{0,100}(api|тип|метод|свойств|структур|справочник|документ|форма|модуль|реквизит|поле|файл|каталог|путь|существ|синтаксис)/u.test(normalizedPrompt)) {
+        return true;
+    }
+    if (/(api|тип|метод|свойств|структур|справочник|документ|форма|модуль|реквизит|поле|файл|каталог|путь).{0,100}(как|чем|где|можно ли|проверь|проверить|покажи|объясни|создай|создать|добавь|сгенерируй)/u.test(normalizedPrompt)) {
+        return true;
+    }
     const originalTerms = originalPrompt.match(/[\p{L}\p{N}_-]+/gu) ?? [];
     return originalTerms.some((term) => term.length >= 12 && /[\p{Lu}][\p{Ll}]+[\p{Lu}]/u.test(term));
 }
-function isProjectPrompt(prompt) {
-    return PROJECT_TERMS.some((term) => prompt.includes(term));
+function isDocsOverviewPrompt(prompt) {
+    return /(?:ознаком|изучи|прочитай|посмотри|разбери|проанализируй).{0,80}(?:документац|справк|корпус|каталог|папк|источник)/u.test(prompt)
+        || /(?:всю|весь|целиком|полностью).{0,60}(?:документац|справк|корпус|каталог|папк|источник)/u.test(prompt)
+        || /(?:документац|справк|корпус).{0,80}(?:ознаком|изучи|прочитай|посмотри|разбери|проанализируй)/u.test(prompt);
+}
+function isExplicitProjectPrompt(prompt) {
+    return EXPLICIT_PROJECT_TERMS.some((term) => prompt.includes(term));
+}
+function isTechnicalProjectPrompt(prompt) {
+    if (TECHNICAL_PROJECT_TERMS.some((term) => prompt.includes(term))) {
+        return true;
+    }
+    return /(?:создай|создать|добавь|добавить|измени|изменить|исправь|исправить|удали|удалить|реализуй|реализовать).{0,120}(?:структур|справочник|документ|форм|модул|файл|код|метод|свойств|реквизит|подсистем)/u.test(prompt)
+        || /(?:структур|справочник|документ|форм|модул|файл|код|метод|свойств|реквизит|подсистем).{0,120}(?:создай|создать|добавь|добавить|измени|изменить|исправь|исправить|удали|удалить|реализуй|реализовать)/u.test(prompt);
 }
 //# sourceMappingURL=contextRouterService.js.map

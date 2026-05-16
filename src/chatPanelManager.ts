@@ -164,6 +164,56 @@ export class ChatPanelManager {
       return;
     }
 
+    if (message.command === "chat.transcript.loadBefore") {
+      const chatId = this.state.getActiveChatId();
+      const beforeItemId = isObject(message.payload) && typeof message.payload.beforeItemId === "string" ? message.payload.beforeItemId : "";
+      if (!chatId || !beforeItemId) {
+        return;
+      }
+      panel.webview.postMessage({
+        type: "event",
+        event: "chat.transcript.window",
+        payload: {
+          mode: "before",
+          window: this.state.getTranscriptBefore(chatId, beforeItemId, isObject(message.payload) ? parseTranscriptCount(message.payload.count) : undefined)
+        }
+      });
+      return;
+    }
+
+    if (message.command === "chat.transcript.loadAfter") {
+      const chatId = this.state.getActiveChatId();
+      const afterItemId = isObject(message.payload) && typeof message.payload.afterItemId === "string" ? message.payload.afterItemId : "";
+      if (!chatId || !afterItemId) {
+        return;
+      }
+      panel.webview.postMessage({
+        type: "event",
+        event: "chat.transcript.window",
+        payload: {
+          mode: "after",
+          window: this.state.getTranscriptAfter(chatId, afterItemId, isObject(message.payload) ? parseTranscriptCount(message.payload.count) : undefined)
+        }
+      });
+      return;
+    }
+
+    if (message.command === "chat.transcript.tail") {
+      const chatId = this.state.getActiveChatId();
+      if (!chatId) {
+        return;
+      }
+      panel.webview.postMessage({
+        type: "event",
+        event: "chat.transcript.window",
+        payload: {
+          mode: "tail",
+          window: this.state.getTranscriptTail(chatId, isObject(message.payload) ? parseTranscriptCount(message.payload.count) : undefined)
+        }
+      });
+      return;
+    }
+
     if (message.command === "chat.readToBottom") {
       const chatId = this.state.getActiveChatId();
       if (!chatId) {
@@ -385,6 +435,13 @@ function parseSpeed(value: unknown): ChatSpeed | undefined {
 
 function parseRunMode(value: unknown): ChatRunMode {
   return value === "planning" || value === "implementPlan" ? value : "normal";
+}
+
+function parseTranscriptCount(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.max(1, Math.min(40, Math.floor(value)));
 }
 
 function parseModelSelection(payload: Record<string, unknown>): { modelId: string | null; modelLabel: string } | undefined {

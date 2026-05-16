@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.41",
+  "version": "0.1.62",
   "publisher": "element-ai",
   "license": "UNLICENSED",
   "private": true,
@@ -23,13 +23,15 @@
     "onCommand:codexElement.openProjectRules",
     "onCommand:codexElement.openSettings",
     "onCommand:codexElement.openLogs",
+    "onCommand:codexElement.probeCapabilities",
     "onCommand:codexElement.explainFile",
     "onCommand:codexElement.explainSelection"
   ],
   "main": "./dist/extension.js",
   "scripts": {
     "build": "tsc -p ./",
-    "check": "tsc -p ./ --noEmit"
+    "check": "tsc -p ./ --noEmit",
+    "eval:context": "node scripts/context-acceptance-check.js"
   },
   "contributes": {
     "commands": [
@@ -56,6 +58,11 @@
         "command": "codexElement.openLogs",
         "title": "Codex: Логи",
         "icon": "$(output)"
+      },
+      {
+        "command": "codexElement.probeCapabilities",
+        "title": "Codex: Проверить возможности app-server",
+        "icon": "$(beaker)"
       },
       {
         "command": "codexElement.openProjectRules",
@@ -155,6 +162,9 @@
         },
         {
           "command": "codexElement.openLogs"
+        },
+        {
+          "command": "codexElement.probeCapabilities"
         },
         {
           "command": "codexElement.openProjectRules"

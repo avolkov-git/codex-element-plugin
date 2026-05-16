@@ -155,7 +155,17 @@ export interface ChatPanelSnapshot {
   contextWindow: ContextWindowUsage;
   modelOptions: ModelOption[];
   modelOptionsStatus: "idle" | "loading" | "ready" | "error";
-  transcript: ChatTranscriptItem[];
+  transcriptWindow: ChatTranscriptWindow;
+}
+
+export interface ChatTranscriptWindow {
+  items: ChatTranscriptItem[];
+  offset: number;
+  totalCount: number;
+  hasBefore: boolean;
+  hasAfter: boolean;
+  firstItemId?: string;
+  lastItemId?: string;
 }
 
 export interface ProjectContextDetails {
@@ -164,7 +174,17 @@ export interface ProjectContextDetails {
   label: string;
   workspaceRoot?: string;
   indexPath?: string;
+  version?: number;
   updatedAt?: string;
+  dirty?: boolean;
+  chunkCount?: number;
+  lastUsedChunks?: Array<{
+    path: string;
+    startLine: number;
+    endLine: number;
+    symbols?: string[];
+    score?: number;
+  }>;
   files: string[];
   count: number;
   error?: string;
@@ -174,18 +194,134 @@ export interface DocsContextDetails {
   kind: "docs";
   status: DocsStatus;
   label: string;
-  source: "normalized" | "none";
+  source: "normalized" | "multiple" | "none";
   normalizedPath?: string;
+  sourcePath?: string;
   indexPath?: string;
+  corpora?: DocsCorpusDetail[];
+  allowedRoots?: DocsRootDetail[];
+  fingerprint?: string;
+  fingerprintFiles?: number;
+  fingerprintLatestMtimeMs?: number;
+  lastRetrievalMode?: "none" | "deterministic" | "model-assisted" | "fallback";
+  lastQueryCount?: number;
+  lastSelectedFragments?: number;
+  lastRetrievalAt?: string;
   error?: string;
+}
+
+export interface DocsRootDetail {
+  kind: "normalized" | "source" | "serverDocs";
+  label: string;
+  path: string;
+  status: DocsStatus;
+  corpora?: DocsCorpusDetail[];
+  fingerprint?: string;
+  fingerprintFiles?: number;
+  fingerprintLatestMtimeMs?: number;
+  error?: string;
+}
+
+export interface DocsCorpusDetail {
+  corpus: string;
+  label: string;
+  format: string;
+  indexPath: string;
+  files: string[];
 }
 
 export type ContextDetails = ProjectContextDetails | DocsContextDetails;
 
-export interface ChatTranscriptItem {
+export type ChatTranscriptItem =
+  | ChatMessageTranscriptItem
+  | ChatActivityTranscriptItem
+  | ChatDiffTranscriptItem
+  | ChatPlanTranscriptItem
+  | ChatCompactionTranscriptItem
+  | ChatConnectionTranscriptItem
+  | ChatErrorTranscriptItem;
+
+export interface ChatMessageTranscriptItem {
+  kind: "message";
   id: string;
   role: "system" | "user" | "assistant";
   text: string;
+  createdAt: string;
+  status?: "streaming" | "complete";
+  completedAt?: string;
+  durationMs?: number;
+}
+
+export type ChatActivityKind = "turn" | "command" | "file" | "search" | "reasoning" | "context" | "tool" | "unknown";
+
+export interface ChatActivityTranscriptItem {
+  kind: "activity";
+  id: string;
+  activityKind: ChatActivityKind;
+  label: string;
+  status: "running" | "completed" | "error";
+  createdAt: string;
+  updatedAt?: string;
+  completedAt?: string;
+  turnId?: string;
+  itemId?: string;
+  command?: string;
+  path?: string;
+  summary?: string;
+  outputPreview?: string;
+}
+
+export interface ChatDiffFileSummary {
+  path: string;
+  additions: number;
+  deletions: number;
+  diff?: string;
+}
+
+export interface ChatDiffTranscriptItem {
+  kind: "diff";
+  id: string;
+  title: string;
+  additions: number;
+  deletions: number;
+  files: ChatDiffFileSummary[];
+  createdAt: string;
+  updatedAt?: string;
+  turnId?: string;
+}
+
+export interface ChatPlanTranscriptItem {
+  kind: "plan";
+  id: string;
+  markdown: string;
+  createdAt: string;
+  updatedAt?: string;
+  turnId?: string;
+}
+
+export interface ChatCompactionTranscriptItem {
+  kind: "compaction";
+  id: string;
+  label: string;
+  createdAt: string;
+}
+
+export interface ChatConnectionTranscriptItem {
+  kind: "connection";
+  id: string;
+  message: string;
+  status: "reconnecting" | "failed" | "recovered";
+  createdAt: string;
+  updatedAt?: string;
+  attempt?: number;
+  maxAttempts?: number;
+}
+
+export interface ChatErrorTranscriptItem {
+  kind: "error";
+  id: string;
+  message: string;
+  details?: string;
   createdAt: string;
 }
 

@@ -41,13 +41,21 @@ const baseContextService_1 = require("./baseContextService");
 const chatPanelManager_1 = require("./chatPanelManager");
 const chatHistoryService_1 = require("./chatHistoryService");
 const contextRouterService_1 = require("./contextRouterService");
+const contextTurnOrchestrator_1 = require("./contextTurnOrchestrator");
 const codexRuntimeController_1 = require("./codexRuntimeController");
+const diagnosticsContextService_1 = require("./diagnosticsContextService");
+const diagnosticsToolsService_1 = require("./diagnosticsToolsService");
 const docsContextService_1 = require("./docsContextService");
+const docsRetrievalLoopService_1 = require("./docsRetrievalLoopService");
 const docsNormalizerService_1 = require("./docsNormalizerService");
+const docsToolsService_1 = require("./docsToolsService");
 const editorContextService_1 = require("./editorContextService");
 const logger_1 = require("./logger");
+const managedContextToolLoopService_1 = require("./managedContextToolLoopService");
+const nativeContextToolLoopService_1 = require("./nativeContextToolLoopService");
 const performance_1 = require("./performance");
 const projectContextService_1 = require("./projectContextService");
+const projectToolsService_1 = require("./projectToolsService");
 const rulesContextService_1 = require("./rulesContextService");
 const settingsPanelManager_1 = require("./settingsPanelManager");
 const settingsService_1 = require("./settingsService");
@@ -64,12 +72,23 @@ async function activate(context) {
     const settings = new settingsService_1.SettingsService(context);
     const contextRouter = new contextRouterService_1.ContextRouterService();
     const baseContext = new baseContextService_1.BaseContextService(context, logger);
-    const docsContext = new docsContextService_1.DocsContextService(settings, logger);
+    const diagnosticsContext = new diagnosticsContextService_1.DiagnosticsContextService(logger);
+    const docsCorpusContext = new docsContextService_1.DocsContextService(settings, logger);
+    const nativeContextTools = new nativeContextToolLoopService_1.NativeContextToolLoopService(logger);
     const editorContext = new editorContextService_1.EditorContextService();
     const projectContext = new projectContextService_1.ProjectContextService(context, settings.getConfigRoot(), logger);
+    const profiles = new userProfileService_1.UserProfileService(context);
+    const docsTools = new docsToolsService_1.DocsToolsService(docsCorpusContext, logger);
+    const projectTools = new projectToolsService_1.ProjectToolsService(projectContext, logger, () => profiles.getCurrentProfileId());
+    const diagnosticsTools = new diagnosticsToolsService_1.DiagnosticsToolsService(diagnosticsContext, logger);
+    const managedContextTools = new managedContextToolLoopService_1.ManagedContextToolLoopService({
+        docsTools,
+        projectTools,
+        diagnosticsTools,
+        logger
+    });
     const rulesContext = new rulesContextService_1.RulesContextService(logger);
     const docsNormalizer = new docsNormalizerService_1.DocsNormalizerService(context, settings, logger);
-    const profiles = new userProfileService_1.UserProfileService(context);
     const history = new chatHistoryService_1.ChatHistoryService(context, settings.getConfigRoot(), logger);
     context.subscriptions.push(history, projectContext);
     let historyProfileId;
@@ -77,6 +96,7 @@ async function activate(context) {
     let runtime;
     let chatPanels;
     let approvalAttention;
+    const docsContext = new docsRetrievalLoopService_1.DocsRetrievalLoopService(docsCorpusContext, logger, (request) => runtime.planDocsRetrieval(request));
     const state = new stateStore_1.StateStore((mode) => {
         if (!historyProfileId) {
             return;
@@ -149,7 +169,7 @@ async function activate(context) {
             chatPanels.postSnapshot();
         },
         getProjectContextDetails: async () => projectContext.getDetails(profiles.getCurrentProfileId()),
-        getDocsContextDetails: async () => settings.getDocsContextDetails(),
+        getDocsContextDetails: async () => docsContext.decorateDetails(await settings.getDocsContextDetails()),
         toggleRules: async (chatId) => {
             const updated = state.toggleChatRules(chatId);
             if (!updated) {
@@ -197,14 +217,32 @@ async function activate(context) {
         chatPanels.postAllSnapshots();
     };
     await ensureHistoryLoaded();
-    runtime = new codexRuntimeController_1.CodexRuntimeController({
-        context,
-        settings,
+    const contextOrchestrator = new contextTurnOrchestrator_1.ContextTurnOrchestrator({
         contextRouter,
         baseContext,
         projectContext,
         docsContext,
+        diagnosticsContext,
+        managedContextTools,
+        nativeContextTools,
         rulesContext,
+        profiles,
+        state,
+        logger,
+        onDidChange: () => {
+            sidebar?.postSnapshot();
+            chatPanels.postSnapshot();
+            approvalAttention?.sync();
+        },
+        onDidChangeChat: (chatId) => chatPanels.postSnapshot(chatId)
+    });
+    runtime = new codexRuntimeController_1.CodexRuntimeController({
+        context,
+        settings,
+        contextOrchestrator,
+        docsContext,
+        diagnosticsContext,
+        nativeContextTools,
         profiles,
         state,
         logger,
@@ -218,6 +256,9 @@ async function activate(context) {
     });
     context.subscriptions.push(runtime);
     const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, docsNormalizer, baseContext, logger, async (options) => {
+        if (options?.docsChanged) {
+            docsContext.invalidate();
+        }
         state.setProxy(await settings.getSidebarProxyStatus());
         state.setDocs(settings.getSidebarDocsStatus());
         if (options?.restartRuntime) {
@@ -273,6 +314,10 @@ async function activate(context) {
         settingsPanels.open();
     }), vscode.commands.registerCommand("codexElement.openLogs", () => {
         logger.show();
+    }), vscode.commands.registerCommand("codexElement.probeCapabilities", async () => {
+        await runtime.probeCapabilities();
+        logger.show();
+        vscode.window.showInformationMessage("Проверка возможностей codex app-server завершена. Результат записан в Output: Codex.");
     }), vscode.commands.registerCommand("codexElement.openProjectRules", async () => {
         await rulesContext.openRulesFile();
         refreshRulesContext(state, rulesContext);

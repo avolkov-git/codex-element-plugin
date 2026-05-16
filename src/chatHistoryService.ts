@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { Logger } from "./logger";
-import { ChatEffort, ChatKind, ChatSpeed, ChatStatus, ChatSummary, ChatTranscriptItem, PersistedChatHistory } from "./types";
+import { ChatActivityKind, ChatEffort, ChatKind, ChatSpeed, ChatStatus, ChatSummary, ChatTranscriptItem, PersistedChatHistory } from "./types";
 
 interface PendingSave {
   profileId: string;
@@ -170,7 +170,99 @@ function normalizeChat(value: unknown): ChatSummary | undefined {
 }
 
 function normalizeTranscriptItem(value: unknown): ChatTranscriptItem | undefined {
-  if (!isObject(value) || typeof value.text !== "string") {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  const id = typeof value.id === "string" ? value.id : `item-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const createdAt = typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString();
+
+  if (value.kind === "activity") {
+    const label = typeof value.label === "string" ? value.label : "";
+    if (!label || isHiddenLegacyActivity(label, value.activityKind)) {
+      return undefined;
+    }
+    return {
+      kind: "activity",
+      id,
+      activityKind: normalizeActivityKind(value.activityKind),
+      label,
+      status: value.status === "completed" || value.status === "error" ? value.status : "running",
+      createdAt,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+      completedAt: typeof value.completedAt === "string" ? value.completedAt : undefined,
+      turnId: typeof value.turnId === "string" ? value.turnId : undefined,
+      itemId: typeof value.itemId === "string" ? value.itemId : undefined,
+      command: typeof value.command === "string" ? value.command : undefined,
+      path: typeof value.path === "string" ? value.path : undefined,
+      summary: typeof value.summary === "string" ? value.summary : undefined,
+      outputPreview: typeof value.outputPreview === "string" ? value.outputPreview : undefined
+    };
+  }
+
+  if (value.kind === "diff") {
+    const files = Array.isArray(value.files)
+      ? value.files.map(normalizeDiffFile).filter((file): file is NonNullable<ReturnType<typeof normalizeDiffFile>> => Boolean(file))
+      : [];
+    if (files.length === 0) {
+      return undefined;
+    }
+    return {
+      kind: "diff",
+      id,
+      title: typeof value.title === "string" ? value.title : "Изменения",
+      additions: typeof value.additions === "number" ? value.additions : files.reduce((sum, file) => sum + file.additions, 0),
+      deletions: typeof value.deletions === "number" ? value.deletions : files.reduce((sum, file) => sum + file.deletions, 0),
+      files,
+      createdAt,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+      turnId: typeof value.turnId === "string" ? value.turnId : undefined
+    };
+  }
+
+  if (value.kind === "plan" && typeof value.markdown === "string") {
+    return {
+      kind: "plan",
+      id,
+      markdown: value.markdown,
+      createdAt,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+      turnId: typeof value.turnId === "string" ? value.turnId : undefined
+    };
+  }
+
+  if (value.kind === "compaction") {
+    return {
+      kind: "compaction",
+      id,
+      label: typeof value.label === "string" ? value.label : "Контекст автоматически сжат",
+      createdAt
+    };
+  }
+
+  if (value.kind === "connection" && typeof value.message === "string") {
+    return {
+      kind: "connection",
+      id,
+      message: value.message,
+      status: value.status === "failed" || value.status === "recovered" ? value.status : "reconnecting",
+      attempt: typeof value.attempt === "number" ? value.attempt : undefined,
+      maxAttempts: typeof value.maxAttempts === "number" ? value.maxAttempts : undefined,
+      createdAt,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined
+    };
+  }
+
+  if (value.kind === "error" && typeof value.message === "string") {
+    return {
+      kind: "error",
+      id,
+      message: value.message,
+      details: typeof value.details === "string" ? value.details : undefined,
+      createdAt
+    };
+  }
+
+  if (typeof value.text !== "string") {
     return undefined;
   }
   const role = value.role === "user" || value.role === "assistant" || value.role === "system" ? value.role : undefined;
@@ -178,10 +270,45 @@ function normalizeTranscriptItem(value: unknown): ChatTranscriptItem | undefined
     return undefined;
   }
   return {
-    id: typeof value.id === "string" ? value.id : `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    kind: "message",
+    id,
     role,
     text: value.text,
-    createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString()
+    createdAt,
+    status: value.status === "streaming" ? "streaming" : "complete",
+    completedAt: typeof value.completedAt === "string" ? value.completedAt : undefined,
+    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined
+  };
+}
+
+function isHiddenLegacyActivity(label: string, activityKind: unknown): boolean {
+  const normalizedLabel = label.trim();
+  return (
+    normalizedLabel === "userMessage"
+    || normalizedLabel === "agentMessage"
+    || normalizedLabel === "hookPrompt"
+    || normalizedLabel === "contextCompaction"
+    || normalizedLabel === "plan"
+    || (activityKind === "unknown" && /^userMessage\b/i.test(normalizedLabel))
+  );
+}
+
+function normalizeActivityKind(value: unknown): ChatActivityKind {
+  if (value === "turn" || value === "command" || value === "file" || value === "search" || value === "reasoning" || value === "context" || value === "tool") {
+    return value;
+  }
+  return "unknown";
+}
+
+function normalizeDiffFile(value: unknown): { path: string; additions: number; deletions: number; diff?: string } | undefined {
+  if (!isObject(value) || typeof value.path !== "string" || !value.path) {
+    return undefined;
+  }
+  return {
+    path: value.path,
+    additions: typeof value.additions === "number" ? value.additions : 0,
+    deletions: typeof value.deletions === "number" ? value.deletions : 0,
+    diff: typeof value.diff === "string" ? value.diff : undefined
   };
 }
 

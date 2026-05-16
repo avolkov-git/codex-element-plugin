@@ -4,16 +4,23 @@ export interface ContextRoutingDecision {
   readonly isSmallTalk: boolean;
   readonly isProjectLike: boolean;
   readonly isDocsLike: boolean;
+  readonly route: "smallTalk" | "generalChat" | "docsOverview" | "docsLookup" | "technicalProject" | "explicitProject" | "projectNoContext";
+  readonly docsMode: "skip" | "overview" | "lookup";
+  readonly projectMode: "skip" | "technical" | "explicit";
   readonly shouldUseProjectContext: boolean;
   readonly shouldUseDocsContext: boolean;
   readonly reason: string;
 }
 
 export interface ContextBlock {
-  readonly source: "baseRules" | "project" | "docs" | "rules" | "editorFile" | "editorSelection";
+  readonly source: "baseRules" | "project" | "docs" | "diagnostics" | "rules" | "editorFile" | "editorSelection";
   readonly text: string;
   readonly matchCount: number;
-  readonly mode?: "matched" | "fallback";
+  readonly mode?: "matched" | "fallback" | "overview" | "skipped";
+  readonly score?: number;
+  readonly priority?: number;
+  readonly tokensEstimate?: number;
+  readonly metadata?: Record<string, unknown>;
 }
 
 export interface ServiceEnvelopeOptions {
@@ -70,6 +77,21 @@ const DOCS_TERMS = [
   "метод",
   "свойств",
   "тип",
+  "структур",
+  "справочник",
+  "документ",
+  "регистр",
+  "перечислен",
+  "реквизит",
+  "табличн",
+  "подсистем",
+  "файл",
+  "каталог",
+  "папк",
+  "путь",
+  "существ",
+  "проверить",
+  "проверка",
   "класс",
   "функц",
   "процедур",
@@ -77,39 +99,49 @@ const DOCS_TERMS = [
   "модуль",
   "форма",
   "тема",
+  "темаоформления",
   "пример",
   "код"
 ];
 
-const PROJECT_TERMS = [
+const EXPLICIT_PROJECT_TERMS = [
   "проект",
   "workspace",
   "воркспейс",
-  "файл",
-  "каталог",
-  "папк",
-  "модуль",
-  "метод",
-  "компонент",
-  "класс",
-  "функц",
-  "процедур",
-  "код",
+  "рабоч",
+  "в коде",
+  "в файлах",
+  "в приложении",
+  "в тестовом приложении",
+  "где используется",
+  "объясни файл",
+  "выделенный фрагмент"
+];
+
+const TECHNICAL_PROJECT_TERMS = [
   "реализ",
   "исправ",
+  "создай",
+  "создать",
+  "добавь",
+  "добавить",
+  "измени",
+  "изменить",
+  "удали",
+  "удалить",
   "ошибк",
   "сборк",
-  "найди",
-  "проверь",
-  "объясни",
-  "почему"
+  "тест"
 ];
 
 export class ContextRouterService {
   public decide(prompt: string, chatKind: ChatKind): ContextRoutingDecision {
     const normalized = normalizePrompt(prompt);
+    const docsOverview = isDocsOverviewPrompt(normalized);
     const docsLike = isDocsPrompt(prompt, normalized);
-    const projectLike = isProjectPrompt(normalized);
+    const explicitProject = isExplicitProjectPrompt(normalized);
+    const technicalProject = isTechnicalProjectPrompt(normalized);
+    const projectLike = explicitProject || technicalProject;
     const smallTalk = !docsLike && !projectLike && isSmallTalk(normalized);
 
     if (chatKind === "general") {
@@ -117,6 +149,9 @@ export class ContextRouterService {
         isSmallTalk: smallTalk,
         isProjectLike: projectLike,
         isDocsLike: docsLike,
+        route: "generalChat",
+        docsMode: "skip",
+        projectMode: "skip",
         shouldUseProjectContext: false,
         shouldUseDocsContext: false,
         reason: "general-chat"
@@ -128,19 +163,67 @@ export class ContextRouterService {
         isSmallTalk: true,
         isProjectLike: false,
         isDocsLike: false,
+        route: "smallTalk",
+        docsMode: "skip",
+        projectMode: "skip",
         shouldUseProjectContext: false,
         shouldUseDocsContext: false,
         reason: "small-talk"
       };
     }
 
+    if (explicitProject) {
+      return {
+        isSmallTalk: false,
+        isProjectLike: true,
+        isDocsLike: docsLike,
+        route: "explicitProject",
+        docsMode: docsOverview ? "overview" : docsLike ? "lookup" : "skip",
+        projectMode: "explicit",
+        shouldUseProjectContext: true,
+        shouldUseDocsContext: docsLike,
+        reason: docsLike ? "explicit-project-docs-like" : "explicit-project"
+      };
+    }
+
+    if (technicalProject) {
+      return {
+        isSmallTalk: false,
+        isProjectLike: true,
+        isDocsLike: docsLike,
+        route: "technicalProject",
+        docsMode: docsOverview ? "overview" : docsLike ? "lookup" : "skip",
+        projectMode: "technical",
+        shouldUseProjectContext: true,
+        shouldUseDocsContext: docsLike,
+        reason: docsLike ? "technical-project-docs-like" : "technical-project"
+      };
+    }
+
+    if (docsLike) {
+      return {
+        isSmallTalk: false,
+        isProjectLike: false,
+        isDocsLike: true,
+        route: docsOverview ? "docsOverview" : "docsLookup",
+        docsMode: docsOverview ? "overview" : "lookup",
+        projectMode: "skip",
+        shouldUseProjectContext: false,
+        shouldUseDocsContext: true,
+        reason: docsOverview ? "docs-overview" : "docs-lookup"
+      };
+    }
+
     return {
       isSmallTalk: false,
-      isProjectLike: true,
-      isDocsLike: docsLike,
-      shouldUseProjectContext: true,
-      shouldUseDocsContext: docsLike,
-      reason: docsLike ? "project-chat-docs-like" : "project-chat"
+      isProjectLike: false,
+      isDocsLike: false,
+      route: "projectNoContext",
+      docsMode: "skip",
+      projectMode: "skip",
+      shouldUseProjectContext: false,
+      shouldUseDocsContext: false,
+      reason: "project-chat-no-context"
     };
   }
 
@@ -213,6 +296,8 @@ function getBlockTitle(source: ContextBlock["source"]): string {
       return "PROJECT RULES";
     case "docs":
       return "DOCS CONTEXT";
+    case "diagnostics":
+      return "IDE DIAGNOSTICS";
     case "editorFile":
       return "IDE FILE CONTEXT";
     case "editorSelection":
@@ -248,6 +333,10 @@ function isSmallTalk(prompt: string): boolean {
 }
 
 function isDocsPrompt(originalPrompt: string, normalizedPrompt: string): boolean {
+  if (isDocsOverviewPrompt(normalizedPrompt)) {
+    return true;
+  }
+
   if (DOCS_TERMS.some((term) => normalizedPrompt.includes(term))) {
     return true;
   }
@@ -256,10 +345,33 @@ function isDocsPrompt(originalPrompt: string, normalizedPrompt: string): boolean
     return true;
   }
 
+  if (/(как|чем|где|можно ли|проверь|проверить|покажи|объясни|создай|создать|добавь|сгенерируй).{0,100}(api|тип|метод|свойств|структур|справочник|документ|форма|модуль|реквизит|поле|файл|каталог|путь|существ|синтаксис)/u.test(normalizedPrompt)) {
+    return true;
+  }
+
+  if (/(api|тип|метод|свойств|структур|справочник|документ|форма|модуль|реквизит|поле|файл|каталог|путь).{0,100}(как|чем|где|можно ли|проверь|проверить|покажи|объясни|создай|создать|добавь|сгенерируй)/u.test(normalizedPrompt)) {
+    return true;
+  }
+
   const originalTerms = originalPrompt.match(/[\p{L}\p{N}_-]+/gu) ?? [];
   return originalTerms.some((term) => term.length >= 12 && /[\p{Lu}][\p{Ll}]+[\p{Lu}]/u.test(term));
 }
 
-function isProjectPrompt(prompt: string): boolean {
-  return PROJECT_TERMS.some((term) => prompt.includes(term));
+function isDocsOverviewPrompt(prompt: string): boolean {
+  return /(?:ознаком|изучи|прочитай|посмотри|разбери|проанализируй).{0,80}(?:документац|справк|корпус|каталог|папк|источник)/u.test(prompt)
+    || /(?:всю|весь|целиком|полностью).{0,60}(?:документац|справк|корпус|каталог|папк|источник)/u.test(prompt)
+    || /(?:документац|справк|корпус).{0,80}(?:ознаком|изучи|прочитай|посмотри|разбери|проанализируй)/u.test(prompt);
+}
+
+function isExplicitProjectPrompt(prompt: string): boolean {
+  return EXPLICIT_PROJECT_TERMS.some((term) => prompt.includes(term));
+}
+
+function isTechnicalProjectPrompt(prompt: string): boolean {
+  if (TECHNICAL_PROJECT_TERMS.some((term) => prompt.includes(term))) {
+    return true;
+  }
+
+  return /(?:создай|создать|добавь|добавить|измени|изменить|исправь|исправить|удали|удалить|реализуй|реализовать).{0,120}(?:структур|справочник|документ|форм|модул|файл|код|метод|свойств|реквизит|подсистем)/u.test(prompt)
+    || /(?:структур|справочник|документ|форм|модул|файл|код|метод|свойств|реквизит|подсистем).{0,120}(?:создай|создать|добавь|добавить|измени|изменить|исправь|исправить|удали|удалить|реализуй|реализовать)/u.test(prompt);
 }

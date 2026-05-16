@@ -138,7 +138,7 @@ class SettingsPanelManager {
                 return;
             }
             this.settings.saveDocsNormalizedPath(normalizedPath);
-            await this.onSettingsChanged({ restartRuntime: false });
+            await this.onSettingsChanged({ restartRuntime: false, docsChanged: true });
             await panel.webview.postMessage({
                 type: "event",
                 event: "settings.saved",
@@ -239,7 +239,7 @@ class SettingsPanelManager {
                 }
             });
             this.settings.saveDocsPaths(result.sourcePath, result.outputPath);
-            await this.onSettingsChanged({ restartRuntime: false });
+            await this.onSettingsChanged({ restartRuntime: false, docsChanged: true });
             await panel.webview.postMessage({
                 type: "event",
                 event: "settings.saved",

@@ -1,27 +1,26 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { BaseContextService } from "./baseContextService";
-import { ContextBlock, ContextRouterService } from "./contextRouterService";
-import { DocsContextService } from "./docsContextService";
+import { ContextBlock } from "./contextRouterService";
+import { ContextTurnOrchestrator, ContextTurnOrchestratorResult } from "./contextTurnOrchestrator";
+import { DiagnosticsContextService } from "./diagnosticsContextService";
+import { DocsPlannerRuntimeRequest, DocsRetrievalLoopService } from "./docsRetrievalLoopService";
 import { JsonRpcClient, JsonRpcNotification, JsonRpcServerRequest } from "./jsonRpcClient";
 import { Logger, redact } from "./logger";
-import { ProjectContextService } from "./projectContextService";
-import { RulesContextService } from "./rulesContextService";
+import { NativeContextToolLoopService } from "./nativeContextToolLoopService";
 import { RuntimeProcessManager } from "./runtimeProcessManager";
 import { RuntimeProxySettings, SettingsService } from "./settingsService";
 import { StateStore } from "./stateStore";
-import { ApprovalRequest, AuthAccountType, ChatAccessMode, ChatRunMode, ContextWindowUsage, ModelOption, SidebarSnapshot } from "./types";
+import { ApprovalRequest, AuthAccountType, ChatAccessMode, ChatActivityKind, ChatDiffFileSummary, ChatRunMode, ContextWindowUsage, ModelOption, SidebarSnapshot } from "./types";
 import { UserProfileService } from "./userProfileService";
 
 interface CodexRuntimeControllerOptions {
   context: vscode.ExtensionContext;
   settings: SettingsService;
-  contextRouter: ContextRouterService;
-  baseContext: BaseContextService;
-  projectContext: ProjectContextService;
-  docsContext: DocsContextService;
-  rulesContext: RulesContextService;
+  contextOrchestrator: ContextTurnOrchestrator;
+  docsContext: DocsRetrievalLoopService;
+  diagnosticsContext: DiagnosticsContextService;
+  nativeContextTools: NativeContextToolLoopService;
   profiles: UserProfileService;
   state: StateStore;
   logger: Logger;
@@ -45,6 +44,38 @@ interface PendingApprovalResolver {
 interface NormalizedApprovalRequest {
   approval: ApprovalRequest;
   resolvePayload: (approved: boolean) => unknown;
+}
+
+interface HiddenPlannerRun {
+  threadId: string;
+  turnId?: string;
+  text: string;
+  timer: ReturnType<typeof setTimeout>;
+  settled: boolean;
+  resolve: (text: string) => void;
+  reject: (error: Error) => void;
+}
+
+interface SendPromptCoreOptions {
+  readonly addUserMessage: boolean;
+  readonly isDiagnosticsRetry?: boolean;
+}
+
+interface StartTurnOptions {
+  readonly omitSpeed?: boolean;
+  readonly skipAutoDiagnostics?: boolean;
+  readonly forceDiagnosticsContext?: boolean;
+  readonly diagnosticsPriority?: number;
+}
+
+type CapabilityProbeStatus = "supported" | "unsupported" | "unstable" | "unknown" | "skipped";
+
+interface CapabilityProbeRow {
+  readonly capability: string;
+  readonly status: CapabilityProbeStatus;
+  readonly observation: string;
+  readonly evidence: string;
+  readonly elapsedMs?: number;
 }
 
 class UserCancelledTurnError extends Error {
@@ -72,10 +103,17 @@ export class CodexRuntimeController implements vscode.Disposable {
   private itemPayloads = new Map<string, unknown>();
   private pendingApprovals = new Map<string, PendingApprovalResolver>();
   private loadedThreadIds = new Set<string>();
+  private hiddenPlannerRunsByThread = new Map<string, HiddenPlannerRun>();
+  private hiddenPlannerRunsByTurn = new Map<string, HiddenPlannerRun>();
+  private hiddenPlannerRunsByItem = new Map<string, HiddenPlannerRun>();
   private contextCompactionItemThreads = new Map<string, string>();
+  private contextCompactionActivityIds = new Map<string, string>();
   private compactionWaiters = new Map<string, Array<() => void>>();
   private cancellingChatIds = new Set<string>();
   private cancelledTurnIds = new Set<string>();
+  private diagnosticsRetryAttemptedTurnIds = new Set<string>();
+  private diagnosticsRetryTurnIds = new Set<string>();
+  private fileChangingTurnIds = new Set<string>();
   private cancelEpochByChat = new Map<string, number>();
   private suppressNextExitAsCancel = false;
   private latestChatId: string | undefined;
@@ -234,6 +272,19 @@ export class CodexRuntimeController implements vscode.Disposable {
     transcriptText?: string,
     explicitContextBlocks: readonly ContextBlock[] = []
   ): Promise<void> {
+    return this.sendPromptCore(chatId, prompt, mode, transcriptText, explicitContextBlocks, {
+      addUserMessage: true
+    });
+  }
+
+  private async sendPromptCore(
+    chatId: string,
+    prompt: string,
+    mode: ChatRunMode,
+    transcriptText: string | undefined,
+    explicitContextBlocks: readonly ContextBlock[],
+    options: SendPromptCoreOptions
+  ): Promise<void> {
     const trimmed = prompt.trim();
     if (!trimmed) {
       return;
@@ -251,7 +302,9 @@ export class CodexRuntimeController implements vscode.Disposable {
 
     this.latestChatId = chatId;
     const cancelEpoch = this.cancelEpoch(chatId);
-    this.options.state.addTranscriptItem(chatId, "user", visiblePrompt);
+    if (options.addUserMessage) {
+      this.options.state.addTranscriptItem(chatId, "user", visiblePrompt);
+    }
     this.options.state.updateChat(chatId, { status: "running", activeRunMode: mode });
     this.options.onDidChange();
     this.options.onDidChangeChat(chatId);
@@ -268,20 +321,26 @@ export class CodexRuntimeController implements vscode.Disposable {
 
       let turnResult: unknown;
       try {
-        turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
+        turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
+          skipAutoDiagnostics: options.isDiagnosticsRetry
+        });
       } catch (error) {
         if (isContextWindowError(error) && this.options.state.getChat(chatId)?.backendThreadId) {
           this.options.logger.warn(`Context window exhausted, requesting app-server compaction before retry: ${normalizeErrorMessage(error)}`);
           await this.compactBackendThread(chatId);
           this.throwIfCancelled(chatId, cancelEpoch);
-          turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
+          turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
+            skipAutoDiagnostics: options.isDiagnosticsRetry
+          });
         } else if (isThreadNotFoundError(error) && this.options.state.getChat(chatId)?.backendThreadId) {
           const staleThreadId = this.options.state.getChat(chatId)?.backendThreadId;
           this.options.logger.warn(`Backend thread was not loaded by runtime, trying thread/resume: ${staleThreadId ?? "-"}.`);
           const resumed = await this.tryResumeBackendThread(chatId, requestedAccessMode);
           this.throwIfCancelled(chatId, cancelEpoch);
           if (resumed) {
-            turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
+            turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
+              skipAutoDiagnostics: options.isDiagnosticsRetry
+            });
           } else {
             this.options.logger.warn(`thread/resume failed, recreating backend thread: ${staleThreadId ?? "-"}.`);
             if (staleThreadId) {
@@ -295,7 +354,9 @@ export class CodexRuntimeController implements vscode.Disposable {
             });
             await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
             this.throwIfCancelled(chatId, cancelEpoch);
-            turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks);
+            turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
+              skipAutoDiagnostics: options.isDiagnosticsRetry
+            });
           }
         } else {
           throw error;
@@ -306,6 +367,9 @@ export class CodexRuntimeController implements vscode.Disposable {
       const turnId = extractTurnId(turnResult);
       if (turnId) {
         this.activeTurnChatId.set(turnId, chatId);
+        if (options.isDiagnosticsRetry) {
+          this.diagnosticsRetryTurnIds.add(turnId);
+        }
       }
       this.options.state.updateChat(chatId, {
         activeTurnId: turnId || null,
@@ -322,12 +386,23 @@ export class CodexRuntimeController implements vscode.Disposable {
         return;
       }
       const message = normalizeErrorMessage(error);
+      if (options.isDiagnosticsRetry) {
+        this.options.state.updateChat(chatId, {
+          status: "idle",
+          activeTurnId: null,
+          activeRunMode: null
+        });
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+        this.options.logger.warn(`Diagnostics auto-fix retry failed without transcript error: ${message}`);
+        return;
+      }
       this.options.state.updateChat(chatId, {
         status: "error",
         activeTurnId: null,
         activeRunMode: null
       });
-      this.options.state.addTranscriptItem(chatId, "system", message);
+      this.options.state.addErrorItem(chatId, message);
       this.options.onDidChange();
       this.options.onDidChangeChat(chatId);
       this.options.logger.error(`sendPrompt failed: ${message}`);
@@ -349,6 +424,246 @@ export class CodexRuntimeController implements vscode.Disposable {
       this.options.logger.warn(`model/list failed; using fallback model list: ${normalizeErrorMessage(error)}`);
       return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
     }
+  }
+
+  async probeCapabilities(): Promise<void> {
+    const rows: CapabilityProbeRow[] = [];
+    const startedAt = Date.now();
+    const record = (row: CapabilityProbeRow): void => {
+      rows.push(row);
+    };
+    const probe = async (
+      capability: string,
+      run: () => Promise<unknown>,
+      summarize: (result: unknown) => string = (result) => `result=${describePayloadShape(result)}`
+    ): Promise<unknown | undefined> => {
+      const probeStartedAt = Date.now();
+      try {
+        const result = await run();
+        record({
+          capability,
+          status: "supported",
+          observation: summarize(result),
+          evidence: "live rpc",
+          elapsedMs: Date.now() - probeStartedAt
+        });
+        return result;
+      } catch (error) {
+        record({
+          capability,
+          status: isUnsupportedCapabilityError(error) ? "unsupported" : "unstable",
+          observation: normalizeErrorMessage(error),
+          evidence: "live rpc",
+          elapsedMs: Date.now() - probeStartedAt
+        });
+        return undefined;
+      }
+    };
+
+    this.options.logger.info("Capability probe started. This explicit command may start codex app-server but does not run user turns.");
+    try {
+      const startupStartedAt = Date.now();
+      await this.ensureBackendProcess();
+      record({
+        capability: "app-server startup + initialize",
+        status: "supported",
+        observation: "backend process is running; initialize completed through normal runtime startup",
+        evidence: "live startup",
+        elapsedMs: Date.now() - startupStartedAt
+      });
+    } catch (error) {
+      record({
+        capability: "app-server startup + initialize",
+        status: "unstable",
+        observation: normalizeErrorMessage(error),
+        evidence: "live startup"
+      });
+      this.options.logger.info(formatCapabilityProbeReport(rows, Date.now() - startedAt));
+      throw error;
+    }
+
+    const rpcClient = this.requireRpcClient();
+    await probe("account/read", () => rpcClient.request("account/read", { refreshToken: false }, 10_000), (result) => {
+      const account = normalizeAccountReadResult(result);
+      return `account=${account.accountType}; label=${account.label ? "set" : "-"}`;
+    });
+
+    await probe("model/list", () => rpcClient.request("model/list", undefined, 10_000), (result) => {
+      const models = normalizeModelOptions(result);
+      return `models=${models.length}`;
+    });
+
+    if (this.options.state.getSidebarSnapshot().auth.accountType === "chatgpt") {
+      await probe("account/rateLimits/read", () => rpcClient.request("account/rateLimits/read", undefined, 10_000), (result) => {
+        const rateLimits = normalizeRateLimitsResult(result);
+        return `rows=${rateLimits.rows.length}; status=${rateLimits.status}`;
+      });
+    } else {
+      record({
+        capability: "account/rateLimits/read",
+        status: "skipped",
+        observation: "requires ChatGPT account; current account is not chatgpt",
+        evidence: "local account state"
+      });
+    }
+
+    const cwd = resolveWorkspaceCwd(this.options.context);
+    const startedThreads = new Map<ChatAccessMode, string>();
+    for (const accessMode of ["read-only", "workspace-write", "danger-full-access"] as const) {
+      const result = await probe(
+        `thread/start sandbox=${getThreadSandbox(accessMode)}`,
+        () => rpcClient.request("thread/start", {
+          cwd,
+          approvalPolicy: getApprovalPolicy(accessMode),
+          approvalsReviewer: "user",
+          sandbox: getThreadSandbox(accessMode),
+          sessionStartSource: "startup",
+          serviceName: "codex_element_capability_probe",
+          model: null
+        }, 10_000),
+        (value) => {
+          const threadId = extractThreadId(value);
+          return `thread=${threadId ? "set" : "-"}; payload=${describePayloadShape(value)}`;
+        }
+      );
+      const threadId = extractThreadId(result);
+      if (threadId) {
+        this.loadedThreadIds.add(threadId);
+        startedThreads.set(accessMode, threadId);
+      }
+    }
+
+    const readOnlyThreadId = startedThreads.get("read-only");
+    if (readOnlyThreadId) {
+      await probe("thread/resume full payload", () => rpcClient.request("thread/resume", {
+        threadId: readOnlyThreadId,
+        cwd,
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandbox: "read-only",
+        model: null
+      }, 10_000), (value) => `thread=${extractThreadId(value) || readOnlyThreadId}; payload=${describePayloadShape(value)}`);
+      await probe("thread/resume threadId-only payload", () => rpcClient.request("thread/resume", {
+        threadId: readOnlyThreadId
+      }, 10_000), (value) => `thread=${extractThreadId(value) || readOnlyThreadId}; payload=${describePayloadShape(value)}`);
+    } else {
+      record({
+        capability: "thread/resume",
+        status: "skipped",
+        observation: "read-only thread/start did not return a thread id",
+        evidence: "live rpc"
+      });
+    }
+
+    record({
+      capability: "server-side approval requests",
+      status: "supported",
+      observation: "JsonRpcClient handles server requests and CodexRuntimeController normalizes approval payloads",
+      evidence: "static code path"
+    });
+    record({
+      capability: "turn/cancel",
+      status: "unknown",
+      observation: "implemented with {threadId, turnId} and turnId-only retry; live probe is intentionally skipped because it requires a running turn",
+      evidence: "static code path"
+    });
+    record({
+      capability: "hidden internal planner turn",
+      status: "unstable",
+      observation: "implemented through isolated read-only thread/turn; recent runtime observations include 15s planner timeout fallback",
+      evidence: "static code path + observed Output"
+    });
+    record({
+      capability: "turn/start sandboxPolicy variants",
+      status: "supported",
+      observation: "current client uses readOnly/workspaceWrite/dangerFullAccess camelCase variants required by app-server",
+      evidence: "known protocol errors + static code path"
+    });
+
+    const toolProbeResult = await probeNativeToolListCandidates(rpcClient);
+    record(toolProbeResult);
+    const resultTransportProbe: CapabilityProbeRow = {
+      capability: "tool result transport",
+      status: "unknown",
+      observation: toolProbeResult.status === "supported"
+        ? "tool listing candidate responded, but request/result round-trip still needs a dedicated native tool fixture"
+        : "no confirmed native tool registration/listing method yet; fallback loop remains required",
+      evidence: toolProbeResult.evidence
+    };
+    record(resultTransportProbe);
+    const nativeToolLoop = this.options.nativeContextTools.recordProbe({
+      listingStatus: toolProbeResult.status,
+      listingEvidence: toolProbeResult.evidence,
+      listingObservation: toolProbeResult.observation,
+      resultTransportStatus: resultTransportProbe.status,
+      resultTransportEvidence: resultTransportProbe.evidence,
+      resultTransportObservation: resultTransportProbe.observation
+    });
+    record({
+      capability: "native context tool-loop gate",
+      status: nativeToolLoop.status === "available" ? "supported" : nativeToolLoop.status === "unknown" ? "unknown" : "unsupported",
+      observation: nativeToolLoop.reason,
+      evidence: "capability gate"
+    });
+
+    this.options.logger.info(formatCapabilityProbeReport(rows, Date.now() - startedAt));
+  }
+
+  async planDocsRetrieval(request: DocsPlannerRuntimeRequest): Promise<string> {
+    await this.ensureBackendProcess();
+    const rpcClient = this.requireRpcClient();
+    const cwd = resolveWorkspaceCwd(this.options.context);
+    const plannerPrompt = buildDocsPlannerPrompt(request);
+    const threadResult = await rpcClient.request("thread/start", {
+      cwd,
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: getThreadSandbox("read-only"),
+      sessionStartSource: "startup",
+      serviceName: "codex_element_docs_planner",
+      model: null
+    }, request.timeoutMs);
+    const threadId = extractThreadId(threadResult);
+    if (!threadId) {
+      throw new Error("docs planner thread/start не вернул thread.id.");
+    }
+    this.loadedThreadIds.add(threadId);
+
+    return new Promise<string>((resolve, reject) => {
+      const run: HiddenPlannerRun = {
+        threadId,
+        text: "",
+        settled: false,
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this.rejectHiddenPlannerRun(run, new Error(`docs planner timeout after ${request.timeoutMs}ms.`));
+        }, request.timeoutMs)
+      };
+      this.hiddenPlannerRunsByThread.set(threadId, run);
+
+      void (async () => {
+        try {
+          const turnResult = await rpcClient.request("turn/start", {
+            threadId,
+            input: [{ type: "text", text: plannerPrompt }],
+            cwd,
+            approvalPolicy: "never",
+            approvalsReviewer: "user",
+            sandboxPolicy: getTurnSandboxPolicy("read-only", cwd),
+            model: null,
+            effort: "low"
+          }, request.timeoutMs);
+          const turnId = extractTurnId(turnResult);
+          if (turnId) {
+            run.turnId = turnId;
+            this.hiddenPlannerRunsByTurn.set(turnId, run);
+          }
+        } catch (error) {
+          this.rejectHiddenPlannerRun(run, new Error(normalizeErrorMessage(error)));
+        }
+      })();
+    });
   }
 
   resolveApproval(chatId: string, approvalId: string, approved: boolean): void {
@@ -603,7 +918,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     prompt: string,
     mode: ChatRunMode,
     explicitContextBlocks: readonly ContextBlock[] = [],
-    options: { omitSpeed?: boolean } = {}
+    options: StartTurnOptions = {}
   ): Promise<unknown> {
     const chat = this.options.state.getChat(chatId);
     if (!chat?.backendThreadId) {
@@ -611,115 +926,24 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
 
     const cwd = resolveWorkspaceCwd(this.options.context);
-    const routing = this.options.contextRouter.decide(prompt, chat.kind);
-    const contextBlocks: ContextBlock[] = [];
-    let baseRulesRoute: "skip" | "added" | "missing" = "skip";
-    let projectRoute: "skip" | "added" | "fallback" = "skip";
-    let docsRoute: "skip" | "added" = "skip";
-    let rulesRoute: "skip" | "added" | "active" | "disabled" | "missing" | "error" = "skip";
-
-    if (routing.shouldUseProjectContext) {
-      const baseRules = await this.options.baseContext.buildContext();
-      if (baseRules.text) {
-        baseRulesRoute = "added";
-        contextBlocks.push({
-          source: "baseRules",
-          text: baseRules.text,
-          matchCount: baseRules.matchCount,
-          mode: "matched"
-        });
-      } else {
-        baseRulesRoute = "missing";
-      }
-
-      this.options.state.setProjectContext({
-        status: "indexing",
-        label: "Проектный контекст индексируется"
-      });
-      this.options.onDidChange();
-      this.options.onDidChangeChat(chatId);
-
-      const project = await this.options.projectContext.buildContext(prompt, this.options.profiles.getCurrentProfileId());
-      this.options.state.setProjectContext(project.status);
-      this.options.onDidChange();
-      this.options.onDidChangeChat(chatId);
-      if (project.text) {
-        projectRoute = project.mode === "fallback" ? "fallback" : "added";
-        contextBlocks.push({
-          source: "project",
-          text: project.text,
-          matchCount: project.matchCount,
-          mode: project.mode === "fallback" ? "fallback" : "matched"
-        });
-      }
-    } else if (chat.kind === "general") {
-      this.options.state.setProjectContext({
-        status: "disabled",
-        label: "Обычный чат не использует проектный контекст"
-      });
-      this.options.onDidChange();
-      this.options.onDidChangeChat(chatId);
-    }
-
-    if (routing.shouldUseDocsContext) {
-      const docs = await this.options.docsContext.buildContext(prompt);
-      if (docs?.text) {
-        docsRoute = "added";
-        contextBlocks.push({
-          source: "docs",
-          text: docs.text,
-          matchCount: docs.matchCount,
-          mode: "matched"
-        });
-      }
-    } else {
-      this.options.logger.info(`Docs context skipped by router: ${routing.reason}.`);
-    }
-
-    if (routing.shouldUseProjectContext && chat.kind === "project") {
-      const rules = await this.options.rulesContext.buildContext(chat.kind, chat.rulesEnabled);
-      this.options.state.setRulesContext(rules.status);
-      this.options.onDidChange();
-      this.options.onDidChangeChat(chatId);
-      rulesRoute = rules.status.status === "active" && rules.text
-        ? "added"
-        : rules.status.status;
-      if (rules.text) {
-        contextBlocks.push({
-          source: "rules",
-          text: rules.text,
-          matchCount: rules.matchCount,
-          mode: "matched"
-        });
-      }
-    } else if (chat.kind === "general") {
-      this.options.state.setRulesContext({
-        status: "disabled",
-        label: "Обычный чат не использует правила проекта"
-      });
-      this.options.onDidChange();
-      this.options.onDidChangeChat(chatId);
-    } else {
-      this.options.logger.info(`Rules context skipped by router: ${routing.reason}.`);
-    }
-
-    contextBlocks.push(...explicitContextBlocks);
-
-    const input = mode === "planning"
-      ? [{ type: "text", text: this.options.contextRouter.buildPlanningEnvelope({ userPrompt: prompt, blocks: contextBlocks }) }]
-      : contextBlocks.length
-        ? [{ type: "text", text: this.options.contextRouter.buildServiceEnvelope({ userPrompt: prompt, blocks: contextBlocks }) }]
-        : [{ type: "text", text: prompt }];
-
-    this.options.logger.info(
-      `context routed: baseRules=${baseRulesRoute}, project=${projectRoute}, docs=${docsRoute}, rules=${rulesRoute}, explicit=${explicitContextBlocks.length}, reason=${routing.reason}, blocks=${contextBlocks.length}.`
-    );
+    const turnContext = await this.options.contextOrchestrator.buildTurnContext({
+      chatId,
+      chatKind: chat.kind,
+      prompt,
+      runMode: mode,
+      cwd,
+      rulesEnabled: chat.rulesEnabled,
+      explicitContextBlocks,
+      skipAutoDiagnostics: options.skipAutoDiagnostics,
+      forceDiagnosticsContext: options.forceDiagnosticsContext,
+      diagnosticsPriority: options.diagnosticsPriority
+    });
 
     const turnAccessMode = getRunAccessMode(chat.accessMode, mode);
     this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}; mode=${mode}; model=${chat.modelId || "<default>"}; effort=${chat.effort}; speed=${options.omitSpeed ? "<omitted>" : chat.speed}.`);
-    return this.requireRpcClient().request("turn/start", {
+    const result = await this.requireRpcClient().request("turn/start", {
       threadId: chat.backendThreadId,
-      input,
+      input: turnContext.input,
       cwd,
       approvalPolicy: getApprovalPolicy(turnAccessMode),
       approvalsReviewer: "user",
@@ -728,21 +952,40 @@ export class CodexRuntimeController implements vscode.Disposable {
       effort: chat.effort,
       ...(!options.omitSpeed ? { speed: chat.speed } : {})
     }, 30_000);
+    this.addContextWorklogActivity(chatId, turnContext);
+    return result;
+  }
+
+  private addContextWorklogActivity(chatId: string, turnContext: ContextTurnOrchestratorResult): void {
+    if (!turnContext.worklog.entries.length || !turnContext.worklog.label.trim()) {
+      return;
+    }
+    const hasError = turnContext.worklog.entries.some((entry) => entry.status === "error");
+    this.options.state.addOrUpdateActivityItem(chatId, {
+      id: `context-worklog-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`,
+      activityKind: "context",
+      label: turnContext.worklog.label,
+      summary: turnContext.worklog.label,
+      status: hasError ? "error" : "completed"
+    }, "immediate");
+    this.options.onDidChange();
+    this.options.onDidChangeChat(chatId);
   }
 
   private async startTurnWithFallback(
     chatId: string,
     prompt: string,
     mode: ChatRunMode,
-    explicitContextBlocks: readonly ContextBlock[] = []
+    explicitContextBlocks: readonly ContextBlock[] = [],
+    options: StartTurnOptions = {}
   ): Promise<unknown> {
     try {
-      return await this.startTurn(chatId, prompt, mode, explicitContextBlocks);
+      return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, options);
     } catch (error) {
       if (isSpeedError(error)) {
         this.options.logger.warn(`turn/start speed unsupported by runtime; retrying without speed: ${normalizeErrorMessage(error)}`);
         try {
-          return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, { omitSpeed: true });
+          return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, { ...options, omitSpeed: true });
         } catch (retryError) {
           if (!isModelOrEffortError(retryError)) {
             throw retryError;
@@ -750,7 +993,7 @@ export class CodexRuntimeController implements vscode.Disposable {
           this.options.logger.warn(`turn/start model/effort rejected after speed fallback; retrying with defaults: ${normalizeErrorMessage(retryError)}`);
           this.options.state.setChatModel(chatId, null, "5.5");
           this.options.state.setChatEffort(chatId, "medium");
-          return this.startTurn(chatId, prompt, mode, explicitContextBlocks, { omitSpeed: true });
+          return this.startTurn(chatId, prompt, mode, explicitContextBlocks, { ...options, omitSpeed: true });
         }
       }
       if (!isModelOrEffortError(error)) {
@@ -759,8 +1002,95 @@ export class CodexRuntimeController implements vscode.Disposable {
       this.options.logger.warn(`turn/start model/effort rejected; retrying with defaults: ${normalizeErrorMessage(error)}`);
       this.options.state.setChatModel(chatId, null, "5.5");
       this.options.state.setChatEffort(chatId, "medium");
-      return this.startTurn(chatId, prompt, mode, explicitContextBlocks);
+      return this.startTurn(chatId, prompt, mode, explicitContextBlocks, options);
     }
+  }
+
+  private async maybeStartDiagnosticsAutoFix(
+    chatId: string,
+    originalTurnId: string,
+    accessMode: ChatAccessMode,
+    runMode: ChatRunMode,
+    mayHaveChangedFiles: boolean
+  ): Promise<void> {
+    if (this.diagnosticsRetryTurnIds.has(originalTurnId)) {
+      return;
+    }
+    if (this.diagnosticsRetryAttemptedTurnIds.has(originalTurnId)) {
+      return;
+    }
+    if (accessMode === "read-only" || runMode === "planning" || !mayHaveChangedFiles) {
+      this.options.logger.info(
+        `Diagnostics auto-fix skipped: chat=${chatId}; turn=${originalTurnId}; access=${accessMode}; mode=${runMode}; fileChanges=${mayHaveChangedFiles}.`
+      );
+      return;
+    }
+
+    this.diagnosticsRetryAttemptedTurnIds.add(originalTurnId);
+    await sleep(1500);
+    let diagnostics = await this.options.diagnosticsContext.collectErrorContext(120);
+    if (!diagnostics.block) {
+      this.options.logger.info(
+        `Diagnostics auto-fix skipped: chat=${chatId}; turn=${originalTurnId}; reason=${diagnostics.reason}; errors=${diagnostics.totalErrorsCount}.`
+      );
+      return;
+    }
+
+    await sleep(800);
+    const refreshedDiagnostics = await this.options.diagnosticsContext.collectErrorContext(120);
+    if (refreshedDiagnostics.block || refreshedDiagnostics.reason === "no-errors") {
+      diagnostics = refreshedDiagnostics;
+    }
+    if (!diagnostics.block) {
+      this.options.logger.info(
+        `Diagnostics auto-fix skipped after refresh: chat=${chatId}; turn=${originalTurnId}; reason=${diagnostics.reason}; errors=${diagnostics.totalErrorsCount}.`
+      );
+      return;
+    }
+
+    const chat = this.options.state.getChat(chatId);
+    if (!chat || chat.kind !== "project" || chat.archivedAt || chat.status !== "idle" || chat.pendingApproval) {
+      this.options.logger.info(
+        `Diagnostics auto-fix skipped: chat unavailable or busy; chat=${chatId}; turn=${originalTurnId}; status=${chat?.status ?? "missing"}.`
+      );
+      return;
+    }
+
+    this.options.logger.info(
+      `Diagnostics auto-fix retry started: chat=${chatId}; sourceTurn=${originalTurnId}; ` +
+      `files=${diagnostics.filesCount}; errors=${diagnostics.errorsCount}; totalErrors=${diagnostics.totalErrorsCount}; fingerprint=${diagnostics.fingerprint}.`
+    );
+    await this.sendPromptCore(
+      chatId,
+      [
+        "Исправь оставшиеся ошибки IDE после предыдущего изменения.",
+        "Используй скрытый блок IDE diagnostics и текущий проектный контекст.",
+        "Исправляй минимально необходимые ошибки. Предупреждения не трогай.",
+        "Не перечисляй diagnostics пользователю, если это не нужно для результата."
+      ].join("\n"),
+      "normal",
+      undefined,
+      [diagnostics.block],
+      {
+        addUserMessage: false,
+        isDiagnosticsRetry: true
+      }
+    );
+  }
+
+  private async logDiagnosticsRetryResult(chatId: string, retryTurnId: string): Promise<void> {
+    await sleep(1500);
+    const diagnostics = await this.options.diagnosticsContext.collectErrorContext(120);
+    if (diagnostics.block) {
+      this.options.logger.info(
+        `Diagnostics auto-fix retry completed with remaining errors: chat=${chatId}; turn=${retryTurnId}; ` +
+        `files=${diagnostics.filesCount}; errors=${diagnostics.errorsCount}; totalErrors=${diagnostics.totalErrorsCount}; fingerprint=${diagnostics.fingerprint}.`
+      );
+      return;
+    }
+    this.options.logger.info(
+      `Diagnostics auto-fix retry completed: chat=${chatId}; turn=${retryTurnId}; remainingErrors=${diagnostics.totalErrorsCount}; reason=${diagnostics.reason}.`
+    );
   }
 
   private async compactBackendThread(chatId: string): Promise<void> {
@@ -775,6 +1105,9 @@ export class CodexRuntimeController implements vscode.Disposable {
       status: "compacting",
       message: "Codex сжимает контекст..."
     });
+    this.startCompactionActivity(chatId, threadId);
+    this.options.onDidChange();
+    this.options.onDidChangeChat(chatId);
 
     try {
       await this.requireRpcClient().request("thread/compact/start", { threadId }, 10_000);
@@ -829,7 +1162,62 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.options.onDidChangeChat(chatId);
   }
 
+  private startCompactionActivity(chatId: string, threadId?: string, itemId?: string): void {
+    const activityId = this.compactionActivityId(chatId, threadId, itemId);
+    this.rememberCompactionActivity(activityId, threadId, itemId);
+    this.options.state.addOrUpdateActivityItem(chatId, {
+      id: activityId,
+      activityKind: "context",
+      label: "Выполняется автоматическое сжатие контекста",
+      summary: "Выполняется автоматическое сжатие контекста",
+      status: "running",
+      itemId
+    }, "immediate");
+  }
+
+  private completeCompactionActivity(chatId: string, threadId?: string, itemId?: string): void {
+    const activityId = this.lookupCompactionActivityId(chatId, threadId, itemId);
+    if (activityId) {
+      this.options.state.addOrUpdateActivityItem(chatId, {
+        id: activityId,
+        activityKind: "context",
+        label: "Выполняется автоматическое сжатие контекста",
+        summary: "Выполняется автоматическое сжатие контекста",
+        status: "completed",
+        itemId
+      }, "immediate");
+    }
+    this.options.state.addCompactionItem(chatId);
+    if (threadId) {
+      this.contextCompactionActivityIds.delete(`thread:${threadId}`);
+    }
+    if (itemId) {
+      this.contextCompactionActivityIds.delete(`item:${itemId}`);
+    }
+  }
+
+  private compactionActivityId(chatId: string, threadId?: string, itemId?: string): string {
+    const existing = this.lookupCompactionActivityId(chatId, threadId, itemId);
+    return existing || `compaction-activity-${threadId || itemId || chatId}`;
+  }
+
+  private lookupCompactionActivityId(chatId: string, threadId?: string, itemId?: string): string | undefined {
+    return (threadId ? this.contextCompactionActivityIds.get(`thread:${threadId}`) : undefined)
+      ?? (itemId ? this.contextCompactionActivityIds.get(`item:${itemId}`) : undefined)
+      ?? this.contextCompactionActivityIds.get(`chat:${chatId}`);
+  }
+
+  private rememberCompactionActivity(activityId: string, threadId?: string, itemId?: string): void {
+    if (threadId) {
+      this.contextCompactionActivityIds.set(`thread:${threadId}`, activityId);
+    }
+    if (itemId) {
+      this.contextCompactionActivityIds.set(`item:${itemId}`, activityId);
+    }
+  }
+
   async stop(): Promise<void> {
+    this.rejectAllHiddenPlannerRuns(new Error("Codex runtime stopped before docs planner completed."));
     this.rpcClient?.dispose();
     this.rpcClient = undefined;
     await this.processManager.stop();
@@ -894,6 +1282,7 @@ export class CodexRuntimeController implements vscode.Disposable {
 
   private async stopBackendAfterCancel(): Promise<void> {
     this.suppressNextExitAsCancel = true;
+    this.rejectAllHiddenPlannerRuns(new Error("Codex runtime stopped after cancel fallback."));
     this.rpcClient?.dispose();
     this.rpcClient = undefined;
     await this.processManager.stop();
@@ -905,6 +1294,7 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.rejectAllHiddenPlannerRuns(new Error("Codex runtime disposed before docs planner completed."));
     this.rpcClient?.dispose();
     this.processManager.dispose();
   }
@@ -916,6 +1306,10 @@ export class CodexRuntimeController implements vscode.Disposable {
 
     this.loadedThreadIds.clear();
     this.contextCompactionItemThreads.clear();
+    this.contextCompactionActivityIds.clear();
+    this.diagnosticsRetryAttemptedTurnIds.clear();
+    this.diagnosticsRetryTurnIds.clear();
+    this.fileChangingTurnIds.clear();
     this.resolveAllCompactionWaiters();
 
     const profileId = await this.options.profiles.requireProfileId(this.options.settings.listExistingProfileIds());
@@ -997,7 +1391,102 @@ export class CodexRuntimeController implements vscode.Disposable {
     await this.readAccount();
   }
 
+  private handleHiddenPlannerNotification(notification: JsonRpcNotification): boolean {
+    const turnId = extractTurnId(notification.params);
+    const threadId = extractThreadId(notification.params);
+    const itemId = extractItemId(notification.params);
+    const run = (turnId ? this.hiddenPlannerRunsByTurn.get(turnId) : undefined)
+      ?? (threadId ? this.hiddenPlannerRunsByThread.get(threadId) : undefined)
+      ?? (itemId ? this.hiddenPlannerRunsByItem.get(itemId) : undefined);
+    if (!run) {
+      return false;
+    }
+
+    if (turnId && !run.turnId) {
+      run.turnId = turnId;
+      this.hiddenPlannerRunsByTurn.set(turnId, run);
+    }
+    if (itemId) {
+      this.hiddenPlannerRunsByItem.set(itemId, run);
+    }
+
+    if (notification.method === "item/agentMessage/delta") {
+      const delta = extractDelta(notification.params);
+      if (delta) {
+        run.text += delta;
+      }
+      return true;
+    }
+
+    if (notification.method === "item/completed") {
+      const text = extractCompletedAgentMessage(notification.params);
+      if (text) {
+        run.text = text;
+      }
+      return true;
+    }
+
+    if (notification.method === "turn/completed") {
+      this.resolveHiddenPlannerRun(run);
+      return true;
+    }
+
+    if (notification.method === "error" || notification.method === "turn/error") {
+      this.rejectHiddenPlannerRun(run, new Error(extractErrorNotificationMessage(notification.params)));
+      return true;
+    }
+
+    return true;
+  }
+
+  private resolveHiddenPlannerRun(run: HiddenPlannerRun): void {
+    if (run.settled) {
+      return;
+    }
+    const text = run.text.trim();
+    this.cleanupHiddenPlannerRun(run);
+    if (!text) {
+      run.reject(new Error("docs planner returned empty response."));
+      return;
+    }
+    run.resolve(text);
+  }
+
+  private rejectHiddenPlannerRun(run: HiddenPlannerRun, error: Error): void {
+    if (run.settled) {
+      return;
+    }
+    this.cleanupHiddenPlannerRun(run);
+    run.reject(error);
+  }
+
+  private cleanupHiddenPlannerRun(run: HiddenPlannerRun): void {
+    run.settled = true;
+    clearTimeout(run.timer);
+    this.hiddenPlannerRunsByThread.delete(run.threadId);
+    if (run.turnId) {
+      this.hiddenPlannerRunsByTurn.delete(run.turnId);
+    }
+    for (const [itemId, candidate] of this.hiddenPlannerRunsByItem.entries()) {
+      if (candidate === run) {
+        this.hiddenPlannerRunsByItem.delete(itemId);
+      }
+    }
+  }
+
+  private rejectAllHiddenPlannerRuns(error: Error): void {
+    for (const run of new Set(this.hiddenPlannerRunsByThread.values())) {
+      this.rejectHiddenPlannerRun(run, error);
+    }
+    this.hiddenPlannerRunsByThread.clear();
+    this.hiddenPlannerRunsByTurn.clear();
+    this.hiddenPlannerRunsByItem.clear();
+  }
+
   private handleNotification(notification: JsonRpcNotification): void {
+    if (this.handleHiddenPlannerNotification(notification)) {
+      return;
+    }
     this.options.logger.info(`notification ${notification.method}`);
     const notificationTurnId = extractTurnId(notification.params);
     if (notificationTurnId && this.cancelledTurnIds.has(notificationTurnId)) {
@@ -1082,6 +1571,13 @@ export class CodexRuntimeController implements vscode.Disposable {
           activeTurnId: turnId,
           status: "running"
         });
+        this.options.state.addOrUpdateActivityItem(chatId, {
+          id: `turn-${turnId}`,
+          activityKind: "turn",
+          label: "Работает",
+          status: "running",
+          turnId
+        });
         this.options.onDidChange();
         this.options.onDidChangeChat(chatId);
       }
@@ -1093,9 +1589,26 @@ export class CodexRuntimeController implements vscode.Disposable {
       if (itemId) {
         this.itemPayloads.set(itemId, notification.params);
       }
+      if (notificationTurnId && extractItemType(notification.params) === "fileChange") {
+        this.fileChangingTurnIds.add(notificationTurnId);
+      }
+      const chatId = this.findChatIdForNotification(notification.params);
+      if (itemId && chatId) {
+        const activity = normalizeItemActivity(notification.params);
+        if (activity) {
+          this.options.state.addOrUpdateActivityItem(chatId, {
+            id: `item-${itemId}`,
+            itemId,
+            turnId: notificationTurnId || undefined,
+            ...activity,
+            status: "running"
+          });
+          this.options.onDidChange();
+          this.options.onDidChangeChat(chatId);
+        }
+      }
       if (itemId && extractItemType(notification.params) === "contextCompaction") {
         const threadId = extractThreadId(notification.params);
-        const chatId = this.findChatIdForNotification(notification.params);
         if (threadId) {
           this.contextCompactionItemThreads.set(itemId, threadId);
         }
@@ -1105,7 +1618,73 @@ export class CodexRuntimeController implements vscode.Disposable {
             status: "compacting",
             message: "Codex сжимает контекст..."
           });
+          this.startCompactionActivity(chatId, threadId, itemId);
+          this.options.onDidChange();
+          this.options.onDidChangeChat(chatId);
         }
+      }
+      return;
+    }
+
+    if (notification.method === "turn/diff/updated") {
+      const chatId = this.findChatIdForNotification(notification.params);
+      const turnId = extractTurnId(notification.params);
+      const diff = extractDiffText(extractItemRecord(notification.params));
+      if (chatId && diff) {
+        if (turnId) {
+          this.fileChangingTurnIds.add(turnId);
+        }
+        this.options.state.addOrUpdateDiffItem(chatId, turnId, "Изменения", parseUnifiedDiffFiles(diff));
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+      }
+      return;
+    }
+
+    if (notification.method === "turn/plan/updated") {
+      const chatId = this.findChatIdForNotification(notification.params);
+      const turnId = extractTurnId(notification.params);
+      const markdown = normalizePlanMarkdown(notification.params);
+      if (chatId && markdown) {
+        this.options.state.addOrUpdatePlanItem(chatId, turnId, markdown);
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+      }
+      return;
+    }
+
+    if (notification.method === "item/fileChange/patchUpdated") {
+      const chatId = this.findChatIdForNotification(notification.params);
+      const turnId = extractTurnId(notification.params);
+      const files = normalizePatchUpdatedFiles(notification.params);
+      if (chatId && files.length) {
+        if (turnId) {
+          this.fileChangingTurnIds.add(turnId);
+        }
+        this.options.state.addOrUpdateDiffItem(chatId, turnId, "Изменения", files);
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+      }
+      return;
+    }
+
+    if (notification.method === "item/commandExecution/outputDelta" || notification.method === "item/fileChange/outputDelta" || notification.method === "item/reasoning/summaryTextDelta" || notification.method === "item/reasoning/textDelta") {
+      const chatId = this.findChatIdForNotification(notification.params);
+      const itemId = extractItemId(notification.params);
+      const delta = extractDelta(notification.params);
+      if (chatId && itemId && delta) {
+        this.options.state.appendActivityOutput(chatId, `item-${itemId}`, delta);
+        this.options.onDidChangeChat(chatId);
+      }
+      return;
+    }
+
+    if (notification.method === "thread/compacted") {
+      const chatId = this.findChatIdForNotification(notification.params) ?? this.latestChatId;
+      if (chatId) {
+        this.completeCompactionActivity(chatId, extractThreadId(notification.params));
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
       }
       return;
     }
@@ -1115,7 +1694,6 @@ export class CodexRuntimeController implements vscode.Disposable {
       const chatId = this.findChatIdForNotification(notification.params);
       if (chatId && delta) {
         this.options.state.appendAssistantDelta(chatId, delta);
-        this.options.onDidChange();
         this.options.onDidChangeChat(chatId);
       }
       return;
@@ -1137,6 +1715,9 @@ export class CodexRuntimeController implements vscode.Disposable {
             status: "ready",
             message: undefined
           });
+          this.completeCompactionActivity(chatId, threadId, itemId);
+          this.options.onDidChange();
+          this.options.onDidChangeChat(chatId);
         }
         if (threadId) {
           this.resolveCompactionWaiters(threadId);
@@ -1146,8 +1727,20 @@ export class CodexRuntimeController implements vscode.Disposable {
       if (itemId) {
         this.itemPayloads.delete(itemId);
       }
-      const agentText = extractCompletedAgentMessage(notification.params);
       const chatId = this.findChatIdForNotification(notification.params);
+      if (itemId && chatId) {
+        const activity = normalizeItemActivity(notification.params);
+        if (activity) {
+          this.options.state.addOrUpdateActivityItem(chatId, {
+            id: `item-${itemId}`,
+            itemId,
+            turnId: notificationTurnId || undefined,
+            ...activity,
+            status: "completed"
+          }, "immediate");
+        }
+      }
+      const agentText = extractCompletedAgentMessage(notification.params);
       if (chatId && agentText) {
         this.options.state.setLastAssistantText(chatId, agentText);
         this.options.onDidChange();
@@ -1161,10 +1754,26 @@ export class CodexRuntimeController implements vscode.Disposable {
       const chatId = this.findChatIdForNotification(notification.params);
       const status = extractTurnStatus(notification.params);
       const errorMessage = extractTurnErrorMessage(notification.params);
+      const chatBeforeComplete = chatId ? this.options.state.getChat(chatId) : undefined;
+      const completedRunMode = chatBeforeComplete?.activeRunMode ?? "normal";
+      const completedAccessMode = chatBeforeComplete
+        ? getRunAccessMode(chatBeforeComplete.accessMode, completedRunMode)
+        : "read-only";
+      const isDiagnosticsRetryTurn = Boolean(turnId && this.diagnosticsRetryTurnIds.has(turnId));
+      const mayHaveChangedFiles = Boolean(turnId && this.fileChangingTurnIds.has(turnId));
       if (turnId) {
         this.activeTurnChatId.delete(turnId);
       }
       if (chatId) {
+        if (turnId) {
+          this.options.state.addOrUpdateActivityItem(chatId, {
+            id: `turn-${turnId}`,
+            activityKind: "turn",
+            label: status === "completed" || !errorMessage ? "Работал" : "Завершено с ошибкой",
+            status: status === "completed" || !errorMessage ? "completed" : "error",
+            turnId
+          }, "immediate");
+        }
         this.options.state.updateChat(chatId, {
           activeTurnId: null,
           status: status === "completed" || !errorMessage ? "idle" : "error",
@@ -1172,10 +1781,19 @@ export class CodexRuntimeController implements vscode.Disposable {
           activeRunMode: null
         }, "immediate");
         if (errorMessage) {
-          this.options.state.addTranscriptItem(chatId, "system", errorMessage, "immediate");
+          this.options.state.addErrorItem(chatId, errorMessage, undefined, "immediate");
         }
         this.options.onDidChange();
         this.options.onDidChangeChat(chatId);
+      }
+      if (turnId) {
+        this.fileChangingTurnIds.delete(turnId);
+      }
+      if (chatId && turnId && isDiagnosticsRetryTurn) {
+        this.diagnosticsRetryTurnIds.delete(turnId);
+        void this.logDiagnosticsRetryResult(chatId, turnId);
+      } else if (chatId && turnId && (status === "completed" || !errorMessage)) {
+        void this.maybeStartDiagnosticsAutoFix(chatId, turnId, completedAccessMode, completedRunMode, mayHaveChangedFiles);
       }
       return;
     }
@@ -1197,6 +1815,14 @@ export class CodexRuntimeController implements vscode.Disposable {
     if (notification.method === "error") {
       const message = extractErrorNotificationMessage(notification.params);
       const chatId = this.findChatIdForNotification(notification.params) ?? this.latestChatId;
+      const reconnect = parseReconnectMessage(message);
+      if (chatId && reconnect) {
+        this.options.state.addConnectionItem(chatId, message, "reconnecting", reconnect.attempt, reconnect.maxAttempts);
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+        this.options.logger.warn(`App-server reconnecting: ${message}`);
+        return;
+      }
       if (chatId && (this.cancellingChatIds.has(chatId) || this.options.state.getChat(chatId)?.status === "cancelling")) {
         this.options.logger.info(`Ignored app-server error while cancelling chat ${chatId}: ${message}`);
         return;
@@ -1207,7 +1833,7 @@ export class CodexRuntimeController implements vscode.Disposable {
           activeTurnId: null,
           activeRunMode: null
         });
-        this.options.state.addTranscriptItem(chatId, "system", message);
+        this.options.state.addErrorItem(chatId, message);
         this.options.onDidChangeChat(chatId);
       }
       this.options.onDidChange();
@@ -1253,8 +1879,13 @@ export class CodexRuntimeController implements vscode.Disposable {
       this.options.state.setPendingApproval(pending.chatId, null);
     }
     this.pendingApprovals.clear();
+    this.rejectAllHiddenPlannerRuns(new Error("Codex app-server exited before docs planner completed."));
     this.loadedThreadIds.clear();
     this.contextCompactionItemThreads.clear();
+    this.contextCompactionActivityIds.clear();
+    this.diagnosticsRetryAttemptedTurnIds.clear();
+    this.diagnosticsRetryTurnIds.clear();
+    this.fileChangingTurnIds.clear();
     this.resolveAllCompactionWaiters();
     this.rpcClient?.dispose();
     this.rpcClient = undefined;
@@ -1312,6 +1943,60 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 }
 
+function buildDocsPlannerPrompt(request: DocsPlannerRuntimeRequest): string {
+  const roots = request.input.roots.map((root) => ({
+    root: root.root,
+    fingerprint: root.fingerprint,
+    fileCount: root.fileCount,
+    latestMtimeMs: root.latestMtimeMs,
+    corpusCount: root.corpusCount,
+    fragmentCount: root.fragmentCount
+  }));
+  const corpora = request.input.corpora
+    .slice()
+    .sort((left, right) => right.priority - left.priority || left.corpus.localeCompare(right.corpus))
+    .map((corpus) => ({
+      corpus: corpus.corpus,
+      label: corpus.label,
+      root: corpus.root,
+      priority: corpus.priority,
+      format: corpus.format,
+      fragmentCount: corpus.fragmentCount,
+      titles: corpus.titles.slice(0, 32),
+      keywords: corpus.keywords.slice(0, 48),
+      excerpts: corpus.excerpts.slice(0, 6)
+    }));
+
+  return [
+    "Ты скрытый planner поиска по документации для Codex for 1C: Element.",
+    "Твоя задача: по запросу пользователя выбрать поисковые формулировки и предпочтительные корпуса документации.",
+    "Не отвечай на вопрос пользователя. Верни только JSON без markdown и без пояснений.",
+    "Схема JSON:",
+    "{\"queries\":[\"...\"],\"preferredCorpora\":[\"lang\"],\"targetTitles\":[\"...\"],\"needOverview\":false,\"reason\":\"short\"}",
+    "Правила:",
+    "- максимум 10 queries;",
+    "- preferredCorpora выбирай из corpus id карты ниже;",
+    "- для вопросов по языку, API, типам, методам, свойствам, структурам, формам и синтаксису предпочитай lang/ai-docs-lang;",
+    "- bundle выбирай только для вопросов про server bundle, runtime, плагины и поставку;",
+    "- console выбирай только для вопросов про IDE, панели, команды и console;",
+    "- если пользователь просит ознакомиться/изучить документацию целиком, выставь needOverview=true;",
+    "- не указывай локальные пути, которых нет в карте корпусов.",
+    "",
+    "Запрос пользователя:",
+    request.prompt,
+    "",
+    "Карта документации:",
+    truncateForPrompt(JSON.stringify({ roots, corpora }, null, 2), 32_000)
+  ].join("\n");
+}
+
+function truncateForPrompt(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars)}\n...<truncated>`;
+}
+
 function resolveBundledRuntimePath(context: vscode.ExtensionContext): string {
   return path.join(context.extensionUri.fsPath, "bin", "windows-x86_64", "codex.exe");
 }
@@ -1326,12 +2011,12 @@ function getRunAccessMode(accessMode: ChatAccessMode, mode: ChatRunMode): ChatAc
 
 function getThreadSandbox(accessMode: ChatAccessMode): string {
   if (accessMode === "workspace-write") {
-    return "workspaceWrite";
+    return "workspace-write";
   }
   if (accessMode === "danger-full-access") {
-    return "dangerFullAccess";
+    return "danger-full-access";
   }
-  return "readOnly";
+  return "read-only";
 }
 
 function getTurnSandboxPolicy(accessMode: ChatAccessMode, cwd: string): Record<string, unknown> {
@@ -1536,6 +2221,74 @@ function describePayloadShape(value: unknown): string {
   return nested || "empty-object";
 }
 
+async function probeNativeToolListCandidates(rpcClient: JsonRpcClient): Promise<CapabilityProbeRow> {
+  const candidates = [
+    "tools/list",
+    "tool/list",
+    "mcp/list",
+    "mcpServer/list",
+    "mcpServer/listTools",
+    "capabilities/read"
+  ];
+  const observations: string[] = [];
+  const startedAt = Date.now();
+  for (const method of candidates) {
+    try {
+      const result = await rpcClient.request(method, undefined, 3_000);
+      return {
+        capability: "native MCP/custom tools listing",
+        status: "supported",
+        observation: `${method} responded with ${describePayloadShape(result)}`,
+        evidence: "live rpc candidate probe",
+        elapsedMs: Date.now() - startedAt
+      };
+    } catch (error) {
+      observations.push(`${method}: ${shorten(normalizeErrorMessage(error), 140)}`);
+    }
+  }
+  return {
+    capability: "native MCP/custom tools listing",
+    status: "unknown",
+    observation: `no known candidate listing method responded; ${observations.join(" | ")}`,
+    evidence: "live rpc candidate probe",
+    elapsedMs: Date.now() - startedAt
+  };
+}
+
+function formatCapabilityProbeReport(rows: CapabilityProbeRow[], elapsedMs: number): string {
+  const lines = [
+    `Capability probe completed in ${elapsedMs}ms.`,
+    "Capability probe matrix:",
+    "| Capability | Status | Evidence | Observation |",
+    "| --- | --- | --- | --- |"
+  ];
+  for (const row of rows) {
+    lines.push(`| ${escapeProbeCell(row.capability)} | ${row.status} | ${escapeProbeCell(row.evidence)}${row.elapsedMs === undefined ? "" : ` (${row.elapsedMs}ms)`} | ${escapeProbeCell(row.observation)} |`);
+  }
+  return lines.join("\n");
+}
+
+function escapeProbeCell(value: string): string {
+  return redact(value).replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
+function shorten(value: string, maxLength: number): string {
+  const redacted = redact(value);
+  return redacted.length <= maxLength ? redacted : `${redacted.slice(0, maxLength)}...`;
+}
+
+function isUnsupportedCapabilityError(error: unknown): boolean {
+  const message = normalizeErrorMessage(error).toLowerCase();
+  return (
+    message.includes("method not found") ||
+    message.includes("not found") && message.includes("method") ||
+    message.includes("unknown method") ||
+    message.includes("unsupported") ||
+    message.includes("unknown field") ||
+    message.includes("unknown variant")
+  );
+}
+
 function normalizePercentValue(value: number): number {
   return value > 0 && value <= 1 ? value * 100 : value;
 }
@@ -1715,6 +2468,10 @@ function isSpeedError(error: unknown): boolean {
   );
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function normalizeErrorMessage(error: unknown): string {
   return redact(error instanceof Error ? error.message : "Неизвестная ошибка Codex runtime.");
 }
@@ -1746,6 +2503,184 @@ function normalizeModelOptions(value: unknown): ModelOption[] {
   }
 
   return normalized.length ? normalized : FALLBACK_MODEL_OPTIONS;
+}
+
+function normalizeItemActivity(value: unknown): {
+  activityKind: ChatActivityKind;
+  label: string;
+  command?: string;
+  path?: string;
+  summary?: string;
+  outputPreview?: string;
+} | undefined {
+  const root = isRecord(value) ? value : {};
+  const item = extractItemRecord(value);
+  const type = extractItemType(value);
+  const command = extractFirstString(item, ["command", "cmd", "shellCommand", "argv", "commandLine"]);
+  const filePath = extractFirstString(item, ["path", "filePath", "absolutePath", "targetPath"]);
+  const summary = extractFirstString(item, ["summary", "message", "description", "title"]);
+
+  if (
+    type === "agentMessage"
+    || type === "userMessage"
+    || type === "hookPrompt"
+    || type === "contextCompaction"
+    || type === "plan"
+  ) {
+    return undefined;
+  }
+  if (type === "commandExecution") {
+    return {
+      activityKind: "command",
+      label: command ? `Выполняется ${command}` : "Выполняется команда",
+      command,
+      summary
+    };
+  }
+  if (type === "fileChange") {
+    return {
+      activityKind: "file",
+      label: filePath ? `Изменяется ${filePath}` : "Изменяются файлы",
+      path: filePath,
+      summary
+    };
+  }
+  if (type === "webSearch") {
+    return {
+      activityKind: "search",
+      label: summary || "Выполняется поиск",
+      summary
+    };
+  }
+  if (type === "reasoning") {
+    return {
+      activityKind: "reasoning",
+      label: summary || "Думаю",
+      summary
+    };
+  }
+  const method = getString(root.method);
+  if (!type && !method) {
+    return undefined;
+  }
+  return {
+    activityKind: "unknown",
+    label: summary || type || method || "Действие Codex",
+    summary
+  };
+}
+
+function normalizePlanMarkdown(value: unknown): string {
+  const root = isRecord(value) ? value : {};
+  const lines: string[] = [];
+  const explanation = getString(root.explanation);
+  if (explanation.trim()) {
+    lines.push(explanation.trim());
+  }
+  const plan = Array.isArray(root.plan) ? root.plan : [];
+  for (const step of plan) {
+    const record = isRecord(step) ? step : {};
+    const text = getString(record.step) || getString(record.text) || getString(record.title);
+    if (!text.trim()) {
+      continue;
+    }
+    const status = getString(record.status);
+    const marker = status === "completed" ? "x" : " ";
+    lines.push(`- [${marker}] ${text.trim()}`);
+  }
+  return lines.join("\n\n").trim();
+}
+
+function normalizePatchUpdatedFiles(value: unknown): ChatDiffFileSummary[] {
+  const root = isRecord(value) ? value : {};
+  const changes = Array.isArray(root.changes) ? root.changes : [];
+  const files: ChatDiffFileSummary[] = [];
+  for (const change of changes) {
+    const record = isRecord(change) ? change : {};
+    const diff = getString(record.diff);
+    const parsed = diff ? parseUnifiedDiffFiles(diff) : [];
+    const pathValue = getString(record.path) || parsed[0]?.path || "unknown";
+    const stats = parsed[0] ?? countDiffStats(pathValue, diff);
+    files.push({
+      path: pathValue,
+      additions: stats.additions,
+      deletions: stats.deletions,
+      diff: diff || undefined
+    });
+  }
+  return mergeDiffFiles(files);
+}
+
+function parseUnifiedDiffFiles(diff: string): ChatDiffFileSummary[] {
+  const lines = diff.split(/\r?\n/);
+  const files: ChatDiffFileSummary[] = [];
+  let current: ChatDiffFileSummary | undefined;
+  for (const line of lines) {
+    const header = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (header) {
+      if (current) {
+        files.push(current);
+      }
+      current = { path: header[2] || header[1], additions: 0, deletions: 0, diff: "" };
+      continue;
+    }
+    const plusFile = line.match(/^\+\+\+ b\/(.+)$/);
+    if (!current && plusFile) {
+      current = { path: plusFile[1], additions: 0, deletions: 0, diff: "" };
+    }
+    if (!current) {
+      current = { path: "changes.patch", additions: 0, deletions: 0, diff: "" };
+    }
+    current.diff = `${current.diff || ""}${line}\n`;
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      current.additions += 1;
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      current.deletions += 1;
+    }
+  }
+  if (current) {
+    files.push(current);
+  }
+  return mergeDiffFiles(files);
+}
+
+function mergeDiffFiles(files: ChatDiffFileSummary[]): ChatDiffFileSummary[] {
+  const byPath = new Map<string, ChatDiffFileSummary>();
+  for (const file of files) {
+    const key = file.path || "unknown";
+    const existing = byPath.get(key);
+    if (!existing) {
+      byPath.set(key, { ...file, path: key });
+      continue;
+    }
+    existing.additions += file.additions;
+    existing.deletions += file.deletions;
+    existing.diff = [existing.diff, file.diff].filter(Boolean).join("\n");
+  }
+  return [...byPath.values()];
+}
+
+function countDiffStats(pathValue: string, diff: string): ChatDiffFileSummary {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      additions += 1;
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      deletions += 1;
+    }
+  }
+  return { path: pathValue, additions, deletions, diff: diff || undefined };
+}
+
+function parseReconnectMessage(message: string): { attempt: number; maxAttempts: number } | undefined {
+  const match = message.match(/(?:reconnecting|повтор).*?(\d+)\s*\/\s*(\d+)/i) || message.match(/(\d+)\s*\/\s*(\d+)/);
+  if (!match) {
+    return undefined;
+  }
+  const attempt = Number(match[1]);
+  const maxAttempts = Number(match[2]);
+  return Number.isFinite(attempt) && Number.isFinite(maxAttempts) ? { attempt, maxAttempts } : undefined;
 }
 
 function prettifyModelLabel(modelId: string): string {

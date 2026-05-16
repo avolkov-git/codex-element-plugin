@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.StateStore = void 0;
+exports.StateStore = exports.TRANSCRIPT_PAGE_SIZE = exports.TRANSCRIPT_INITIAL_WINDOW_SIZE = void 0;
+exports.TRANSCRIPT_INITIAL_WINDOW_SIZE = 40;
+exports.TRANSCRIPT_PAGE_SIZE = 20;
 const FALLBACK_MODEL_OPTIONS = [
     { id: null, label: "5.5" },
     { id: "gpt-5.5", label: "GPT-5.5" },
@@ -163,7 +165,7 @@ class StateStore {
             contextWindow: this.contextWindows.get(chat.id) ?? EMPTY_CONTEXT_WINDOW,
             modelOptions: this.modelOptions,
             modelOptionsStatus: this.modelOptionsStatus,
-            transcript: this.transcripts.get(chat.id) ?? []
+            transcriptWindow: this.getTranscriptTail(chat.id)
         };
     }
     getActiveChatId() {
@@ -171,6 +173,44 @@ class StateStore {
     }
     getActiveChatSnapshot() {
         return this.activeChatId ? this.getChatSnapshot(this.activeChatId) : undefined;
+    }
+    getTranscriptTail(chatId, count = exports.TRANSCRIPT_INITIAL_WINDOW_SIZE) {
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const safeCount = normalizeTranscriptWindowCount(count, exports.TRANSCRIPT_INITIAL_WINDOW_SIZE);
+        return this.buildTranscriptWindow(chatId, Math.max(0, transcript.length - safeCount), transcript.length);
+    }
+    getTranscriptBefore(chatId, beforeItemId, count = exports.TRANSCRIPT_PAGE_SIZE) {
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const index = transcript.findIndex((item) => item.id === beforeItemId);
+        if (index < 0) {
+            return this.getTranscriptTail(chatId, count);
+        }
+        const safeCount = normalizeTranscriptWindowCount(count, exports.TRANSCRIPT_PAGE_SIZE);
+        return this.buildTranscriptWindow(chatId, Math.max(0, index - safeCount), index);
+    }
+    getTranscriptAfter(chatId, afterItemId, count = exports.TRANSCRIPT_PAGE_SIZE) {
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const index = transcript.findIndex((item) => item.id === afterItemId);
+        if (index < 0) {
+            return this.getTranscriptTail(chatId, count);
+        }
+        const safeCount = normalizeTranscriptWindowCount(count, exports.TRANSCRIPT_PAGE_SIZE);
+        return this.buildTranscriptWindow(chatId, index + 1, Math.min(transcript.length, index + 1 + safeCount));
+    }
+    buildTranscriptWindow(chatId, start, end) {
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const normalizedStart = Math.max(0, Math.min(start, transcript.length));
+        const normalizedEnd = Math.max(normalizedStart, Math.min(end, transcript.length));
+        const items = transcript.slice(normalizedStart, normalizedEnd);
+        return {
+            items,
+            offset: normalizedStart,
+            totalCount: transcript.length,
+            hasBefore: normalizedStart > 0,
+            hasAfter: normalizedEnd < transcript.length,
+            firstItemId: items[0]?.id,
+            lastItemId: items[items.length - 1]?.id
+        };
     }
     createChat(kind, title) {
         const now = new Date().toISOString();
@@ -202,6 +242,7 @@ class StateStore {
         this.activeChatId = chat.id;
         this.transcripts.set(chat.id, [
             {
+                kind: "message",
                 id: `${chat.id}-system`,
                 role: "system",
                 text: kind === "project"
@@ -434,10 +475,12 @@ class StateStore {
             return undefined;
         }
         const item = {
+            kind: "message",
             id: `${chatId}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
             role,
             text,
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            status: "complete"
         };
         this.transcripts.set(chatId, [...(this.transcripts.get(chatId) ?? []), item]);
         this.updateChat(chatId, role === "user" ? {} : { hasUnread: true }, mode);
@@ -449,22 +492,30 @@ class StateStore {
             return;
         }
         const transcript = this.transcripts.get(chatId) ?? [];
-        const last = transcript[transcript.length - 1];
-        if (last?.role === "assistant") {
+        const streamingIndex = findLastStreamingAssistantMessageIndex(transcript);
+        if (streamingIndex >= 0) {
+            const last = transcript[streamingIndex];
             const updatedLast = {
                 ...last,
-                text: `${last.text}${delta}`
+                text: `${last.text}${delta}`,
+                status: "streaming"
             };
-            this.transcripts.set(chatId, [...transcript.slice(0, -1), updatedLast]);
+            this.transcripts.set(chatId, [
+                ...transcript.slice(0, streamingIndex),
+                updatedLast,
+                ...transcript.slice(streamingIndex + 1)
+            ]);
         }
         else {
             this.transcripts.set(chatId, [
                 ...transcript,
                 {
+                    kind: "message",
                     id: `${chatId}-assistant-${Date.now()}-${Math.random().toString(16).slice(2)}`,
                     role: "assistant",
                     text: delta,
-                    createdAt: new Date().toISOString()
+                    createdAt: new Date().toISOString(),
+                    status: "streaming"
                 }
             ]);
         }
@@ -476,22 +527,198 @@ class StateStore {
             return;
         }
         const transcript = this.transcripts.get(chatId) ?? [];
-        const last = transcript[transcript.length - 1];
-        if (last?.role === "assistant") {
-            this.transcripts.set(chatId, [...transcript.slice(0, -1), { ...last, text }]);
+        const index = findLastAssistantMessageIndex(transcript);
+        if (index >= 0) {
+            const existing = transcript[index];
+            this.transcripts.set(chatId, [
+                ...transcript.slice(0, index),
+                { ...existing, text, status: "complete", completedAt: new Date().toISOString() },
+                ...transcript.slice(index + 1)
+            ]);
         }
         else {
             this.transcripts.set(chatId, [
                 ...transcript,
                 {
+                    kind: "message",
                     id: `${chatId}-assistant-${Date.now()}-${Math.random().toString(16).slice(2)}`,
                     role: "assistant",
                     text,
-                    createdAt: new Date().toISOString()
+                    createdAt: new Date().toISOString(),
+                    status: "complete",
+                    completedAt: new Date().toISOString()
                 }
             ]);
         }
         this.updateChat(chatId, { hasUnread: true }, "immediate");
+    }
+    addOrUpdateActivityItem(chatId, patch, mode = "debounced") {
+        const chat = this.getChat(chatId);
+        if (!chat) {
+            return undefined;
+        }
+        const now = new Date().toISOString();
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const existingIndex = transcript.findIndex((item) => item.kind === "activity" && item.id === patch.id);
+        const existing = existingIndex >= 0 ? transcript[existingIndex] : undefined;
+        const item = {
+            ...(existing ?? {
+                kind: "activity",
+                id: patch.id,
+                activityKind: patch.activityKind,
+                label: patch.label,
+                status: patch.status,
+                createdAt: now
+            }),
+            ...patch,
+            updatedAt: now,
+            completedAt: patch.status === "completed" || patch.status === "error" ? now : existing?.completedAt
+        };
+        if (existingIndex >= 0) {
+            this.transcripts.set(chatId, [
+                ...transcript.slice(0, existingIndex),
+                item,
+                ...transcript.slice(existingIndex + 1)
+            ]);
+        }
+        else {
+            this.transcripts.set(chatId, [...transcript, item]);
+        }
+        this.updateChat(chatId, { hasUnread: true }, mode);
+        return item;
+    }
+    appendActivityOutput(chatId, activityId, delta, mode = "debounced") {
+        if (!this.getChat(chatId) || !delta) {
+            return;
+        }
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const index = transcript.findIndex((item) => item.kind === "activity" && item.id === activityId);
+        if (index < 0) {
+            return;
+        }
+        const existing = transcript[index];
+        const output = `${existing.outputPreview ?? ""}${delta}`;
+        const updated = {
+            ...existing,
+            outputPreview: output.length > 1200 ? output.slice(output.length - 1200) : output,
+            updatedAt: new Date().toISOString()
+        };
+        this.transcripts.set(chatId, [...transcript.slice(0, index), updated, ...transcript.slice(index + 1)]);
+        this.updateChat(chatId, { hasUnread: true }, mode);
+    }
+    addOrUpdateDiffItem(chatId, turnId, title, files, mode = "debounced") {
+        if (!this.getChat(chatId) || files.length === 0) {
+            return;
+        }
+        const id = turnId ? `diff-${turnId}` : `${chatId}-diff`;
+        const now = new Date().toISOString();
+        const additions = files.reduce((sum, file) => sum + file.additions, 0);
+        const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const index = transcript.findIndex((item) => item.kind === "diff" && item.id === id);
+        const item = {
+            kind: "diff",
+            id,
+            title,
+            additions,
+            deletions,
+            files,
+            createdAt: index >= 0 ? transcript[index].createdAt : now,
+            updatedAt: now,
+            turnId
+        };
+        this.transcripts.set(chatId, index >= 0
+            ? [...transcript.slice(0, index), item, ...transcript.slice(index + 1)]
+            : [...transcript, item]);
+        this.updateChat(chatId, { hasUnread: true }, mode);
+    }
+    addOrUpdatePlanItem(chatId, turnId, markdown, mode = "debounced") {
+        if (!this.getChat(chatId) || !markdown.trim()) {
+            return;
+        }
+        const id = turnId ? `plan-${turnId}` : `${chatId}-plan`;
+        const now = new Date().toISOString();
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const index = transcript.findIndex((item) => item.kind === "plan" && item.id === id);
+        const item = {
+            kind: "plan",
+            id,
+            markdown,
+            createdAt: index >= 0 ? transcript[index].createdAt : now,
+            updatedAt: now,
+            turnId
+        };
+        this.transcripts.set(chatId, index >= 0
+            ? [...transcript.slice(0, index), item, ...transcript.slice(index + 1)]
+            : [...transcript, item]);
+        this.updateChat(chatId, { hasUnread: true }, mode);
+    }
+    addCompactionItem(chatId, label = "Контекст автоматически сжат", mode = "immediate") {
+        if (!this.getChat(chatId)) {
+            return;
+        }
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const now = Date.now();
+        const hasRecentMarker = transcript.some((item) => {
+            if (item.kind !== "compaction" || item.label !== label) {
+                return false;
+            }
+            const createdAt = Date.parse(item.createdAt);
+            return Number.isFinite(createdAt) && now - createdAt < 5 * 60000;
+        });
+        if (hasRecentMarker) {
+            return;
+        }
+        this.transcripts.set(chatId, [
+            ...transcript,
+            {
+                kind: "compaction",
+                id: `${chatId}-compaction-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                label,
+                createdAt: new Date().toISOString()
+            }
+        ]);
+        this.updateChat(chatId, { hasUnread: true }, mode);
+    }
+    addConnectionItem(chatId, message, status, attempt, maxAttempts, mode = "debounced") {
+        if (!this.getChat(chatId)) {
+            return;
+        }
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const id = `connection-${chatId}`;
+        const now = new Date().toISOString();
+        const index = transcript.findIndex((item) => item.kind === "connection" && item.id === id);
+        const existing = index >= 0 ? transcript[index] : undefined;
+        const item = {
+            kind: "connection",
+            id,
+            message,
+            status,
+            attempt,
+            maxAttempts,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now
+        };
+        this.transcripts.set(chatId, index >= 0
+            ? [...transcript.slice(0, index), item, ...transcript.slice(index + 1)]
+            : [...transcript, item]);
+        this.updateChat(chatId, { hasUnread: true }, mode);
+    }
+    addErrorItem(chatId, message, details, mode = "immediate") {
+        if (!this.getChat(chatId)) {
+            return;
+        }
+        this.transcripts.set(chatId, [
+            ...(this.transcripts.get(chatId) ?? []),
+            {
+                kind: "error",
+                id: `${chatId}-error-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                message,
+                details,
+                createdAt: new Date().toISOString()
+            }
+        ]);
+        this.updateChat(chatId, { hasUnread: true }, mode);
     }
     findChatByTurnId(turnId) {
         return this.chats.find((chat) => chat.activeTurnId === turnId);
@@ -566,5 +793,29 @@ function normalizeModelOptions(options) {
         normalized.push({ id, label });
     }
     return normalized;
+}
+function normalizeTranscriptWindowCount(count, fallback) {
+    if (!Number.isFinite(count)) {
+        return fallback;
+    }
+    return Math.max(1, Math.min(40, Math.floor(count)));
+}
+function findLastAssistantMessageIndex(items) {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
+        if (item.kind === "message" && item.role === "assistant") {
+            return index;
+        }
+    }
+    return -1;
+}
+function findLastStreamingAssistantMessageIndex(items) {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
+        if (item.kind === "message" && item.role === "assistant" && item.status === "streaming") {
+            return index;
+        }
+    }
+    return -1;
 }
 //# sourceMappingURL=stateStore.js.map

@@ -38,6 +38,7 @@ const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
+const docsCorpusService_1 = require("./docsCorpusService");
 class SettingsService {
     constructor(context) {
         this.context = context;
@@ -77,18 +78,20 @@ class SettingsService {
         };
     }
     getSidebarDocsStatus() {
-        const docs = this.getDocsSettingsView();
-        if (!docs.normalizedPath) {
+        const details = this.getDocsContextDetails();
+        if (details.status === "notConfigured") {
             return { status: "notConfigured", label: "Документация не настроена" };
         }
-        if (docs.validationMessage) {
+        if (details.status === "error") {
             return { status: "error", label: "Документация недоступна" };
         }
         return { status: "configured", label: "Документация активна" };
     }
     getDocsContextDetails() {
         const docs = this.getDocsSettingsView();
-        if (!docs.normalizedPath) {
+        const allowedRoots = collectDocsRootDetails(docs.normalizedPath, docs.sourcePath, this.configRoot);
+        const configuredRoots = allowedRoots.filter((root) => root.status === "configured");
+        if (!allowedRoots.length) {
             return {
                 kind: "docs",
                 status: "notConfigured",
@@ -97,23 +100,33 @@ class SettingsService {
                 error: "Документация не используется: путь не задан."
             };
         }
-        if (docs.validationMessage) {
+        if (!configuredRoots.length) {
             return {
                 kind: "docs",
                 status: "error",
                 label: "Документация недоступна",
                 source: "none",
                 normalizedPath: docs.normalizedPath,
-                error: docs.validationMessage
+                sourcePath: docs.sourcePath,
+                allowedRoots,
+                error: allowedRoots.map((root) => `${root.label}: ${root.error || "корпус не найден"}`).join("; ")
             };
         }
+        const primary = configuredRoots[0];
+        const corpora = configuredRoots.flatMap((root) => root.corpora ?? []);
         return {
             kind: "docs",
             status: "configured",
-            label: "Нормализованная документация",
-            source: "normalized",
+            label: configuredRoots.length > 1 ? `Документация: ${configuredRoots.length} источника` : primary.label,
+            source: configuredRoots.length > 1 || primary.kind !== "normalized" ? "multiple" : "normalized",
             normalizedPath: docs.normalizedPath,
-            indexPath: resolveDocsIndexPath(docs.normalizedPath)
+            sourcePath: docs.sourcePath,
+            indexPath: primary.corpora?.[0]?.indexPath,
+            corpora,
+            allowedRoots,
+            fingerprint: primary.fingerprint,
+            fingerprintFiles: primary.fingerprintFiles,
+            fingerprintLatestMtimeMs: primary.fingerprintLatestMtimeMs
         };
     }
     getConfigRoot() {
@@ -316,25 +329,110 @@ function validateDocsPath(normalizedPath) {
     if (!normalizedPath) {
         return "";
     }
-    try {
-        const stats = fs.statSync(normalizedPath);
-        if (!stats.isDirectory()) {
-            return "Путь к нормализованной документации должен быть каталогом.";
-        }
-        const highPriority = path.join(normalizedPath, "index", "pages.high-priority.jsonl");
-        const pages = path.join(normalizedPath, "index", "pages.jsonl");
-        if (!fs.existsSync(highPriority) && !fs.existsSync(pages)) {
-            return "В каталоге документации не найден index/pages.high-priority.jsonl или index/pages.jsonl.";
-        }
-    }
-    catch {
-        return "Каталог нормализованной документации недоступен.";
-    }
-    return "";
+    const discovery = (0, docsCorpusService_1.discoverDocsCorpora)(normalizedPath);
+    return discovery.error ?? "";
 }
-function resolveDocsIndexPath(normalizedPath) {
-    const highPriority = path.join(normalizedPath, "index", "pages.high-priority.jsonl");
-    return fs.existsSync(highPriority) ? highPriority : path.join(normalizedPath, "index", "pages.jsonl");
+function docsCorporaForDetails(normalizedPath) {
+    const discovery = (0, docsCorpusService_1.discoverDocsCorpora)(normalizedPath);
+    return discovery.corpora.map((corpus) => ({
+        corpus: corpus.corpus,
+        label: corpus.label,
+        format: corpus.format,
+        indexPath: corpus.indexPath,
+        files: corpus.files.map((file) => file.path)
+    }));
+}
+function docsFingerprintForDetails(normalizedPath) {
+    const fingerprint = (0, docsCorpusService_1.fingerprintDocsCorpora)(normalizedPath);
+    return fingerprint ? {
+        fingerprint: fingerprint.value,
+        fingerprintFiles: fingerprint.fileCount,
+        fingerprintLatestMtimeMs: fingerprint.latestMtimeMs
+    } : {};
+}
+function collectDocsRootDetails(normalizedPath, sourcePath, configRoot) {
+    const roots = [];
+    if (normalizedPath) {
+        roots.push({
+            kind: "normalized",
+            label: "Нормализованная документация",
+            path: normalizedPath,
+            includeIfMissing: true
+        });
+    }
+    if (sourcePath && (!normalizedPath || path.resolve(sourcePath) !== path.resolve(normalizedPath))) {
+        roots.push({
+            kind: "source",
+            label: "Исходная документация",
+            path: sourcePath,
+            includeIfMissing: true
+        });
+    }
+    roots.push(...discoverServerDocsRoots(configRoot).map((root) => ({
+        kind: "serverDocs",
+        label: "Документация server/docs",
+        path: root,
+        includeIfMissing: false
+    })));
+    const seen = new Set();
+    return roots
+        .filter((root) => {
+        const resolved = path.resolve(root.path);
+        if (seen.has(resolved)) {
+            return false;
+        }
+        seen.add(resolved);
+        return root.includeIfMissing || fs.existsSync(resolved);
+    })
+        .map((root) => docsRootDetail(root.kind, root.label, root.path));
+}
+function docsRootDetail(kind, label, rootPath) {
+    const resolved = path.resolve(rootPath);
+    const discovery = (0, docsCorpusService_1.discoverDocsCorpora)(resolved);
+    if (discovery.error || !discovery.corpora.length) {
+        return {
+            kind,
+            label,
+            path: resolved,
+            status: "error",
+            error: discovery.error || "Поддерживаемый корпус документации не найден."
+        };
+    }
+    return {
+        kind,
+        label,
+        path: resolved,
+        status: "configured",
+        corpora: docsCorporaForDetails(resolved),
+        ...docsFingerprintForDetails(resolved)
+    };
+}
+function discoverServerDocsRoots(configRoot) {
+    const roots = [];
+    const envRoot = process.env.CODEX_ELEMENT_SERVER_DOCS?.trim();
+    if (envRoot) {
+        roots.push(envRoot);
+    }
+    roots.push(path.join(configRoot, "server", "docs"));
+    let current = process.cwd();
+    for (let depth = 0; depth < 8; depth += 1) {
+        roots.push(path.join(current, "server", "docs", "help", "ru"), path.join(current, "server", "docs"), path.join(current, "docs", "help", "ru"), path.join(current, "docs"));
+        const parent = path.dirname(current);
+        if (parent === current) {
+            break;
+        }
+        current = parent;
+    }
+    const seen = new Set();
+    return roots
+        .map((root) => path.resolve(root))
+        .filter((root) => {
+        if (seen.has(root) || !fs.existsSync(root)) {
+            return false;
+        }
+        seen.add(root);
+        return true;
+    });
 }
 function proxyPasswordSecretKey() {
     return "codexElement.proxyPassword.server";

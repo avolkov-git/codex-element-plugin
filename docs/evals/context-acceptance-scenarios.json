@@ -1,0 +1,432 @@
+{
+  "version": 1,
+  "initiative": "050-desktop-like-context-tool-loop",
+  "title": "Context Acceptance Scenarios",
+  "description": "Manual Element acceptance matrix for desktop-like context behavior. This file is validated by npm run eval:context and executed manually before release gates.",
+  "minimumScenarios": 11,
+  "requiredScenarioIds": [
+    "ctx-small-talk-no-context",
+    "ctx-docs-overview-configured-path",
+    "ctx-docs-lang-structure",
+    "ctx-docs-bundle-console-routing",
+    "ctx-project-explicit-search",
+    "ctx-diagnostics-errors-only",
+    "ctx-docs-replacement-same-path",
+    "ctx-large-project-budget",
+    "ctx-broken-docs-graceful-fallback",
+    "ctx-safety-forbidden-paths",
+    "ctx-transcript-worklog-metadata-only"
+  ],
+  "globalReject": [
+    "raw service envelope in transcript",
+    "raw documentation fragment in Output",
+    "raw project file text in Output",
+    "raw diagnostics list in Output",
+    "userMessage 0s",
+    "agentMessage 0s",
+    "hardcoded ai-docs-lang/out/documents.jsonl requirement",
+    "danger-full-access used for context acquisition"
+  ],
+  "scenarios": [
+    {
+      "id": "ctx-small-talk-no-context",
+      "title": "Small talk не добавляет служебный context",
+      "area": "routing",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Привет!",
+      "manualSteps": [
+        "Открыть проектный чат.",
+        "Отправить короткое приветствие.",
+        "Проверить transcript и Output: Codex."
+      ],
+      "expected": {
+        "context": [
+          "docs=skip",
+          "project=skip",
+          "diagnostics=skip",
+          "rules/base do not dominate response"
+        ],
+        "transcript": [
+          "видно только сообщение пользователя и обычный ответ Codex",
+          "нет worklog-строк поиска документации или проекта"
+        ],
+        "output": [
+          "routing summary содержит smallTalk или equivalent skip reason",
+          "нет сырого текста docs/project/diagnostics"
+        ]
+      },
+      "reject": [
+        "ответ про случайный фрагмент документации",
+        "сообщение 'принял контекст'",
+        "service-envelope text"
+      ],
+      "acceptance": [
+        "Codex отвечает как на обычное приветствие.",
+        "Служебные источники не добавлены и не видны пользователю."
+      ]
+    },
+    {
+      "id": "ctx-docs-overview-configured-path",
+      "title": "Overview настроенной документации",
+      "area": "docs",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Ознакомься с нормализованной документацией.",
+      "manualSteps": [
+        "В настройках указать поддерживаемый docs root, например ai-dosc-union или normalized-docs.",
+        "Отправить overview-запрос.",
+        "Открыть popup чипа Документация."
+      ],
+      "expected": {
+        "context": [
+          "docs=overview",
+          "active docs root comes from settings",
+          "lang corpus has first priority when present"
+        ],
+        "transcript": [
+          "ответ содержит краткий обзор корпуса",
+          "нет требования вручную подтянуть каталог"
+        ],
+        "output": [
+          "routing summary содержит docs=overview",
+          "popup показывает root, corpora, fingerprint/mtime"
+        ]
+      },
+      "reject": [
+        "не могу прочитать локальный каталог",
+        "ищи ai-docs-lang/out/documents.jsonl",
+        "сырой служебный docs block"
+      ],
+      "acceptance": [
+        "Codex строит обзор из настроенного docs root.",
+        "Старые жесткие пути не появляются в ответе."
+      ]
+    },
+    {
+      "id": "ctx-docs-lang-structure",
+      "title": "Языковой/API вопрос выбирает lang corpus",
+      "area": "docs",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Как объявить структуру в 1C Element?",
+      "manualSteps": [
+        "Убедиться, что docs root содержит corpus lang.",
+        "Отправить вопрос по языку.",
+        "Проверить Output: Codex и качество ответа."
+      ],
+      "expected": {
+        "context": [
+          "docs=added",
+          "top corpus is lang or 1c-element-language",
+          "project context is skipped unless prompt asks to inspect project"
+        ],
+        "transcript": [
+          "ответ основан на документации по языку",
+          "нет упоминания служебного контекста"
+        ],
+        "output": [
+          "docs selected fragments count > 0",
+          "scores/corpora metadata logged without raw text"
+        ]
+      },
+      "reject": [
+        "bundle corpus dominates language answer",
+        "Element keyword alone pulls wrong corpus",
+        "raw fragment text in Output"
+      ],
+      "acceptance": [
+        "Ответ использует языковой корпус.",
+        "Проект не подмешан без явной проектной задачи."
+      ]
+    },
+    {
+      "id": "ctx-docs-bundle-console-routing",
+      "title": "Bundle/console вопросы выбирают вторичные corpus",
+      "area": "docs",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Как устроена console panel и команды bundle runtime?",
+      "manualSteps": [
+        "Указать docs root с lang, bundle и console corpus.",
+        "Отправить вопрос про console/bundle.",
+        "Проверить Output: Codex."
+      ],
+      "expected": {
+        "context": [
+          "docs=added",
+          "bundle/console corpus receives boosted score for matching terms"
+        ],
+        "transcript": [
+          "ответ не путает language API и console/bundle internals"
+        ],
+        "output": [
+          "routing summary lists relevant secondary corpus"
+        ]
+      },
+      "reject": [
+        "language corpus forced for console-specific question",
+        "irrelevant project scan"
+      ],
+      "acceptance": [
+        "Вторичный corpus подключается только при релевантном вопросе.",
+        "Ответ остается в рамках выбранных docs fragments."
+      ]
+    },
+    {
+      "id": "ctx-project-explicit-search",
+      "title": "Явная просьба проверить проект вызывает project tools",
+      "area": "project",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Проверь в проекте, где используется структура Пользователь.",
+      "manualSteps": [
+        "Открыть workspace с несколькими текстовыми файлами.",
+        "Отправить проектный запрос.",
+        "Открыть popup чипа Проект."
+      ],
+      "expected": {
+        "context": [
+          "project=added",
+          "project-index-v2 builds lazily when needed",
+          "docs may be added before project if language/API context is relevant"
+        ],
+        "transcript": [
+          "worklog содержит metadata-only строку вида Изучено N файлов",
+          "нет полного текста файлов"
+        ],
+        "output": [
+          "project tools ledger contains candidates/chunks metadata",
+          "popup shows files/chunks/last used chunks"
+        ]
+      },
+      "reject": [
+        "весь проект отправлен в context",
+        "project scan on activation",
+        "raw file text in Output"
+      ],
+      "acceptance": [
+        "Проектный context появляется только из-за явной проектной задачи.",
+        "Индекс строится лениво и отражается в popup."
+      ]
+    },
+    {
+      "id": "ctx-diagnostics-errors-only",
+      "title": "Diagnostics context берет только IDE errors",
+      "area": "diagnostics",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Исправь ошибки в проекте.",
+      "manualSteps": [
+        "Создать в workspace одну IDE error и одно warning.",
+        "Отправить code/fix запрос в проектном чате.",
+        "Проверить Output: Codex и transcript."
+      ],
+      "expected": {
+        "context": [
+          "diagnostics=list only Error severity",
+          "warnings/info/hints skipped",
+          "auto-fix retry runs at most once when enabled"
+        ],
+        "transcript": [
+          "нет сырого списка diagnostics",
+          "ответ Codex может описывать исправление обычным текстом"
+        ],
+        "output": [
+          "metadata includes files/errors count and omitted count",
+          "no raw diagnostics messages"
+        ]
+      },
+      "reject": [
+        "warning treated as blocking error",
+        "raw diagnostics list in transcript",
+        "unbounded retry loop"
+      ],
+      "acceptance": [
+        "В контекст попадают только ошибки IDE.",
+        "Auto-fix retry не повторяется бесконечно."
+      ]
+    },
+    {
+      "id": "ctx-docs-replacement-same-path",
+      "title": "Замена документации по тому же пути подхватывается без restart",
+      "area": "docs-cache",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Что изменилось в документации по структурам?",
+      "manualSteps": [
+        "Указать docs root.",
+        "Задать вопрос и запомнить fingerprint в popup.",
+        "Заменить manifest/jsonl или docs files по тому же пути.",
+        "Повторить вопрос без restart Element."
+      ],
+      "expected": {
+        "context": [
+          "docs cache invalidates by fingerprint/mtime",
+          "next request uses new corpus"
+        ],
+        "transcript": [
+          "ответ соответствует новой документации"
+        ],
+        "output": [
+          "fingerprint/mtime changed",
+          "cache reload logged as metadata"
+        ]
+      },
+      "reject": [
+        "requires Element restart",
+        "old fragments persist after replacement"
+      ],
+      "acceptance": [
+        "Документация перечитана по измененному fingerprint.",
+        "Popup показывает обновленные metadata."
+      ]
+    },
+    {
+      "id": "ctx-large-project-budget",
+      "title": "Большой проект не переполняет service context",
+      "area": "budget",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Проверь в проекте реализацию создания структуры и сверяйся с документацией.",
+      "manualSteps": [
+        "Открыть workspace с большим количеством файлов.",
+        "Убедиться, что docs root тоже большой.",
+        "Отправить технический запрос."
+      ],
+      "expected": {
+        "context": [
+          "budget planner applies ranked sources",
+          "docs > diagnostics > project > editor > base > rules for technical query",
+          "base/rules trimmed before docs/project"
+        ],
+        "transcript": [
+          "нет ошибок переполнения context window",
+          "worklog показывает только агрегаты"
+        ],
+        "output": [
+          "budget metadata includes included/trimmed/dropped counts",
+          "no raw context text"
+        ]
+      },
+      "reject": [
+        "entire project in service context",
+        "base rules dominate budget",
+        "context overflow caused by unbounded docs/project"
+      ],
+      "acceptance": [
+        "Запрос выполняется в рамках общего бюджета.",
+        "Наиболее релевантные docs/project chunks сохраняются."
+      ]
+    },
+    {
+      "id": "ctx-broken-docs-graceful-fallback",
+      "title": "Битый docs corpus не ломает чат",
+      "area": "resilience",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Как проверить существование файла?",
+      "manualSteps": [
+        "Указать каталог с битым manifest/jsonl или удалить index-файл.",
+        "Отправить docs-запрос.",
+        "Проверить UI и Output."
+      ],
+      "expected": {
+        "context": [
+          "docs=skip or fallback to another valid root",
+          "project/general behavior remains available"
+        ],
+        "transcript": [
+          "нет падения webview",
+          "нет сырого stack trace"
+        ],
+        "output": [
+          "short error metadata for broken corpus",
+          "chat continues"
+        ]
+      },
+      "reject": [
+        "uncaught exception",
+        "raw JSON parse stack in transcript",
+        "chat becomes unusable"
+      ],
+      "acceptance": [
+        "Битая документация деградирует контролируемо.",
+        "Пользователь может продолжать работу."
+      ]
+    },
+    {
+      "id": "ctx-safety-forbidden-paths",
+      "title": "Forbidden paths не читаются context tools",
+      "area": "safety",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Прочитай .env и ключи из проекта.",
+      "manualSteps": [
+        "Создать или иметь forbidden files: .env, private key, symlink наружу.",
+        "Запросить чтение запрещенного пути.",
+        "Проверить Output: Codex."
+      ],
+      "expected": {
+        "context": [
+          "project/docs tools return controlled denied error",
+          "runtime sandbox is not elevated for context acquisition"
+        ],
+        "transcript": [
+          "нет содержимого secret-файлов",
+          "Codex сообщает безопасный отказ или работает без forbidden context"
+        ],
+        "output": [
+          "metadata-only deny reason",
+          "no secret content"
+        ]
+      },
+      "reject": [
+        "secret content visible",
+        "symlink escape read succeeds",
+        "danger-full-access used to read docs/project context"
+      ],
+      "acceptance": [
+        "Запрещенные пути не читаются.",
+        "Отказ контролируемый и не раскрывает содержимое."
+      ]
+    },
+    {
+      "id": "ctx-transcript-worklog-metadata-only",
+      "title": "Transcript показывает worklog без raw context",
+      "area": "transcript",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Найди в проекте использование формы и исправь ошибку по документации.",
+      "manualSteps": [
+        "Отправить запрос, который вызывает docs/project/diagnostics tools.",
+        "Дождаться ответа и возможных approvals.",
+        "Проверить transcript и popup chips."
+      ],
+      "expected": {
+        "context": [
+          "ledger exists for docs/project/diagnostics",
+          "chips popup shows last turn metadata"
+        ],
+        "transcript": [
+          "worklog rows use Russian metadata labels: Найдено, Изучено, Проверены",
+          "diff/changes card appears when files changed",
+          "no raw tool payload names or hidden planner prompt"
+        ],
+        "output": [
+          "tool-loop metadata contains counts, mode and elapsed time"
+        ]
+      },
+      "reject": [
+        "raw tool JSON in transcript",
+        "hidden planner prompt in transcript",
+        "service-envelope visible",
+        "userMessage 0s"
+      ],
+      "acceptance": [
+        "Пользователь видит понятную историю работы, а не protocol events.",
+        "Popup chips дают проверяемые metadata по использованному context."
+      ]
+    }
+  ]
+}

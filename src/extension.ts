@@ -4,13 +4,21 @@ import { BaseContextService } from "./baseContextService";
 import { ChatPanelManager } from "./chatPanelManager";
 import { ChatHistoryService } from "./chatHistoryService";
 import { ContextRouterService } from "./contextRouterService";
+import { ContextTurnOrchestrator } from "./contextTurnOrchestrator";
 import { CodexRuntimeController } from "./codexRuntimeController";
+import { DiagnosticsContextService } from "./diagnosticsContextService";
+import { DiagnosticsToolsService } from "./diagnosticsToolsService";
 import { DocsContextService } from "./docsContextService";
+import { DocsRetrievalLoopService } from "./docsRetrievalLoopService";
 import { DocsNormalizerService } from "./docsNormalizerService";
+import { DocsToolsService } from "./docsToolsService";
 import { EditorContextKind, EditorContextService } from "./editorContextService";
 import { Logger } from "./logger";
+import { ManagedContextToolLoopService } from "./managedContextToolLoopService";
+import { NativeContextToolLoopService } from "./nativeContextToolLoopService";
 import { PerfMarks } from "./performance";
 import { ProjectContextService } from "./projectContextService";
+import { ProjectToolsService } from "./projectToolsService";
 import { RulesContextService } from "./rulesContextService";
 import { SettingsPanelManager } from "./settingsPanelManager";
 import { SettingsService } from "./settingsService";
@@ -31,12 +39,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const settings = new SettingsService(context);
   const contextRouter = new ContextRouterService();
   const baseContext = new BaseContextService(context, logger);
-  const docsContext = new DocsContextService(settings, logger);
+  const diagnosticsContext = new DiagnosticsContextService(logger);
+  const docsCorpusContext = new DocsContextService(settings, logger);
+  const nativeContextTools = new NativeContextToolLoopService(logger);
   const editorContext = new EditorContextService();
   const projectContext = new ProjectContextService(context, settings.getConfigRoot(), logger);
+  const profiles = new UserProfileService(context);
+  const docsTools = new DocsToolsService(docsCorpusContext, logger);
+  const projectTools = new ProjectToolsService(projectContext, logger, () => profiles.getCurrentProfileId());
+  const diagnosticsTools = new DiagnosticsToolsService(diagnosticsContext, logger);
+  const managedContextTools = new ManagedContextToolLoopService({
+    docsTools,
+    projectTools,
+    diagnosticsTools,
+    logger
+  });
   const rulesContext = new RulesContextService(logger);
   const docsNormalizer = new DocsNormalizerService(context, settings, logger);
-  const profiles = new UserProfileService(context);
   const history = new ChatHistoryService(context, settings.getConfigRoot(), logger);
   context.subscriptions.push(history, projectContext);
   let historyProfileId: string | undefined;
@@ -44,6 +63,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let runtime: CodexRuntimeController;
   let chatPanels: ChatPanelManager;
   let approvalAttention: ApprovalAttentionService | undefined;
+  const docsContext = new DocsRetrievalLoopService(
+    docsCorpusContext,
+    logger,
+    (request) => runtime.planDocsRetrieval(request)
+  );
   const state = new StateStore((mode: StateMutationMode) => {
     if (!historyProfileId) {
       return;
@@ -116,7 +140,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       chatPanels.postSnapshot();
     },
     getProjectContextDetails: async () => projectContext.getDetails(profiles.getCurrentProfileId()),
-    getDocsContextDetails: async () => settings.getDocsContextDetails(),
+    getDocsContextDetails: async () => docsContext.decorateDetails(await settings.getDocsContextDetails()),
     toggleRules: async (chatId: string) => {
       const updated = state.toggleChatRules(chatId);
       if (!updated) {
@@ -166,14 +190,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     chatPanels.postAllSnapshots();
   };
   await ensureHistoryLoaded();
-  runtime = new CodexRuntimeController({
-    context,
-    settings,
+  const contextOrchestrator = new ContextTurnOrchestrator({
     contextRouter,
     baseContext,
     projectContext,
     docsContext,
+    diagnosticsContext,
+    managedContextTools,
+    nativeContextTools,
     rulesContext,
+    profiles,
+    state,
+    logger,
+    onDidChange: () => {
+      sidebar?.postSnapshot();
+      chatPanels.postSnapshot();
+      approvalAttention?.sync();
+    },
+    onDidChangeChat: (chatId: string) => chatPanels.postSnapshot(chatId)
+  });
+  runtime = new CodexRuntimeController({
+    context,
+    settings,
+    contextOrchestrator,
+    docsContext,
+    diagnosticsContext,
+    nativeContextTools,
     profiles,
     state,
     logger,
@@ -187,6 +229,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   context.subscriptions.push(runtime);
   const settingsPanels = new SettingsPanelManager(context, settings, docsNormalizer, baseContext, logger, async (options) => {
+    if (options?.docsChanged) {
+      docsContext.invalidate();
+    }
     state.setProxy(await settings.getSidebarProxyStatus());
     state.setDocs(settings.getSidebarDocsStatus());
     if (options?.restartRuntime) {
@@ -252,6 +297,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("codexElement.openLogs", () => {
       logger.show();
+    }),
+    vscode.commands.registerCommand("codexElement.probeCapabilities", async () => {
+      await runtime.probeCapabilities();
+      logger.show();
+      vscode.window.showInformationMessage("Проверка возможностей codex app-server завершена. Результат записан в Output: Codex.");
     }),
     vscode.commands.registerCommand("codexElement.openProjectRules", async () => {
       await rulesContext.openRulesFile();
