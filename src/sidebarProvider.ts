@@ -78,6 +78,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case "auth.deviceCode.copyCode":
         await this.handlers.copyDeviceCode();
         return;
+      case "auth.deviceCode.copyUrl":
+        await this.handlers.copyDeviceCodeUrl();
+        return;
+      case "auth.deviceCode.copyBundle":
+        await this.handlers.copyDeviceCodeBundle();
+        return;
       case "auth.apiKey.login":
         if (isObject(message.payload) && typeof message.payload.apiKey === "string") {
           await this.handlers.loginWithApiKey(message.payload.apiKey);
@@ -141,6 +147,8 @@ export interface SidebarHandlers {
   loginWithApiKey(apiKey: string): Promise<void>;
   openDeviceCodeUrl(): Promise<void>;
   copyDeviceCode(): Promise<void>;
+  copyDeviceCodeUrl(): Promise<void>;
+  copyDeviceCodeBundle(): Promise<void>;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

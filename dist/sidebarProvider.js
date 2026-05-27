@@ -97,6 +97,12 @@ class SidebarProvider {
             case "auth.deviceCode.copyCode":
                 await this.handlers.copyDeviceCode();
                 return;
+            case "auth.deviceCode.copyUrl":
+                await this.handlers.copyDeviceCodeUrl();
+                return;
+            case "auth.deviceCode.copyBundle":
+                await this.handlers.copyDeviceCodeBundle();
+                return;
             case "auth.apiKey.login":
                 if (isObject(message.payload) && typeof message.payload.apiKey === "string") {
                     await this.handlers.loginWithApiKey(message.payload.apiKey);

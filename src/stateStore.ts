@@ -1,4 +1,4 @@
-import { ChatActivityKind, ChatActivityTranscriptItem, ChatDiffFileSummary, ChatEffort, ChatHeaderMode, ChatKind, ChatMessageTranscriptItem, ChatPanelSnapshot, ChatSpeed, ChatSummary, ChatTranscriptItem, ChatTranscriptWindow, ContextWindowUsage, ModelOption, PersistedChatHistory, SidebarSnapshot } from "./types";
+import { ChatActivityDetail, ChatActivityKind, ChatActivityTranscriptItem, ChatClarificationOption, ChatClarificationTranscriptItem, ChatDiffFileSummary, ChatDiffTranscriptItem, ChatEffort, ChatHeaderMode, ChatKind, ChatMessageTranscriptItem, ChatPanelSnapshot, ChatSpeed, ChatSummary, ChatTranscriptItem, ChatTranscriptWindow, ChatTurnRunCounterKind, ChatTurnRunTranscriptItem, ChatWorklogTranscriptItem, ContextWindowUsage, ModelOption, PersistedChatHistory, SidebarSnapshot, WorklogChild } from "./types";
 
 type AuthPatch = Omit<Partial<SidebarSnapshot["auth"]>, "deviceCode" | "apiKey"> & {
   deviceCode?: Partial<SidebarSnapshot["auth"]["deviceCode"]>;
@@ -189,7 +189,8 @@ export class StateStore {
       contextWindow: this.contextWindows.get(chat.id) ?? EMPTY_CONTEXT_WINDOW,
       modelOptions: this.modelOptions,
       modelOptionsStatus: this.modelOptionsStatus,
-      transcriptWindow: this.getTranscriptTail(chat.id)
+      transcriptWindow: this.getTranscriptTail(chat.id),
+      activeClarification: this.getActiveClarification(chat.id)
     };
   }
 
@@ -227,6 +228,33 @@ export class StateStore {
 
     const safeCount = normalizeTranscriptWindowCount(count, TRANSCRIPT_PAGE_SIZE);
     return this.buildTranscriptWindow(chatId, index + 1, Math.min(transcript.length, index + 1 + safeCount));
+  }
+
+  private getActiveClarification(chatId: string): ChatClarificationTranscriptItem | undefined {
+    const chat = this.getChat(chatId);
+    if (!chat || chat.status !== "idle") {
+      return undefined;
+    }
+    const transcript = this.transcripts.get(chatId) ?? [];
+    for (let index = transcript.length - 1; index >= 0; index -= 1) {
+      const item = transcript[index];
+      if (item.kind === "message" && item.role === "user") {
+        return undefined;
+      }
+      if (item.kind === "clarification") {
+        return item;
+      }
+    }
+    return undefined;
+  }
+
+  getDiffFile(chatId: string, diffId: string, fileIndex: number): { item: ChatDiffTranscriptItem; file: ChatDiffFileSummary } | undefined {
+    const transcript = this.transcripts.get(chatId) ?? [];
+    const item = transcript.find((entry): entry is ChatDiffTranscriptItem => entry.kind === "diff" && entry.id === diffId);
+    if (!item || !Number.isInteger(fileIndex) || fileIndex < 0 || fileIndex >= item.files.length) {
+      return undefined;
+    }
+    return { item, file: item.files[fileIndex] };
   }
 
   private buildTranscriptWindow(chatId: string, start: number, end: number): ChatTranscriptWindow {
@@ -560,19 +588,20 @@ export class StateStore {
     return item;
   }
 
-  appendAssistantDelta(chatId: string, delta: string): void {
+  appendAssistantDelta(chatId: string, delta: string, turnId?: string): void {
     const chat = this.getChat(chatId);
     if (!chat || !delta) {
       return;
     }
 
     const transcript = this.transcripts.get(chatId) ?? [];
-    const streamingIndex = findLastStreamingAssistantMessageIndex(transcript);
+    const streamingIndex = findLastStreamingAssistantMessageIndex(transcript, turnId);
     if (streamingIndex >= 0) {
       const last = transcript[streamingIndex] as ChatMessageTranscriptItem;
       const updatedLast: ChatMessageTranscriptItem = {
         ...last,
         text: `${last.text}${delta}`,
+        turnId: last.turnId ?? turnId,
         status: "streaming"
       };
       this.transcripts.set(chatId, [
@@ -589,6 +618,7 @@ export class StateStore {
           role: "assistant",
           text: delta,
           createdAt: new Date().toISOString(),
+          turnId,
           status: "streaming"
         }
       ]);
@@ -596,19 +626,19 @@ export class StateStore {
     this.updateChat(chatId, { hasUnread: true }, "debounced");
   }
 
-  setLastAssistantText(chatId: string, text: string): void {
+  setLastAssistantText(chatId: string, text: string, turnId?: string): void {
     const chat = this.getChat(chatId);
     if (!chat || !text) {
       return;
     }
 
     const transcript = this.transcripts.get(chatId) ?? [];
-    const index = findLastAssistantMessageIndex(transcript);
+    const index = findLastAssistantMessageIndex(transcript, turnId);
     if (index >= 0) {
       const existing = transcript[index] as ChatMessageTranscriptItem;
       this.transcripts.set(chatId, [
         ...transcript.slice(0, index),
-        { ...existing, text, status: "complete", completedAt: new Date().toISOString() },
+        { ...existing, text, turnId: existing.turnId ?? turnId, status: "complete", completedAt: new Date().toISOString() },
         ...transcript.slice(index + 1)
       ]);
     } else {
@@ -620,12 +650,30 @@ export class StateStore {
           role: "assistant",
           text,
           createdAt: new Date().toISOString(),
+          turnId,
           status: "complete",
           completedAt: new Date().toISOString()
         }
       ]);
     }
     this.updateChat(chatId, { hasUnread: true }, "immediate");
+  }
+
+  removeLastStreamingAssistantMessage(chatId: string, turnId?: string, mode: StateMutationMode = "debounced"): boolean {
+    if (!this.getChat(chatId)) {
+      return false;
+    }
+    const transcript = this.transcripts.get(chatId) ?? [];
+    const index = findLastStreamingAssistantMessageIndex(transcript, turnId);
+    if (index < 0) {
+      return false;
+    }
+    this.transcripts.set(chatId, [
+      ...transcript.slice(0, index),
+      ...transcript.slice(index + 1)
+    ]);
+    this.emitMutation(mode);
+    return true;
   }
 
   addOrUpdateActivityItem(
@@ -641,6 +689,7 @@ export class StateStore {
       path?: string;
       summary?: string;
       outputPreview?: string;
+      details?: ChatActivityDetail[];
     },
     mode: StateMutationMode = "debounced"
   ): ChatActivityTranscriptItem | undefined {
@@ -666,6 +715,7 @@ export class StateStore {
       updatedAt: now,
       completedAt: patch.status === "completed" || patch.status === "error" ? now : existing?.completedAt
     };
+    item.details = mergeActivityDetails(existing?.details, patch.details);
 
     if (existingIndex >= 0) {
       this.transcripts.set(chatId, [
@@ -675,6 +725,12 @@ export class StateStore {
       ]);
     } else {
       this.transcripts.set(chatId, [...transcript, item]);
+    }
+    if (patch.turnId) {
+      this.linkTurnRunItem(chatId, patch.turnId, {
+        status: patch.activityKind === "turn" ? item.status : undefined,
+        activityIds: patch.activityKind === "turn" ? [] : [item.id]
+      });
     }
     this.updateChat(chatId, { hasUnread: true }, mode);
     return item;
@@ -693,9 +749,92 @@ export class StateStore {
 
     const existing = transcript[index] as ChatActivityTranscriptItem;
     const output = `${existing.outputPreview ?? ""}${delta}`;
+    const detailOutput = appendActivityDetailOutput(existing, delta);
     const updated: ChatActivityTranscriptItem = {
       ...existing,
-      outputPreview: output.length > 1200 ? output.slice(output.length - 1200) : output,
+      outputPreview: existing.activityKind === "command" ? existing.outputPreview : limitActivityOutput(output),
+      details: detailOutput,
+      updatedAt: new Date().toISOString()
+    };
+    this.transcripts.set(chatId, [...transcript.slice(0, index), updated, ...transcript.slice(index + 1)]);
+    this.updateChat(chatId, { hasUnread: true }, mode);
+  }
+
+  addOrUpdateWorklogItem(
+    chatId: string,
+    patch: {
+      id: string;
+      operationKind: ChatWorklogTranscriptItem["operationKind"];
+      status: ChatWorklogTranscriptItem["status"];
+      title: string;
+      turnId?: string;
+      summary?: string;
+      children?: WorklogChild[];
+    },
+    mode: StateMutationMode = "debounced"
+  ): ChatWorklogTranscriptItem | undefined {
+    const chat = this.getChat(chatId);
+    if (!chat) {
+      return undefined;
+    }
+
+    const now = new Date().toISOString();
+    const transcript = this.transcripts.get(chatId) ?? [];
+    const existingIndex = transcript.findIndex((item) => item.kind === "worklog" && item.id === patch.id);
+    const existing = existingIndex >= 0 ? transcript[existingIndex] as ChatWorklogTranscriptItem : undefined;
+    const item: ChatWorklogTranscriptItem = {
+      ...(existing ?? {
+        kind: "worklog" as const,
+        id: patch.id,
+        operationKind: patch.operationKind,
+        status: patch.status,
+        title: patch.title,
+        createdAt: now,
+        children: []
+      }),
+      ...patch,
+      children: mergeWorklogChildren(existing?.children, patch.children),
+      updatedAt: now,
+      completedAt: patch.status === "completed" || patch.status === "error" ? now : existing?.completedAt
+    };
+
+    if (existingIndex >= 0) {
+      this.transcripts.set(chatId, [
+        ...transcript.slice(0, existingIndex),
+        item,
+        ...transcript.slice(existingIndex + 1)
+      ]);
+    } else {
+      this.transcripts.set(chatId, [...transcript, item]);
+    }
+    if (patch.turnId) {
+      this.linkTurnRunItem(chatId, patch.turnId, { worklogIds: [item.id] });
+    }
+    this.updateChat(chatId, { hasUnread: true }, mode);
+    return item;
+  }
+
+  appendWorklogChildOutput(chatId: string, worklogId: string, childId: string, delta: string, mode: StateMutationMode = "debounced"): void {
+    if (!this.getChat(chatId) || !delta) {
+      return;
+    }
+
+    const transcript = this.transcripts.get(chatId) ?? [];
+    const index = transcript.findIndex((item) => item.kind === "worklog" && item.id === worklogId);
+    if (index < 0) {
+      return;
+    }
+
+    const existing = transcript[index] as ChatWorklogTranscriptItem;
+    const children = existing.children.map((child) => child.id === childId
+      ? {
+        ...child,
+        outputPreview: limitActivityOutput(`${child.outputPreview ?? ""}${delta}`)
+      }
+      : child);
+    const updated: ChatWorklogTranscriptItem = {
+      ...existing,
+      children,
       updatedAt: new Date().toISOString()
     };
     this.transcripts.set(chatId, [...transcript.slice(0, index), updated, ...transcript.slice(index + 1)]);
@@ -732,6 +871,9 @@ export class StateStore {
     this.transcripts.set(chatId, index >= 0
       ? [...transcript.slice(0, index), item, ...transcript.slice(index + 1)]
       : [...transcript, item]);
+    if (turnId) {
+      this.linkTurnRunItem(chatId, turnId, { diffIds: [id] });
+    }
     this.updateChat(chatId, { hasUnread: true }, mode);
   }
 
@@ -757,7 +899,44 @@ export class StateStore {
     this.updateChat(chatId, { hasUnread: true }, mode);
   }
 
-  addCompactionItem(chatId: string, label = "Контекст автоматически сжат", mode: StateMutationMode = "immediate"): void {
+  addOrUpdateClarificationItem(
+    chatId: string,
+    turnId: string,
+    question: string,
+    options: ChatClarificationOption[],
+    mode: StateMutationMode = "immediate"
+  ): void {
+    if (!this.getChat(chatId) || !question.trim()) {
+      return;
+    }
+    const id = turnId ? `clarification-${turnId}` : `${chatId}-clarification`;
+    const now = new Date().toISOString();
+    const transcript = this.transcripts.get(chatId) ?? [];
+    const index = transcript.findIndex((item) => item.kind === "clarification" && item.id === id);
+    const normalizedOptions = options
+      .map((option) => ({
+        title: option.title.trim(),
+        description: option.description?.trim() || undefined,
+        answer: option.answer.trim()
+      }))
+      .filter((option) => option.title && option.answer)
+      .slice(0, 5);
+    const item: ChatTranscriptItem = {
+      kind: "clarification",
+      id,
+      question: question.trim(),
+      options: normalizedOptions,
+      createdAt: index >= 0 ? transcript[index].createdAt : now,
+      updatedAt: now,
+      turnId
+    };
+    this.transcripts.set(chatId, index >= 0
+      ? [...transcript.slice(0, index), item, ...transcript.slice(index + 1)]
+      : [...transcript, item]);
+    this.updateChat(chatId, { hasUnread: true }, mode);
+  }
+
+  addCompactionItem(chatId: string, label = "Контекст автоматически сжат", mode: StateMutationMode = "immediate", turnId?: string): void {
     if (!this.getChat(chatId)) {
       return;
     }
@@ -773,15 +952,20 @@ export class StateStore {
     if (hasRecentMarker) {
       return;
     }
+    const item: ChatTranscriptItem = {
+      kind: "compaction",
+      id: `${chatId}-compaction-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      label,
+      createdAt: new Date().toISOString(),
+      turnId
+    };
     this.transcripts.set(chatId, [
       ...transcript,
-      {
-        kind: "compaction",
-        id: `${chatId}-compaction-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        label,
-        createdAt: new Date().toISOString()
-      }
+      item
     ]);
+    if (turnId) {
+      this.linkTurnRunItem(chatId, turnId, { compactionIds: [item.id] });
+    }
     this.updateChat(chatId, { hasUnread: true }, mode);
   }
 
@@ -892,6 +1076,60 @@ export class StateStore {
     };
   }
 
+  private linkTurnRunItem(
+    chatId: string,
+    turnId: string,
+    patch: {
+      status?: ChatTurnRunTranscriptItem["status"];
+      activityIds?: string[];
+      worklogIds?: string[];
+      diffIds?: string[];
+      compactionIds?: string[];
+    }
+  ): void {
+    if (!turnId) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const transcript = this.transcripts.get(chatId) ?? [];
+    const id = `turn-run-${turnId}`;
+    const existingIndex = transcript.findIndex((item) => item.kind === "turn-run" && item.id === id);
+    const existing = existingIndex >= 0 ? transcript[existingIndex] as ChatTurnRunTranscriptItem : undefined;
+    const status = patch.status ?? existing?.status ?? "running";
+    const item: ChatTurnRunTranscriptItem = {
+      ...(existing ?? {
+        kind: "turn-run" as const,
+        id,
+        turnId,
+        status,
+        createdAt: now,
+        activityIds: [],
+        worklogIds: [],
+        diffIds: [],
+        compactionIds: []
+      }),
+      status,
+      updatedAt: now,
+      completedAt: status === "completed" || status === "error" ? now : existing?.completedAt,
+      activityIds: mergeUniqueStrings(existing?.activityIds, patch.activityIds),
+      worklogIds: mergeUniqueStrings(existing?.worklogIds, patch.worklogIds),
+      diffIds: mergeUniqueStrings(existing?.diffIds, patch.diffIds),
+      compactionIds: mergeUniqueStrings(existing?.compactionIds, patch.compactionIds)
+    };
+    item.counts = buildTurnRunCounts(item, transcript);
+
+    if (existingIndex >= 0) {
+      this.transcripts.set(chatId, [
+        ...transcript.slice(0, existingIndex),
+        item,
+        ...transcript.slice(existingIndex + 1)
+      ]);
+    } else {
+      this.transcripts.set(chatId, [...transcript, item]);
+    }
+  }
+
   private emitMutation(mode: StateMutationMode): void {
     this.onDidMutate?.(mode);
   }
@@ -923,20 +1161,134 @@ function normalizeTranscriptWindowCount(count: number, fallback: number): number
   return Math.max(1, Math.min(40, Math.floor(count)));
 }
 
-function findLastAssistantMessageIndex(items: ChatTranscriptItem[]): number {
+function mergeActivityDetails(existing: ChatActivityDetail[] | undefined, next: ChatActivityDetail[] | undefined): ChatActivityDetail[] | undefined {
+  if (!existing?.length) {
+    return next?.length ? next : undefined;
+  }
+  if (!next?.length) {
+    return existing;
+  }
+  const merged: ChatActivityDetail[] = next.map((detail, index) => ({
+    ...existing[index],
+    ...detail,
+    outputPreview: detail.outputPreview ?? existing[index]?.outputPreview
+  }));
+  if (existing.length > next.length) {
+    merged.push(...existing.slice(next.length));
+  }
+  return merged;
+}
+
+function appendActivityDetailOutput(item: ChatActivityTranscriptItem, delta: string): ChatActivityDetail[] {
+  const details = item.details?.length
+    ? item.details
+    : [{
+      activityKind: item.activityKind,
+      label: item.label,
+      status: item.status,
+      command: item.command,
+      path: item.path,
+      summary: item.summary,
+      outputPreview: item.outputPreview
+    }];
+  const target = details[0] ?? {
+    activityKind: item.activityKind,
+    label: item.label,
+    status: item.status
+  };
+  return [
+    {
+      ...target,
+      outputPreview: limitActivityOutput(`${target.outputPreview ?? ""}${delta}`)
+    },
+    ...details.slice(1)
+  ];
+}
+
+function mergeWorklogChildren(existing: WorklogChild[] | undefined, next: WorklogChild[] | undefined): WorklogChild[] {
+  const merged = new Map<string, WorklogChild>();
+  for (const child of existing ?? []) {
+    merged.set(child.id, child);
+  }
+  for (const child of next ?? []) {
+    const current = merged.get(child.id);
+    merged.set(child.id, {
+      ...(current ?? child),
+      ...child,
+      createdAt: current?.createdAt ?? child.createdAt,
+      outputPreview: child.outputPreview ?? current?.outputPreview,
+      completedAt: child.completedAt ?? current?.completedAt
+    });
+  }
+  return [...merged.values()];
+}
+
+function mergeUniqueStrings(existing: string[] | undefined, next: string[] | undefined): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const value of [...(existing ?? []), ...(next ?? [])]) {
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function buildTurnRunCounts(turnRun: ChatTurnRunTranscriptItem, transcript: ChatTranscriptItem[]): Partial<Record<ChatTurnRunCounterKind, number>> {
+  const counts: Partial<Record<ChatTurnRunCounterKind, number>> = {};
+  const byId = new Map(transcript.map((item) => [item.id, item]));
+
+  for (const id of turnRun.worklogIds) {
+    const item = byId.get(id);
+    if (item?.kind === "worklog") {
+      counts[item.operationKind] = (counts[item.operationKind] ?? 0) + Math.max(1, item.children?.length || 0);
+    }
+  }
+  for (const id of turnRun.activityIds) {
+    const item = byId.get(id);
+    if (item?.kind === "activity" && item.activityKind !== "turn" && item.activityKind !== "unknown") {
+      const kind = activityKindToTurnRunCounter(item.activityKind);
+      if (kind) {
+        counts[kind] = (counts[kind] ?? 0) + 1;
+      }
+    }
+  }
+  if (turnRun.diffIds.length) {
+    counts.diff = turnRun.diffIds.length;
+  }
+  if (turnRun.compactionIds.length) {
+    counts.compaction = turnRun.compactionIds.length;
+  }
+  return counts;
+}
+
+function activityKindToTurnRunCounter(kind: ChatActivityKind): ChatTurnRunCounterKind | undefined {
+  if (kind === "command" || kind === "file" || kind === "search" || kind === "reasoning" || kind === "context" || kind === "tool") {
+    return kind;
+  }
+  return undefined;
+}
+
+function limitActivityOutput(output: string): string {
+  return output.length > 1200 ? output.slice(output.length - 1200) : output;
+}
+
+function findLastAssistantMessageIndex(items: ChatTranscriptItem[], turnId?: string): number {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
-    if (item.kind === "message" && item.role === "assistant") {
+    if (item.kind === "message" && item.role === "assistant" && (!turnId || !item.turnId || item.turnId === turnId)) {
       return index;
     }
   }
   return -1;
 }
 
-function findLastStreamingAssistantMessageIndex(items: ChatTranscriptItem[]): number {
+function findLastStreamingAssistantMessageIndex(items: ChatTranscriptItem[], turnId?: string): number {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
-    if (item.kind === "message" && item.role === "assistant" && item.status === "streaming") {
+    if (item.kind === "message" && item.role === "assistant" && item.status === "streaming" && (!turnId || !item.turnId || item.turnId === turnId)) {
       return index;
     }
   }

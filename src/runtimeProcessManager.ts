@@ -7,6 +7,7 @@ export interface RuntimeStartOptions {
   env: NodeJS.ProcessEnv;
   onStdout: (line: string) => void;
   onStderr: (line: string) => void;
+  onError?: (error: Error) => void;
   onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
 }
 
@@ -47,6 +48,7 @@ export class RuntimeProcessManager {
     wireLineStream(child.stdout, options.onStdout);
     wireLineStream(child.stderr, options.onStderr);
     child.once("error", (error) => {
+      options.onError?.(error);
       options.onStderr(error.message);
       handleExit(null, null);
     });

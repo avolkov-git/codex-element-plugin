@@ -1,3 +1,4 @@
+import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
@@ -11,8 +12,9 @@ import { NativeContextToolLoopService } from "./nativeContextToolLoopService";
 import { RuntimeProcessManager } from "./runtimeProcessManager";
 import { RuntimeProxySettings, SettingsService } from "./settingsService";
 import { StateStore } from "./stateStore";
-import { ApprovalRequest, AuthAccountType, ChatAccessMode, ChatActivityKind, ChatDiffFileSummary, ChatRunMode, ContextWindowUsage, ModelOption, SidebarSnapshot } from "./types";
+import { ApprovalRequest, AuthAccountType, ChatAccessMode, ChatActivityDetail, ChatActivityKind, ChatClarificationOption, ChatDiffFileStatus, ChatDiffFileSummary, ChatRunMode, ContextWindowUsage, ModelOption, SidebarSnapshot } from "./types";
 import { UserProfileService } from "./userProfileService";
+import { WorklogOperationNormalizer } from "./worklogNormalizer";
 
 interface CodexRuntimeControllerOptions {
   context: vscode.ExtensionContext;
@@ -68,6 +70,11 @@ interface StartTurnOptions {
   readonly diagnosticsPriority?: number;
 }
 
+interface BackendStartAttempt {
+  readonly pid: number;
+  readonly earlyError?: Error;
+}
+
 type CapabilityProbeStatus = "supported" | "unsupported" | "unstable" | "unknown" | "skipped";
 
 interface CapabilityProbeRow {
@@ -97,9 +104,11 @@ const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
 
 export class CodexRuntimeController implements vscode.Disposable {
   private readonly processManager = new RuntimeProcessManager();
+  private readonly worklogNormalizer = new WorklogOperationNormalizer();
   private rpcClient: JsonRpcClient | undefined;
   private activeTurnChatId = new Map<string, string>();
   private activeThreadChatId = new Map<string, string>();
+  private activeItemChatId = new Map<string, string>();
   private itemPayloads = new Map<string, unknown>();
   private pendingApprovals = new Map<string, PendingApprovalResolver>();
   private loadedThreadIds = new Set<string>();
@@ -114,8 +123,14 @@ export class CodexRuntimeController implements vscode.Disposable {
   private diagnosticsRetryAttemptedTurnIds = new Set<string>();
   private diagnosticsRetryTurnIds = new Set<string>();
   private fileChangingTurnIds = new Set<string>();
+  private thinkingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private activeThinkingByChat = new Map<string, { id: string; turnId: string }>();
+  private thinkingSequenceByTurn = new Map<string, number>();
+  private contextCompactionItemTurnIds = new Map<string, string>();
+  private activeConcreteItemsByChat = new Map<string, Set<string>>();
   private cancelEpochByChat = new Map<string, number>();
   private suppressNextExitAsCancel = false;
+  private suppressNextExitAsBackendRetry = false;
   private latestChatId: string | undefined;
   private restoreAttempted = false;
 
@@ -173,7 +188,7 @@ export class CodexRuntimeController implements vscode.Disposable {
 
       this.updateAuth({
         status: "checking",
-        message: "Откройте URL в браузере, введите код и дождитесь завершения login на сервере Element.",
+        message: "Ожидаем завершения авторизации. Откройте ссылку или QR на устройстве с доступом к OpenAI и введите код.",
         deviceCode: {
           status: "awaiting",
           loginId: challenge.loginId,
@@ -184,7 +199,6 @@ export class CodexRuntimeController implements vscode.Disposable {
       this.options.logger.info(
         `Device Code login started: loginId=${challenge.loginId || "-"}; verificationUrl=${challenge.verificationUrl ? "set" : "-"}.`
       );
-      await this.openDeviceCodeUrl();
     } catch (error) {
       const message = normalizeAuthError(error);
       this.updateAuth({
@@ -263,6 +277,32 @@ export class CodexRuntimeController implements vscode.Disposable {
 
     await vscode.env.clipboard.writeText(code);
     this.updateAuth({ message: "Device Code скопирован." });
+  }
+
+  async copyDeviceCodeUrl(): Promise<void> {
+    const url = this.options.state.getSidebarSnapshot().auth.deviceCode.verificationUrl;
+    if (!url) {
+      this.updateAuth({ message: "Device Code URL еще не получен." });
+      return;
+    }
+
+    await vscode.env.clipboard.writeText(url);
+    this.updateAuth({ message: "Ссылка авторизации скопирована." });
+  }
+
+  async copyDeviceCodeBundle(): Promise<void> {
+    const deviceCode = this.options.state.getSidebarSnapshot().auth.deviceCode;
+    if (!deviceCode.verificationUrl || !deviceCode.userCode) {
+      this.updateAuth({ message: "Device Code еще не получен." });
+      return;
+    }
+
+    await vscode.env.clipboard.writeText([
+      "OpenAI Device Code authorization",
+      `URL: ${deviceCode.verificationUrl}`,
+      `Code: ${deviceCode.userCode}`
+    ].join("\n"));
+    this.updateAuth({ message: "Ссылка и Device Code скопированы." });
   }
 
   async sendPrompt(
@@ -961,10 +1001,10 @@ export class CodexRuntimeController implements vscode.Disposable {
       return;
     }
     const hasError = turnContext.worklog.entries.some((entry) => entry.status === "error");
-    this.options.state.addOrUpdateActivityItem(chatId, {
+    this.options.state.addOrUpdateWorklogItem(chatId, {
       id: `context-worklog-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`,
-      activityKind: "context",
-      label: turnContext.worklog.label,
+      operationKind: "context",
+      title: turnContext.worklog.label,
       summary: turnContext.worklog.label,
       status: hasError ? "error" : "completed"
     }, "immediate");
@@ -1162,7 +1202,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.options.onDidChangeChat(chatId);
   }
 
-  private startCompactionActivity(chatId: string, threadId?: string, itemId?: string): void {
+  private startCompactionActivity(chatId: string, threadId?: string, itemId?: string, turnId?: string): void {
     const activityId = this.compactionActivityId(chatId, threadId, itemId);
     this.rememberCompactionActivity(activityId, threadId, itemId);
     this.options.state.addOrUpdateActivityItem(chatId, {
@@ -1171,12 +1211,17 @@ export class CodexRuntimeController implements vscode.Disposable {
       label: "Выполняется автоматическое сжатие контекста",
       summary: "Выполняется автоматическое сжатие контекста",
       status: "running",
+      turnId,
       itemId
     }, "immediate");
   }
 
-  private completeCompactionActivity(chatId: string, threadId?: string, itemId?: string): void {
+  private completeCompactionActivity(chatId: string, threadId?: string, itemId?: string, turnId?: string): void {
     const activityId = this.lookupCompactionActivityId(chatId, threadId, itemId);
+    const resolvedTurnId = turnId
+      || (itemId ? this.contextCompactionItemTurnIds.get(itemId) : undefined)
+      || this.options.state.getChat(chatId)?.activeTurnId
+      || undefined;
     if (activityId) {
       this.options.state.addOrUpdateActivityItem(chatId, {
         id: activityId,
@@ -1184,15 +1229,17 @@ export class CodexRuntimeController implements vscode.Disposable {
         label: "Выполняется автоматическое сжатие контекста",
         summary: "Выполняется автоматическое сжатие контекста",
         status: "completed",
+        turnId: resolvedTurnId,
         itemId
       }, "immediate");
     }
-    this.options.state.addCompactionItem(chatId);
+    this.options.state.addCompactionItem(chatId, "Контекст автоматически сжат", "immediate", resolvedTurnId);
     if (threadId) {
       this.contextCompactionActivityIds.delete(`thread:${threadId}`);
     }
     if (itemId) {
       this.contextCompactionActivityIds.delete(`item:${itemId}`);
+      this.contextCompactionItemTurnIds.delete(itemId);
     }
   }
 
@@ -1216,8 +1263,97 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
   }
 
+  private markConcreteItemStarted(chatId: string, itemId: string): void {
+    const active = this.activeConcreteItemsByChat.get(chatId) ?? new Set<string>();
+    active.add(itemId);
+    this.activeConcreteItemsByChat.set(chatId, active);
+    this.completeThinking(chatId);
+  }
+
+  private markConcreteItemCompleted(chatId: string, itemId: string, turnId?: string): void {
+    const active = this.activeConcreteItemsByChat.get(chatId);
+    if (active) {
+      active.delete(itemId);
+      if (active.size) {
+        return;
+      }
+      this.activeConcreteItemsByChat.delete(chatId);
+    }
+    const chat = this.options.state.getChat(chatId);
+    const activeTurnId = turnId || chat?.activeTurnId || undefined;
+    if (chat?.status === "running" && activeTurnId) {
+      this.scheduleThinking(chatId, activeTurnId);
+    }
+  }
+
+  private scheduleThinking(chatId: string, turnId: string, delayMs = 1_200): void {
+    this.clearThinkingTimer(chatId);
+    this.thinkingTimers.set(chatId, setTimeout(() => {
+      this.thinkingTimers.delete(chatId);
+      const chat = this.options.state.getChat(chatId);
+      if (!chat || chat.status !== "running" || chat.activeTurnId !== turnId || this.activeThinkingByChat.has(chatId)) {
+        return;
+      }
+      const activeItems = this.activeConcreteItemsByChat.get(chatId);
+      if (activeItems?.size) {
+        return;
+      }
+      const sequence = (this.thinkingSequenceByTurn.get(turnId) ?? 0) + 1;
+      this.thinkingSequenceByTurn.set(turnId, sequence);
+      const id = `worklog-${turnId}-reasoning-${sequence}`;
+      this.activeThinkingByChat.set(chatId, { id, turnId });
+      this.options.state.addOrUpdateWorklogItem(chatId, {
+        id,
+        operationKind: "reasoning",
+        status: "running",
+        title: "Думает",
+        turnId
+      });
+      this.options.onDidChangeChat(chatId);
+    }, delayMs));
+  }
+
+  private completeThinking(chatId: string): void {
+    this.clearThinkingTimer(chatId);
+    const active = this.activeThinkingByChat.get(chatId);
+    if (!active) {
+      return;
+    }
+    this.activeThinkingByChat.delete(chatId);
+    this.options.state.addOrUpdateWorklogItem(chatId, {
+      id: active.id,
+      operationKind: "reasoning",
+      status: "completed",
+      title: "Думал",
+      turnId: active.turnId
+    });
+  }
+
+  private clearThinkingTimer(chatId: string): void {
+    const timer = this.thinkingTimers.get(chatId);
+    if (timer) {
+      clearTimeout(timer);
+      this.thinkingTimers.delete(chatId);
+    }
+  }
+
+  private cleanupThinkingForChat(chatId: string): void {
+    this.clearThinkingTimer(chatId);
+    this.activeThinkingByChat.delete(chatId);
+    this.activeConcreteItemsByChat.delete(chatId);
+  }
+
+  private cleanupThinking(): void {
+    for (const chatId of this.thinkingTimers.keys()) {
+      this.clearThinkingTimer(chatId);
+    }
+    this.activeThinkingByChat.clear();
+    this.activeConcreteItemsByChat.clear();
+  }
+
   async stop(): Promise<void> {
     this.rejectAllHiddenPlannerRuns(new Error("Codex runtime stopped before docs planner completed."));
+    this.cleanupThinking();
     this.rpcClient?.dispose();
     this.rpcClient = undefined;
     await this.processManager.stop();
@@ -1247,6 +1383,7 @@ export class CodexRuntimeController implements vscode.Disposable {
       this.cancelledTurnIds.add(turnId);
       this.activeTurnChatId.delete(turnId);
     }
+    this.cleanupThinkingForChat(chatId);
     this.declinePendingApprovalsForChat(chatId);
     this.options.state.updateChat(chatId, {
       status: "idle",
@@ -1295,6 +1432,7 @@ export class CodexRuntimeController implements vscode.Disposable {
 
   dispose(): void {
     this.rejectAllHiddenPlannerRuns(new Error("Codex runtime disposed before docs planner completed."));
+    this.cleanupThinking();
     this.rpcClient?.dispose();
     this.processManager.dispose();
   }
@@ -1307,6 +1445,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.loadedThreadIds.clear();
     this.contextCompactionItemThreads.clear();
     this.contextCompactionActivityIds.clear();
+    this.contextCompactionItemTurnIds.clear();
     this.diagnosticsRetryAttemptedTurnIds.clear();
     this.diagnosticsRetryTurnIds.clear();
     this.fileChangingTurnIds.clear();
@@ -1325,10 +1464,31 @@ export class CodexRuntimeController implements vscode.Disposable {
       this.options.onDidChange();
       throw new Error(`Bundled codex.exe не найден: ${runtimePath}`);
     }
+    const runtimeValidation = validateBundledRuntimeExecutable(runtimePath);
+    if (!runtimeValidation.ok) {
+      this.options.state.setRuntime({
+        status: "error",
+        label: runtimeValidation.message
+      });
+      this.options.onDidChange();
+      this.options.logger.error(`Bundled codex.exe invalid: ${runtimeValidation.message}; path=${runtimePath}`);
+      throw new Error(runtimeValidation.message);
+    }
 
     const proxy = await this.options.settings.getRuntimeProxySettings();
-    const env = buildRuntimeEnv(codexHome, proxy);
-    const cwd = resolveWorkspaceCwd(this.options.context);
+    const toolEnvResult = this.options.settings.getRuntimeToolEnvPatchResult();
+    const toolEnv = toolEnvResult.env;
+    const env = buildRuntimeEnv(codexHome, proxy, toolEnv);
+    if (toolEnvResult.warning) {
+      this.options.logger.warn(toolEnvResult.warning);
+    }
+    if (toolEnvResult.ripgrepPath) {
+      const pathPatched = Boolean(toolEnv.Path || toolEnv.PATH);
+      this.options.logger.info(
+        `Runtime ripgrep configured: path=${toolEnvResult.ripgrepPath}; pathPatched=${pathPatched ? "yes" : "no"}.`
+      );
+    }
+    const cwd = resolveRuntimeCwd(this.options.context, codexHome);
     const args = ["app-server"];
 
     this.options.state.setRuntime({
@@ -1340,6 +1500,63 @@ export class CodexRuntimeController implements vscode.Disposable {
       message: "Запускаем Codex runtime на сервере Element..."
     });
 
+    try {
+      const attempt = await this.startBackendProcessAttempt({
+        runtimePath,
+        args,
+        cwd,
+        env,
+        mode: "normal"
+      });
+      if (attempt.earlyError) {
+        throw attempt.earlyError;
+      }
+      await this.initializeBackendSession();
+      return;
+    } catch (error) {
+      const message = normalizeErrorMessage(error);
+      if (!shouldRetryBackendStart(error)) {
+        throw error;
+      }
+      this.options.logger.warn(`Backend start failed in normal mode, retrying with minimal environment: ${message}`);
+      await this.resetBackendAfterFailedStart();
+    }
+
+    const fallbackCwd = resolveRuntimeCwd(this.options.context, codexHome, { forceSafe: true });
+    const fallbackEnv = buildMinimalRuntimeEnv(codexHome, proxy);
+    try {
+      const fallbackAttempt = await this.startBackendProcessAttempt({
+        runtimePath,
+        args,
+        cwd: fallbackCwd,
+        env: fallbackEnv,
+        mode: "minimal"
+      });
+      if (fallbackAttempt.earlyError) {
+        throw fallbackAttempt.earlyError;
+      }
+      await this.initializeBackendSession();
+    } catch (error) {
+      const message = normalizeErrorMessage(error);
+      const diagnostics = await diagnoseRuntimeLaunchFailure(runtimePath, fallbackCwd, fallbackEnv);
+      this.options.state.setRuntime({
+        status: "error",
+        label: `Backend не запустился: ${message}`
+      });
+      this.options.onDidChange();
+      this.options.logger.error(`Backend start failed after minimal-env retry: ${message}`);
+      this.options.logger.error(`Backend launch diagnostics: ${diagnostics}`);
+      throw error;
+    }
+  }
+
+  private async startBackendProcessAttempt(input: {
+    runtimePath: string;
+    args: string[];
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    mode: "normal" | "minimal";
+  }): Promise<BackendStartAttempt> {
     const rpcClient = new JsonRpcClient(
       (line) => this.processManager.writeLine(line),
       (notification) => this.handleNotification(notification),
@@ -1348,11 +1565,21 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.rpcClient?.dispose();
     this.rpcClient = rpcClient;
 
+    const diagnostics = summarizeRuntimeStart(input.runtimePath, input.cwd, input.env);
+    this.options.logger.info(
+      `Starting bundled codex.exe app-server: mode=${input.mode}; ${diagnostics}.`
+    );
+
+    let resolveSpawnError: (error: Error | undefined) => void = () => undefined;
+    const spawnErrorPromise = new Promise<Error | undefined>((resolve) => {
+      resolveSpawnError = resolve;
+    });
+
     const pid = this.processManager.start({
-      command: runtimePath,
-      args,
-      cwd,
-      env,
+      command: input.runtimePath,
+      args: input.args,
+      cwd: input.cwd,
+      env: input.env,
       onStdout: (line) => {
         const handled = rpcClient.handleLine(line);
         if (!handled) {
@@ -1362,6 +1589,9 @@ export class CodexRuntimeController implements vscode.Disposable {
       onStderr: (line) => {
         this.options.logger.warn(`stderr: ${line}`);
       },
+      onError: (error) => {
+        resolveSpawnError(error);
+      },
       onExit: (code, signal) => this.handleExit(code, signal)
     });
 
@@ -1370,9 +1600,18 @@ export class CodexRuntimeController implements vscode.Disposable {
       label: `Backend запущен, PID ${pid || "-"}`
     });
     this.options.onDidChange();
-    this.options.logger.info(`Spawned bundled codex.exe app-server with pid ${pid || "-"}.`);
+    this.options.logger.info(`Spawned bundled codex.exe app-server with pid ${pid || "-"} in ${input.mode} mode.`);
 
-    await this.initializeBackendSession();
+    const earlyError = await waitForEarlySpawnError(spawnErrorPromise, 500);
+    return { pid, earlyError };
+  }
+
+  private async resetBackendAfterFailedStart(): Promise<void> {
+    this.suppressNextExitAsBackendRetry = true;
+    this.rpcClient?.dispose();
+    this.rpcClient = undefined;
+    await this.processManager.stop(1000);
+    this.suppressNextExitAsBackendRetry = false;
   }
 
   private async initializeBackendSession(): Promise<void> {
@@ -1578,6 +1817,7 @@ export class CodexRuntimeController implements vscode.Disposable {
           status: "running",
           turnId
         });
+        this.scheduleThinking(chatId, turnId);
         this.options.onDidChange();
         this.options.onDidChangeChat(chatId);
       }
@@ -1592,17 +1832,13 @@ export class CodexRuntimeController implements vscode.Disposable {
       if (notificationTurnId && extractItemType(notification.params) === "fileChange") {
         this.fileChangingTurnIds.add(notificationTurnId);
       }
-      const chatId = this.findChatIdForNotification(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
       if (itemId && chatId) {
-        const activity = normalizeItemActivity(notification.params);
-        if (activity) {
-          this.options.state.addOrUpdateActivityItem(chatId, {
-            id: `item-${itemId}`,
-            itemId,
-            turnId: notificationTurnId || undefined,
-            ...activity,
-            status: "running"
-          });
+        this.activeItemChatId.set(itemId, chatId);
+        const worklog = this.worklogNormalizer.applyItemStarted(notification.params);
+        if (worklog) {
+          this.markConcreteItemStarted(chatId, itemId);
+          this.options.state.addOrUpdateWorklogItem(chatId, worklog);
           this.options.onDidChange();
           this.options.onDidChangeChat(chatId);
         }
@@ -1612,13 +1848,16 @@ export class CodexRuntimeController implements vscode.Disposable {
         if (threadId) {
           this.contextCompactionItemThreads.set(itemId, threadId);
         }
+        if (notificationTurnId) {
+          this.contextCompactionItemTurnIds.set(itemId, notificationTurnId);
+        }
         if (chatId) {
           this.setContextWindow(chatId, {
             ...this.options.state.getChatContextWindow(chatId),
             status: "compacting",
             message: "Codex сжимает контекст..."
           });
-          this.startCompactionActivity(chatId, threadId, itemId);
+          this.startCompactionActivity(chatId, threadId, itemId, notificationTurnId);
           this.options.onDidChange();
           this.options.onDidChangeChat(chatId);
         }
@@ -1627,7 +1866,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
 
     if (notification.method === "turn/diff/updated") {
-      const chatId = this.findChatIdForNotification(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
       const turnId = extractTurnId(notification.params);
       const diff = extractDiffText(extractItemRecord(notification.params));
       if (chatId && diff) {
@@ -1642,7 +1881,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
 
     if (notification.method === "turn/plan/updated") {
-      const chatId = this.findChatIdForNotification(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
       const turnId = extractTurnId(notification.params);
       const markdown = normalizePlanMarkdown(notification.params);
       if (chatId && markdown) {
@@ -1654,7 +1893,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
 
     if (notification.method === "item/fileChange/patchUpdated") {
-      const chatId = this.findChatIdForNotification(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
       const turnId = extractTurnId(notification.params);
       const files = normalizePatchUpdatedFiles(notification.params);
       if (chatId && files.length) {
@@ -1669,11 +1908,11 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
 
     if (notification.method === "item/commandExecution/outputDelta" || notification.method === "item/fileChange/outputDelta" || notification.method === "item/reasoning/summaryTextDelta" || notification.method === "item/reasoning/textDelta") {
-      const chatId = this.findChatIdForNotification(notification.params);
-      const itemId = extractItemId(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
       const delta = extractDelta(notification.params);
-      if (chatId && itemId && delta) {
-        this.options.state.appendActivityOutput(chatId, `item-${itemId}`, delta);
+      const outputPatch = this.worklogNormalizer.outputPatch(notification.params);
+      if (chatId && outputPatch && delta) {
+        this.options.state.appendWorklogChildOutput(chatId, outputPatch.worklogId, outputPatch.childId, delta);
         this.options.onDidChangeChat(chatId);
       }
       return;
@@ -1691,9 +1930,10 @@ export class CodexRuntimeController implements vscode.Disposable {
 
     if (notification.method === "item/agentMessage/delta") {
       const delta = extractDelta(notification.params);
-      const chatId = this.findChatIdForNotification(notification.params);
+      const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
       if (chatId && delta) {
-        this.options.state.appendAssistantDelta(chatId, delta);
+        this.completeThinking(chatId);
+        this.options.state.appendAssistantDelta(chatId, delta, notificationTurnId || extractTurnId(notification.params) || undefined);
         this.options.onDidChangeChat(chatId);
       }
       return;
@@ -1702,11 +1942,14 @@ export class CodexRuntimeController implements vscode.Disposable {
     if (notification.method === "item/completed") {
       const itemId = extractItemId(notification.params);
       const itemType = extractItemType(notification.params);
+      const itemStartedPayload = itemId ? this.itemPayloads.get(itemId) : undefined;
+      const itemTurnId = notificationTurnId || extractTurnId(notification.params) || extractTurnId(itemStartedPayload) || undefined;
       if (itemId && (itemType === "contextCompaction" || this.contextCompactionItemThreads.has(itemId))) {
         const threadId = extractThreadId(notification.params) || this.contextCompactionItemThreads.get(itemId) || "";
         const chatId = this.findChatIdForNotification(notification.params);
         if (itemId) {
           this.itemPayloads.delete(itemId);
+          this.activeItemChatId.delete(itemId);
           this.contextCompactionItemThreads.delete(itemId);
         }
         if (chatId) {
@@ -1715,7 +1958,7 @@ export class CodexRuntimeController implements vscode.Disposable {
             status: "ready",
             message: undefined
           });
-          this.completeCompactionActivity(chatId, threadId, itemId);
+          this.completeCompactionActivity(chatId, threadId, itemId, itemTurnId);
           this.options.onDidChange();
           this.options.onDidChangeChat(chatId);
         }
@@ -1724,25 +1967,43 @@ export class CodexRuntimeController implements vscode.Disposable {
         }
         return;
       }
+      const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
+      if (itemId && chatId) {
+        const worklog = this.worklogNormalizer.applyItemCompleted(notification.params);
+        if (worklog) {
+          this.options.state.addOrUpdateWorklogItem(chatId, worklog, "immediate");
+        }
+        this.markConcreteItemCompleted(chatId, itemId, itemTurnId);
+      }
       if (itemId) {
         this.itemPayloads.delete(itemId);
-      }
-      const chatId = this.findChatIdForNotification(notification.params);
-      if (itemId && chatId) {
-        const activity = normalizeItemActivity(notification.params);
-        if (activity) {
-          this.options.state.addOrUpdateActivityItem(chatId, {
-            id: `item-${itemId}`,
-            itemId,
-            turnId: notificationTurnId || undefined,
-            ...activity,
-            status: "completed"
-          }, "immediate");
-        }
+        this.activeItemChatId.delete(itemId);
+        this.worklogNormalizer.forgetItem(notification.params);
       }
       const agentText = extractCompletedAgentMessage(notification.params);
       if (chatId && agentText) {
-        this.options.state.setLastAssistantText(chatId, agentText);
+        const classification = classifyCompletedAssistantText(agentText);
+        const completedTurnId = itemTurnId;
+        if (classification.kind === "clarification") {
+          this.options.state.removeLastStreamingAssistantMessage(chatId, completedTurnId);
+          this.options.state.addOrUpdateClarificationItem(
+            chatId,
+            completedTurnId || "",
+            classification.question,
+            classification.options,
+            "immediate"
+          );
+        } else if (classification.kind === "plan") {
+          this.options.state.removeLastStreamingAssistantMessage(chatId, completedTurnId);
+          this.options.state.addOrUpdatePlanItem(
+            chatId,
+            completedTurnId || "",
+            classification.markdown,
+            "immediate"
+          );
+        } else {
+          this.options.state.setLastAssistantText(chatId, agentText, completedTurnId);
+        }
         this.options.onDidChange();
         this.options.onDidChangeChat(chatId);
       }
@@ -1765,6 +2026,9 @@ export class CodexRuntimeController implements vscode.Disposable {
         this.activeTurnChatId.delete(turnId);
       }
       if (chatId) {
+        this.clearThinkingTimer(chatId);
+        this.completeThinking(chatId);
+        this.activeConcreteItemsByChat.delete(chatId);
         if (turnId) {
           this.options.state.addOrUpdateActivityItem(chatId, {
             id: `turn-${turnId}`,
@@ -1873,7 +2137,9 @@ export class CodexRuntimeController implements vscode.Disposable {
 
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
     const wasCancelFallback = this.suppressNextExitAsCancel;
+    const wasBackendRetry = this.suppressNextExitAsBackendRetry;
     this.suppressNextExitAsCancel = false;
+    this.suppressNextExitAsBackendRetry = false;
     for (const pending of this.pendingApprovals.values()) {
       pending.resolve(false);
       this.options.state.setPendingApproval(pending.chatId, null);
@@ -1881,8 +2147,10 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.pendingApprovals.clear();
     this.rejectAllHiddenPlannerRuns(new Error("Codex app-server exited before docs planner completed."));
     this.loadedThreadIds.clear();
+    this.activeItemChatId.clear();
     this.contextCompactionItemThreads.clear();
     this.contextCompactionActivityIds.clear();
+    this.contextCompactionItemTurnIds.clear();
     this.diagnosticsRetryAttemptedTurnIds.clear();
     this.diagnosticsRetryTurnIds.clear();
     this.fileChangingTurnIds.clear();
@@ -1890,14 +2158,18 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.rpcClient?.dispose();
     this.rpcClient = undefined;
     this.options.state.setRuntime({
-      status: wasCancelFallback ? "notStarted" : "error",
+      status: wasCancelFallback || wasBackendRetry ? "notStarted" : "error",
       label: wasCancelFallback
         ? "Backend остановлен после отмены запроса"
+        : wasBackendRetry
+          ? "Backend перезапускается с минимальным окружением"
         : `Backend остановлен${code === null ? "" : `, код ${code}`}${signal ? `, ${signal}` : ""}`
     });
     this.options.onDidChange();
     if (wasCancelFallback) {
       this.options.logger.info(`codex app-server stopped after cancel fallback: code=${code ?? "-"} signal=${signal ?? "-"}.`);
+    } else if (wasBackendRetry) {
+      this.options.logger.info(`codex app-server stopped before minimal-env retry: code=${code ?? "-"} signal=${signal ?? "-"}.`);
     } else {
       this.options.logger.warn(`codex app-server exited: code=${code ?? "-"} signal=${signal ?? "-"}.`);
     }
@@ -1920,7 +2192,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.options.onDidChange();
   }
 
-  private findChatIdForNotification(params: unknown): string | undefined {
+  private findChatIdForNotification(params: unknown, options: { allowLatestFallback?: boolean } = {}): string | undefined {
     const turnId = extractTurnId(params);
     if (turnId) {
       const mapped = this.activeTurnChatId.get(turnId);
@@ -1939,7 +2211,14 @@ export class CodexRuntimeController implements vscode.Disposable {
         return mapped;
       }
     }
-    return this.latestChatId;
+    const itemId = extractItemId(params);
+    if (itemId) {
+      const mapped = this.activeItemChatId.get(itemId);
+      if (mapped) {
+        return mapped;
+      }
+    }
+    return options.allowLatestFallback === false ? undefined : this.latestChatId;
   }
 }
 
@@ -2001,6 +2280,42 @@ function resolveBundledRuntimePath(context: vscode.ExtensionContext): string {
   return path.join(context.extensionUri.fsPath, "bin", "windows-x86_64", "codex.exe");
 }
 
+function validateBundledRuntimeExecutable(runtimePath: string): { ok: boolean; message: string } {
+  try {
+    const stat = fs.statSync(runtimePath);
+    if (!stat.isFile()) {
+      return { ok: false, message: "Bundled codex.exe не является файлом." };
+    }
+    const prefix = readFilePrefix(runtimePath, 128);
+    if (prefix.startsWith("version https://git-lfs.github.com/spec/v1")) {
+      return {
+        ok: false,
+        message: "Bundled codex.exe является Git LFS pointer. В поставку нужен реальный codex.exe, выполните git lfs pull перед копированием plugin."
+      };
+    }
+    if (process.platform === "win32" && readPeMachine(runtimePath) === "not-mz") {
+      return {
+        ok: false,
+        message: "Bundled codex.exe не является Windows executable. Проверьте, что в /plugins скопирован реальный бинарник, а не текстовый placeholder."
+      };
+    }
+    return { ok: true, message: "" };
+  } catch (error) {
+    return { ok: false, message: `Bundled codex.exe недоступен: ${normalizeErrorMessage(error)}` };
+  }
+}
+
+function readFilePrefix(filePath: string, length: number): string {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(fd, buffer, 0, length, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function getApprovalPolicy(accessMode: ChatAccessMode): string {
   return accessMode === "read-only" ? "never" : "on-request";
 }
@@ -2044,15 +2359,84 @@ function resolveWorkspaceCwd(context: vscode.ExtensionContext): string {
   return context.globalStorageUri.fsPath;
 }
 
-function buildRuntimeEnv(codexHome: string, proxy: RuntimeProxySettings): NodeJS.ProcessEnv {
+function resolveRuntimeCwd(
+  context: vscode.ExtensionContext,
+  codexHome: string,
+  options: { forceSafe?: boolean } = {}
+): string {
+  const candidates: Array<{ path: string; create: boolean }> = [];
+  if (!options.forceSafe) {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (workspaceFolder) {
+      candidates.push({ path: workspaceFolder, create: false });
+    }
+    if (vscode.workspace.workspaceFile?.fsPath) {
+      candidates.push({ path: path.dirname(vscode.workspace.workspaceFile.fsPath), create: false });
+    }
+  }
+  candidates.push(
+    { path: context.globalStorageUri.fsPath, create: true },
+    { path: codexHome, create: true }
+  );
+  for (const candidate of candidates) {
+    if (ensureAccessibleDirectory(candidate.path, candidate.create)) {
+      return candidate.path;
+    }
+  }
+  fs.mkdirSync(codexHome, { recursive: true });
+  return codexHome;
+}
+
+function ensureAccessibleDirectory(dir: string, create: boolean): boolean {
+  try {
+    if (create) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const stat = fs.statSync(dir);
+    if (!stat.isDirectory()) {
+      return false;
+    }
+    fs.accessSync(dir, fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildRuntimeEnv(codexHome: string, proxy: RuntimeProxySettings, toolEnv: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    CODEX_HOME: codexHome,
+    ...toolEnv
+  };
+  normalizeRuntimePathEnv(env);
+  applyProxyEnv(env, proxy);
+  return env;
+}
+
+function buildMinimalRuntimeEnv(codexHome: string, proxy: RuntimeProxySettings): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
     CODEX_HOME: codexHome
   };
+  for (const key of minimalRuntimeEnvKeys()) {
+    const value = process.env[key];
+    if (value) {
+      env[key] = value;
+    }
+  }
+  const minimalPath = minimalRuntimePathValue();
+  if (minimalPath) {
+    env[process.platform === "win32" ? "Path" : "PATH"] = minimalPath;
+  }
+  normalizeRuntimePathEnv(env);
+  applyProxyEnv(env, proxy);
+  return env;
+}
 
+function applyProxyEnv(env: NodeJS.ProcessEnv, proxy: RuntimeProxySettings): void {
   const proxyUrl = buildProxyUrl(proxy);
   if (!proxyUrl) {
-    return env;
+    return;
   }
 
   for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "WS_PROXY", "WSS_PROXY", "ALL_PROXY"]) {
@@ -2062,7 +2446,264 @@ function buildRuntimeEnv(codexHome: string, proxy: RuntimeProxySettings): NodeJS
 
   env.NO_PROXY = "localhost,127.0.0.1,::1,.local";
   env.no_proxy = env.NO_PROXY;
-  return env;
+}
+
+function minimalRuntimeEnvKeys(): string[] {
+  if (process.platform !== "win32") {
+    return ["HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR"];
+  }
+  return [
+    "SystemRoot",
+    "WINDIR",
+    "ComSpec",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
+    "USERNAME",
+    "USERDOMAIN"
+  ];
+}
+
+function minimalRuntimePathValue(): string {
+  if (process.platform !== "win32") {
+    return process.env.PATH || "";
+  }
+  const windowsRoot = process.env.SystemRoot || process.env.WINDIR || "C:\\Windows";
+  return uniquePathEntries([
+    path.join(windowsRoot, "System32"),
+    windowsRoot,
+    path.join(windowsRoot, "System32", "Wbem"),
+    path.join(windowsRoot, "System32", "WindowsPowerShell", "v1.0")
+  ]).join(path.delimiter);
+}
+
+function uniquePathEntries(entries: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of entries) {
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const key = process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function normalizeRuntimePathEnv(env: NodeJS.ProcessEnv): void {
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  const pathValue = env.Path ?? env.PATH;
+  delete env.PATH;
+  delete env.Path;
+  if (pathValue) {
+    env.Path = pathValue;
+  }
+}
+
+function summarizeRuntimeStart(runtimePath: string, cwd: string, env: NodeJS.ProcessEnv): string {
+  const pathKey = Object.prototype.hasOwnProperty.call(env, "Path") ? "Path" : "PATH";
+  const pathValue = env[pathKey] ?? "";
+  return [
+    `runtimeExists=${fs.existsSync(runtimePath) ? "yes" : "no"}`,
+    `cwd=${cwd}`,
+    `cwdExists=${fs.existsSync(cwd) ? "yes" : "no"}`,
+    `envKeys=${Object.keys(env).length}`,
+    `envBlockSize=${estimateEnvironmentBlockSize(env)}`,
+    `pathKey=${pathKey}`,
+    `pathLength=${pathValue.length}`,
+    `codexHome=${env.CODEX_HOME || "-"}`
+  ].join("; ");
+}
+
+function estimateEnvironmentBlockSize(env: NodeJS.ProcessEnv): number {
+  let total = 0;
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) {
+      continue;
+    }
+    total += key.length + String(value).length + 2;
+  }
+  return total;
+}
+
+function waitForEarlySpawnError(
+  spawnErrorPromise: Promise<Error | undefined>,
+  timeoutMs: number
+): Promise<Error | undefined> {
+  return Promise.race([
+    spawnErrorPromise,
+    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), timeoutMs))
+  ]);
+}
+
+function shouldRetryBackendStart(error: unknown): boolean {
+  const message = normalizeErrorMessage(error);
+  return /spawn UNKNOWN/i.test(message)
+    || /Codex backend не запущен/i.test(message)
+    || /JSON-RPC client already disposed/i.test(message)
+    || /JSON-RPC client disposed/i.test(message)
+    || /initialize: timeout/i.test(message)
+    || /\bE2BIG\b/i.test(message)
+    || /\bEINVAL\b/i.test(message);
+}
+
+async function diagnoseRuntimeLaunchFailure(
+  runtimePath: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv
+): Promise<string> {
+  const statSummary = summarizeRuntimeExecutable(runtimePath);
+  const zoneSummary = readWindowsZoneIdentifier(runtimePath);
+  if (process.platform !== "win32") {
+    return `${statSummary}; zone=${zoneSummary}; cmdProbe=skipped-non-windows`;
+  }
+
+  const cmdProbe = await runWindowsRuntimeCmdProbe(runtimePath, cwd, env);
+  return `${statSummary}; zone=${zoneSummary}; cmdProbe=${cmdProbe}`;
+}
+
+function summarizeRuntimeExecutable(runtimePath: string): string {
+  try {
+    const stat = fs.statSync(runtimePath);
+    const peMachine = readPeMachine(runtimePath);
+    return [
+      `path=${runtimePath}`,
+      `isFile=${stat.isFile() ? "yes" : "no"}`,
+      `size=${stat.size}`,
+      `mtime=${stat.mtime.toISOString()}`,
+      `peMachine=${peMachine || "unknown"}`
+    ].join("; ");
+  } catch (error) {
+    return `path=${runtimePath}; statError=${normalizeErrorMessage(error)}`;
+  }
+}
+
+function readPeMachine(runtimePath: string): string {
+  try {
+    const fd = fs.openSync(runtimePath, "r");
+    try {
+      const dosHeader = Buffer.alloc(64);
+      fs.readSync(fd, dosHeader, 0, dosHeader.length, 0);
+      if (dosHeader[0] !== 0x4d || dosHeader[1] !== 0x5a) {
+        return "not-mz";
+      }
+      const peOffset = dosHeader.readUInt32LE(0x3c);
+      const peHeader = Buffer.alloc(6);
+      fs.readSync(fd, peHeader, 0, peHeader.length, peOffset);
+      if (peHeader[0] !== 0x50 || peHeader[1] !== 0x45 || peHeader[2] !== 0 || peHeader[3] !== 0) {
+        return "not-pe";
+      }
+      const machine = peHeader.readUInt16LE(4);
+      if (machine === 0x8664) {
+        return "x64";
+      }
+      if (machine === 0xaa64) {
+        return "arm64";
+      }
+      if (machine === 0x14c) {
+        return "x86";
+      }
+      return `0x${machine.toString(16)}`;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
+function readWindowsZoneIdentifier(runtimePath: string): string {
+  if (process.platform !== "win32") {
+    return "skipped-non-windows";
+  }
+  try {
+    const value = fs.readFileSync(`${runtimePath}:Zone.Identifier`, "utf8").trim();
+    if (!value) {
+      return "empty";
+    }
+    return truncateForPrompt(value.replace(/\s+/g, " "), 240);
+  } catch (error) {
+    const code = isRecord(error) && typeof error.code === "string" ? error.code : "";
+    if (code === "ENOENT") {
+      return "absent";
+    }
+    return `unreadable:${normalizeErrorMessage(error)}`;
+  }
+}
+
+async function runWindowsRuntimeCmdProbe(
+  runtimePath: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv
+): Promise<string> {
+  const comSpec = process.env.ComSpec || path.join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe");
+  const command = `"${runtimePath}" --version`;
+  return new Promise((resolve) => {
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(comSpec, ["/d", "/s", "/c", command], {
+      cwd,
+      env,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    const finish = (value: string): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => {
+      child.kill();
+      finish("timeout-after-5000ms");
+    }, 5000);
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout = `${stdout}${chunk}`.slice(0, 4000);
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr = `${stderr}${chunk}`.slice(0, 4000);
+    });
+    child.once("error", (error) => {
+      finish(`cmd-spawn-error:${normalizeErrorMessage(error)}`);
+    });
+    child.once("close", (code, signal) => {
+      finish([
+        `code=${code ?? "-"}`,
+        `signal=${signal ?? "-"}`,
+        `stdout=${compactProbeText(stdout)}`,
+        `stderr=${compactProbeText(stderr)}`
+      ].join("; "));
+    });
+  });
+}
+
+function compactProbeText(value: string): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact ? truncateForPrompt(compact, 500) : "-";
 }
 
 function buildProxyUrl(proxy: RuntimeProxySettings): string {
@@ -2398,6 +3039,74 @@ function extractCompletedAgentMessage(value: unknown): string {
   return getString(item.text);
 }
 
+function classifyCompletedAssistantText(text: string):
+  | { kind: "clarification"; question: string; options: ChatClarificationOption[] }
+  | { kind: "plan"; markdown: string }
+  | { kind: "message" } {
+  const clarification = extractCodexClarification(text);
+  if (clarification) {
+    return { kind: "clarification", ...clarification };
+  }
+  const plan = extractCodexPlan(text);
+  if (plan) {
+    return { kind: "plan", markdown: plan };
+  }
+  return { kind: "message" };
+}
+
+function extractCodexPlan(text: string): string | undefined {
+  const match = text.match(/<codex_plan>\s*([\s\S]*?)\s*<\/codex_plan>/i);
+  const markdown = match?.[1]?.trim();
+  return markdown || undefined;
+}
+
+function extractCodexClarification(text: string): { question: string; options: ChatClarificationOption[] } | undefined {
+  const match = text.match(/<codex_clarification>\s*([\s\S]*?)\s*<\/codex_clarification>/i);
+  const jsonText = match?.[1]?.trim();
+  if (!jsonText) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(stripJsonCodeFence(jsonText));
+    if (!isRecord(parsed)) {
+      return undefined;
+    }
+    const question = getString(parsed.question).trim();
+    if (!question) {
+      return undefined;
+    }
+    const options = Array.isArray(parsed.options)
+      ? parsed.options
+        .map((option): ChatClarificationOption | undefined => {
+          const record = isRecord(option) ? option : {};
+          const title = getString(record.title).trim();
+          const answer = (getString(record.answer) || title).trim();
+          const description = getString(record.description).trim();
+          if (!title || !answer) {
+            return undefined;
+          }
+          return {
+            title,
+            answer,
+            description: description || undefined
+          };
+        })
+        .filter((option): option is ChatClarificationOption => Boolean(option))
+        .slice(0, 5)
+      : [];
+    return { question, options };
+  } catch {
+    return undefined;
+  }
+}
+
+function stripJsonCodeFence(value: string): string {
+  return value
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
 function normalizeLoginCompletedNotification(params: unknown): { success: boolean; message: string } {
   const root = isRecord(params) ? params : {};
   const success = getBoolean(root.success, false);
@@ -2512,13 +3221,15 @@ function normalizeItemActivity(value: unknown): {
   path?: string;
   summary?: string;
   outputPreview?: string;
+  details?: ChatActivityDetail[];
 } | undefined {
-  const root = isRecord(value) ? value : {};
   const item = extractItemRecord(value);
   const type = extractItemType(value);
+  const normalizedType = type.toLowerCase();
   const command = extractFirstString(item, ["command", "cmd", "shellCommand", "argv", "commandLine"]);
   const filePath = extractFirstString(item, ["path", "filePath", "absolutePath", "targetPath"]);
   const summary = extractFirstString(item, ["summary", "message", "description", "title"]);
+  const outputPreview = limitText(extractFirstString(item, ["output", "stdout", "stderr", "result", "preview"]), 1200);
 
   if (
     type === "agentMessage"
@@ -2529,45 +3240,92 @@ function normalizeItemActivity(value: unknown): {
   ) {
     return undefined;
   }
-  if (type === "commandExecution") {
+  if (type === "commandExecution" || normalizedType.includes("command")) {
+    const label = command ? `Выполняется ${command}` : "Выполняется команда";
     return {
       activityKind: "command",
-      label: command ? `Выполняется ${command}` : "Выполняется команда",
+      label,
       command,
-      summary
+      summary,
+      details: [buildActivityDetail("command", label, { command, summary, outputPreview })]
     };
   }
-  if (type === "fileChange") {
+  if (
+    type === "fileChange"
+    || (normalizedType.includes("file") && /change|patch|edit|write|create|delete|rename/.test(normalizedType))
+  ) {
+    const label = filePath ? `Изменяется ${filePath}` : "Изменяются файлы";
     return {
       activityKind: "file",
-      label: filePath ? `Изменяется ${filePath}` : "Изменяются файлы",
+      label,
       path: filePath,
-      summary
+      summary,
+      details: [buildActivityDetail("file", label, { path: filePath, summary, outputPreview })]
     };
   }
-  if (type === "webSearch") {
+  if (type === "webSearch" || normalizedType.includes("search") || normalizedType.includes("grep")) {
+    const query = extractFirstString(item, ["query", "pattern", "searchQuery", "needle", "regex", "term", "glob"]);
+    const searchPath = extractFirstString(item, ["directory", "folder", "cwd", "root", "path", "filePath", "targetPath"]);
+    const searchSummary = summary || formatSearchSummary(query, searchPath);
+    const label = searchSummary || "Выполняется поиск";
     return {
       activityKind: "search",
-      label: summary || "Выполняется поиск",
-      summary
+      label,
+      path: searchPath,
+      summary: searchSummary || query || searchPath,
+      details: [buildActivityDetail("search", label, {
+        path: searchPath,
+        summary: [query ? `Запрос: ${query}` : "", searchPath ? `Область: ${searchPath}` : "", summary && summary !== searchSummary ? summary : ""].filter(Boolean).join("\n"),
+        outputPreview
+      })]
     };
   }
   if (type === "reasoning") {
+    const label = summary || "Думаю";
     return {
       activityKind: "reasoning",
-      label: summary || "Думаю",
-      summary
+      label,
+      summary,
+      details: [buildActivityDetail("reasoning", label, { summary, outputPreview })]
     };
   }
-  const method = getString(root.method);
-  if (!type && !method) {
-    return undefined;
+  if ((normalizedType.includes("tool") || normalizedType.includes("mcp")) && summary) {
+    return {
+      activityKind: "tool",
+      label: summary,
+      summary,
+      details: [buildActivityDetail("tool", summary, { summary, outputPreview })]
+    };
   }
+  return undefined;
+}
+
+function buildActivityDetail(
+  activityKind: ChatActivityKind,
+  label: string,
+  value: { command?: string; path?: string; summary?: string; outputPreview?: string }
+): ChatActivityDetail {
   return {
-    activityKind: "unknown",
-    label: summary || type || method || "Действие Codex",
-    summary
+    activityKind,
+    label,
+    command: value.command || undefined,
+    path: value.path || undefined,
+    summary: value.summary || undefined,
+    outputPreview: value.outputPreview || undefined
   };
+}
+
+function formatSearchSummary(query: string, searchPath: string): string {
+  if (query && searchPath) {
+    return `Поиск ${query} в ${searchPath}`;
+  }
+  if (query) {
+    return `Поиск ${query}`;
+  }
+  if (searchPath) {
+    return `Поиск в ${searchPath}`;
+  }
+  return "";
 }
 
 function normalizePlanMarkdown(value: unknown): string {
@@ -2603,6 +3361,9 @@ function normalizePatchUpdatedFiles(value: unknown): ChatDiffFileSummary[] {
     const stats = parsed[0] ?? countDiffStats(pathValue, diff);
     files.push({
       path: pathValue,
+      oldPath: stats.oldPath,
+      newPath: stats.newPath,
+      status: normalizeDiffStatus(getString(record.status)) ?? stats.status,
       additions: stats.additions,
       deletions: stats.deletions,
       diff: diff || undefined
@@ -2621,15 +3382,44 @@ function parseUnifiedDiffFiles(diff: string): ChatDiffFileSummary[] {
       if (current) {
         files.push(current);
       }
-      current = { path: header[2] || header[1], additions: 0, deletions: 0, diff: "" };
+      current = {
+        path: header[2] || header[1],
+        oldPath: header[1],
+        newPath: header[2],
+        status: "modified",
+        additions: 0,
+        deletions: 0,
+        diff: ""
+      };
       continue;
+    }
+    if (current && line.startsWith("new file mode ")) {
+      current.status = "added";
+    } else if (current && line.startsWith("deleted file mode ")) {
+      current.status = "deleted";
+    } else if (current && line.startsWith("rename from ")) {
+      current.status = "renamed";
+      current.oldPath = line.slice("rename from ".length).trim() || current.oldPath;
+    } else if (current && line.startsWith("rename to ")) {
+      current.status = "renamed";
+      current.newPath = line.slice("rename to ".length).trim() || current.newPath;
+      current.path = current.newPath || current.path;
     }
     const plusFile = line.match(/^\+\+\+ b\/(.+)$/);
     if (!current && plusFile) {
-      current = { path: plusFile[1], additions: 0, deletions: 0, diff: "" };
+      current = { path: plusFile[1], newPath: plusFile[1], status: "modified", additions: 0, deletions: 0, diff: "" };
+    }
+    const minusFile = line.match(/^--- a\/(.+)$/);
+    if (!current && minusFile) {
+      current = { path: minusFile[1], oldPath: minusFile[1], status: "modified", additions: 0, deletions: 0, diff: "" };
     }
     if (!current) {
-      current = { path: "changes.patch", additions: 0, deletions: 0, diff: "" };
+      current = { path: "changes.patch", status: "unknown", additions: 0, deletions: 0, diff: "" };
+    }
+    if (line === "--- /dev/null") {
+      current.status = "added";
+    } else if (line === "+++ /dev/null") {
+      current.status = "deleted";
     }
     current.diff = `${current.diff || ""}${line}\n`;
     if (line.startsWith("+") && !line.startsWith("+++")) {
@@ -2656,6 +3446,9 @@ function mergeDiffFiles(files: ChatDiffFileSummary[]): ChatDiffFileSummary[] {
     existing.additions += file.additions;
     existing.deletions += file.deletions;
     existing.diff = [existing.diff, file.diff].filter(Boolean).join("\n");
+    existing.status = mergeDiffStatus(existing.status, file.status);
+    existing.oldPath = existing.oldPath ?? file.oldPath;
+    existing.newPath = existing.newPath ?? file.newPath;
   }
   return [...byPath.values()];
 }
@@ -2670,7 +3463,24 @@ function countDiffStats(pathValue: string, diff: string): ChatDiffFileSummary {
       deletions += 1;
     }
   }
-  return { path: pathValue, additions, deletions, diff: diff || undefined };
+  return { path: pathValue, status: "modified", additions, deletions, diff: diff || undefined };
+}
+
+function normalizeDiffStatus(value: string | undefined): ChatDiffFileStatus | undefined {
+  if (value === "added" || value === "modified" || value === "deleted" || value === "renamed" || value === "unknown") {
+    return value;
+  }
+  return undefined;
+}
+
+function mergeDiffStatus(left: ChatDiffFileStatus | undefined, right: ChatDiffFileStatus | undefined): ChatDiffFileStatus | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right || left === right) {
+    return left;
+  }
+  return "modified";
 }
 
 function parseReconnectMessage(message: string): { attempt: number; maxAttempts: number } | undefined {

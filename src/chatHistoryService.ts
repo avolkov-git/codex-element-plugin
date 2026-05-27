@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { Logger } from "./logger";
-import { ChatActivityKind, ChatEffort, ChatKind, ChatSpeed, ChatStatus, ChatSummary, ChatTranscriptItem, PersistedChatHistory } from "./types";
+import { ChatActivityDetail, ChatActivityKind, ChatClarificationOption, ChatDiffFileStatus, ChatEffort, ChatKind, ChatSpeed, ChatStatus, ChatSummary, ChatTranscriptItem, ChatTurnRunCounterKind, PersistedChatHistory, WorklogChild, WorklogOperationKind, WorklogSource, WorklogStatus } from "./types";
 
 interface PendingSave {
   profileId: string;
@@ -195,7 +195,50 @@ function normalizeTranscriptItem(value: unknown): ChatTranscriptItem | undefined
       command: typeof value.command === "string" ? value.command : undefined,
       path: typeof value.path === "string" ? value.path : undefined,
       summary: typeof value.summary === "string" ? value.summary : undefined,
-      outputPreview: typeof value.outputPreview === "string" ? value.outputPreview : undefined
+      outputPreview: typeof value.outputPreview === "string" ? value.outputPreview : undefined,
+      details: normalizeActivityDetails(value.details)
+    };
+  }
+
+  if (value.kind === "turn-run") {
+    const turnId = typeof value.turnId === "string" ? value.turnId : "";
+    if (!turnId) {
+      return undefined;
+    }
+    return {
+      kind: "turn-run",
+      id,
+      turnId,
+      status: value.status === "completed" || value.status === "error" ? value.status : "running",
+      createdAt,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+      completedAt: typeof value.completedAt === "string" ? value.completedAt : undefined,
+      activityIds: normalizeStringArray(value.activityIds),
+      worklogIds: normalizeStringArray(value.worklogIds),
+      diffIds: normalizeStringArray(value.diffIds),
+      compactionIds: normalizeStringArray(value.compactionIds),
+      counts: isObject(value.counts) ? normalizeTurnRunCounts(value.counts) : undefined
+    };
+  }
+
+  if (value.kind === "worklog") {
+    const operationKind = normalizeWorklogOperationKind(value.operationKind);
+    const title = typeof value.title === "string" ? value.title.trim() : "";
+    if (!title) {
+      return undefined;
+    }
+    return {
+      kind: "worklog",
+      id,
+      operationKind,
+      status: normalizeWorklogStatus(value.status),
+      title,
+      summary: typeof value.summary === "string" ? value.summary : undefined,
+      createdAt,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+      completedAt: typeof value.completedAt === "string" ? value.completedAt : undefined,
+      turnId: typeof value.turnId === "string" ? value.turnId : undefined,
+      children: normalizeWorklogChildren(value.children)
     };
   }
 
@@ -230,12 +273,25 @@ function normalizeTranscriptItem(value: unknown): ChatTranscriptItem | undefined
     };
   }
 
+  if (value.kind === "clarification" && typeof value.question === "string") {
+    return {
+      kind: "clarification",
+      id,
+      question: value.question,
+      options: normalizeClarificationOptions(value.options),
+      createdAt,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+      turnId: typeof value.turnId === "string" ? value.turnId : undefined
+    };
+  }
+
   if (value.kind === "compaction") {
     return {
       kind: "compaction",
       id,
       label: typeof value.label === "string" ? value.label : "Контекст автоматически сжат",
-      createdAt
+      createdAt,
+      turnId: typeof value.turnId === "string" ? value.turnId : undefined
     };
   }
 
@@ -275,10 +331,61 @@ function normalizeTranscriptItem(value: unknown): ChatTranscriptItem | undefined
     role,
     text: value.text,
     createdAt,
+    turnId: typeof value.turnId === "string" ? value.turnId : undefined,
     status: value.status === "streaming" ? "streaming" : "complete",
     completedAt: typeof value.completedAt === "string" ? value.completedAt : undefined,
     durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined
   };
+}
+
+function normalizeClarificationOptions(value: unknown): ChatClarificationOption[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((option): ChatClarificationOption | undefined => {
+      const record = isObject(option) ? option : {};
+      const title = typeof record.title === "string" ? record.title.trim() : "";
+      const answer = typeof record.answer === "string" ? record.answer.trim() : title;
+      const description = typeof record.description === "string" ? record.description.trim() : "";
+      if (!title || !answer) {
+        return undefined;
+      }
+      return {
+        title,
+        answer,
+        description: description || undefined
+      };
+    })
+    .filter((option): option is ChatClarificationOption => Boolean(option))
+    .slice(0, 5);
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !item.trim() || seen.has(item)) {
+      continue;
+    }
+    seen.add(item);
+    output.push(item);
+  }
+  return output;
+}
+
+function normalizeTurnRunCounts(value: Record<string, unknown>): Partial<Record<ChatTurnRunCounterKind, number>> {
+  const counts: Partial<Record<ChatTurnRunCounterKind, number>> = {};
+  for (const key of ["search", "command", "file", "read", "reasoning", "diagnostics", "context", "tool", "compaction", "diff"] as ChatTurnRunCounterKind[]) {
+    const count = value[key];
+    if (typeof count === "number" && Number.isFinite(count) && count > 0) {
+      counts[key] = Math.floor(count);
+    }
+  }
+  return counts;
 }
 
 function isHiddenLegacyActivity(label: string, activityKind: unknown): boolean {
@@ -290,6 +397,8 @@ function isHiddenLegacyActivity(label: string, activityKind: unknown): boolean {
     || normalizedLabel === "contextCompaction"
     || normalizedLabel === "plan"
     || (activityKind === "unknown" && /^userMessage\b/i.test(normalizedLabel))
+    || activityKind === "unknown"
+    || (activityKind === "reasoning" && normalizedLabel === "Думал")
   );
 }
 
@@ -300,16 +409,109 @@ function normalizeActivityKind(value: unknown): ChatActivityKind {
   return "unknown";
 }
 
-function normalizeDiffFile(value: unknown): { path: string; additions: number; deletions: number; diff?: string } | undefined {
+function normalizeWorklogOperationKind(value: unknown): WorklogOperationKind {
+  if (value === "search" || value === "command" || value === "file" || value === "read" || value === "reasoning" || value === "diagnostics" || value === "context" || value === "tool") {
+    return value;
+  }
+  return "tool";
+}
+
+function normalizeWorklogStatus(value: unknown): WorklogStatus {
+  if (value === "completed" || value === "error") {
+    return value;
+  }
+  return "running";
+}
+
+function normalizeWorklogSource(value: unknown): WorklogSource | undefined {
+  if (value === "project" || value === "docs" || value === "web" || value === "shell" || value === "ide" || value === "runtime") {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeWorklogChildren(value: unknown): WorklogChild[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item): WorklogChild | undefined => {
+      if (!isObject(item)) {
+        return undefined;
+      }
+      const id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : "";
+      const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : "";
+      const createdAt = typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString();
+      if (!id || !title) {
+        return undefined;
+      }
+      return {
+        id,
+        kind: normalizeWorklogOperationKind(item.kind),
+        status: normalizeWorklogStatus(item.status),
+        title,
+        source: normalizeWorklogSource(item.source),
+        query: typeof item.query === "string" ? item.query : undefined,
+        path: typeof item.path === "string" ? item.path : undefined,
+        command: typeof item.command === "string" ? item.command : undefined,
+        resultCount: typeof item.resultCount === "number" && Number.isFinite(item.resultCount) ? item.resultCount : undefined,
+        outputPreview: typeof item.outputPreview === "string" ? item.outputPreview : undefined,
+        createdAt,
+        completedAt: typeof item.completedAt === "string" ? item.completedAt : undefined
+      };
+    })
+    .filter((item): item is WorklogChild => Boolean(item));
+}
+
+function normalizeActivityDetails(value: unknown): ChatActivityDetail[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const details = value
+    .map((item): ChatActivityDetail | undefined => {
+      if (!isObject(item)) {
+        return undefined;
+      }
+      const label = typeof item.label === "string" ? item.label.trim() : "";
+      if (!label) {
+        return undefined;
+      }
+      return {
+        activityKind: normalizeActivityKind(item.activityKind),
+        label,
+        status: item.status === "running" || item.status === "completed" || item.status === "error" ? item.status : undefined,
+        command: typeof item.command === "string" ? item.command : undefined,
+        path: typeof item.path === "string" ? item.path : undefined,
+        summary: typeof item.summary === "string" ? item.summary : undefined,
+        outputPreview: typeof item.outputPreview === "string" ? item.outputPreview : undefined
+      };
+    })
+    .filter((item): item is ChatActivityDetail => Boolean(item))
+    .slice(0, 40);
+  return details.length ? details : undefined;
+}
+
+function normalizeDiffFile(value: unknown): { path: string; oldPath?: string; newPath?: string; status?: ChatDiffFileStatus; additions: number; deletions: number; diff?: string; truncated?: boolean } | undefined {
   if (!isObject(value) || typeof value.path !== "string" || !value.path) {
     return undefined;
   }
   return {
     path: value.path,
+    oldPath: typeof value.oldPath === "string" && value.oldPath ? value.oldPath : undefined,
+    newPath: typeof value.newPath === "string" && value.newPath ? value.newPath : undefined,
+    status: normalizeDiffStatus(value.status),
     additions: typeof value.additions === "number" ? value.additions : 0,
     deletions: typeof value.deletions === "number" ? value.deletions : 0,
-    diff: typeof value.diff === "string" ? value.diff : undefined
+    diff: typeof value.diff === "string" ? value.diff : undefined,
+    truncated: value.truncated === true
   };
+}
+
+function normalizeDiffStatus(value: unknown): ChatDiffFileStatus | undefined {
+  if (value === "added" || value === "modified" || value === "deleted" || value === "renamed" || value === "unknown") {
+    return value;
+  }
+  return undefined;
 }
 
 function normalizeChatKind(value: unknown): ChatKind {

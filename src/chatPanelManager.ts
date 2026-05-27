@@ -23,6 +23,7 @@ export interface ChatPanelHandlers {
   openRules(): Promise<void>;
   restoreChat(chatId: string): Promise<void>;
   implementPlan(chatId: string, planText: string): Promise<void>;
+  openDiffInEditor(chatId: string, diffId: string, fileIndex: number): Promise<void>;
   resolveApproval(chatId: string, approvalId: string, approved: boolean): Promise<void> | void;
 }
 
@@ -338,6 +339,23 @@ export class ChatPanelManager {
       return;
     }
 
+    if (message.command === "diff.openNative") {
+      const chatId = this.state.getActiveChatId();
+      const diffId = isObject(message.payload) && typeof message.payload.diffId === "string" ? message.payload.diffId : "";
+      const fileIndex = isObject(message.payload) ? parseFileIndex(message.payload.fileIndex) : undefined;
+      if (!chatId || !diffId || fileIndex === undefined) {
+        return;
+      }
+      await this.handlers.openDiffInEditor(chatId, diffId, fileIndex);
+      return;
+    }
+
+    if (message.command === "markdown.openLink") {
+      const target = isObject(message.payload) && typeof message.payload.target === "string" ? message.payload.target : "";
+      await openMarkdownTarget(target);
+      return;
+    }
+
     if (message.command === "approval.approve" || message.command === "approval.deny") {
       const chatId = this.state.getActiveChatId();
       if (!chatId || !isObject(message.payload) || typeof message.payload.approvalId !== "string") {
@@ -431,6 +449,61 @@ function parseSpeed(value: unknown): ChatSpeed | undefined {
     return value;
   }
   return undefined;
+}
+
+function parseFileIndex(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+async function openMarkdownTarget(rawTarget: string): Promise<void> {
+  const target = decodeMarkdownTarget(rawTarget.trim());
+  if (!target) {
+    return;
+  }
+
+  if (/^https?:\/\//i.test(target)) {
+    await vscode.env.openExternal(vscode.Uri.parse(target));
+    return;
+  }
+
+  const fileUri = markdownTargetToFileUri(target);
+  if (!fileUri) {
+    vscode.window.showWarningMessage("Не удалось открыть ссылку из ответа Codex.");
+    return;
+  }
+
+  try {
+    const document = await vscode.workspace.openTextDocument(fileUri);
+    await vscode.window.showTextDocument(document, { preview: true });
+  } catch {
+    vscode.window.showWarningMessage(`Не удалось открыть файл: ${fileUri.fsPath || target}`);
+  }
+}
+
+function markdownTargetToFileUri(target: string): vscode.Uri | undefined {
+  if (/^[a-zA-Z]:[\\/]/.test(target) || /^[a-zA-Z]:\//.test(target)) {
+    return vscode.Uri.file(target);
+  }
+  if (target.startsWith("/") || target.startsWith("\\\\")) {
+    return vscode.Uri.file(target);
+  }
+  if (/^file:\/\//i.test(target)) {
+    const uri = vscode.Uri.parse(target);
+    return uri.scheme === "file" ? uri : undefined;
+  }
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+  return workspaceRoot && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)
+    ? vscode.Uri.joinPath(workspaceRoot, target)
+    : undefined;
+}
+
+function decodeMarkdownTarget(value: string): string {
+  try {
+    return decodeURI(value);
+  } catch {
+    return value;
+  }
 }
 
 function parseRunMode(value: unknown): ChatRunMode {

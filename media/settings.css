@@ -184,6 +184,10 @@ input:focus {
   color: var(--codex-error);
 }
 
+.hint.success {
+  color: var(--codex-success);
+}
+
 .normalizer {
   margin: -4px 0 16px;
 }

@@ -34,12 +34,14 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CodexRuntimeController = void 0;
+const child_process_1 = require("child_process");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const jsonRpcClient_1 = require("./jsonRpcClient");
 const logger_1 = require("./logger");
 const runtimeProcessManager_1 = require("./runtimeProcessManager");
+const worklogNormalizer_1 = require("./worklogNormalizer");
 class UserCancelledTurnError extends Error {
     constructor() {
         super("Turn cancelled by user.");
@@ -59,8 +61,10 @@ class CodexRuntimeController {
     constructor(options) {
         this.options = options;
         this.processManager = new runtimeProcessManager_1.RuntimeProcessManager();
+        this.worklogNormalizer = new worklogNormalizer_1.WorklogOperationNormalizer();
         this.activeTurnChatId = new Map();
         this.activeThreadChatId = new Map();
+        this.activeItemChatId = new Map();
         this.itemPayloads = new Map();
         this.pendingApprovals = new Map();
         this.loadedThreadIds = new Set();
@@ -75,8 +79,14 @@ class CodexRuntimeController {
         this.diagnosticsRetryAttemptedTurnIds = new Set();
         this.diagnosticsRetryTurnIds = new Set();
         this.fileChangingTurnIds = new Set();
+        this.thinkingTimers = new Map();
+        this.activeThinkingByChat = new Map();
+        this.thinkingSequenceByTurn = new Map();
+        this.contextCompactionItemTurnIds = new Map();
+        this.activeConcreteItemsByChat = new Map();
         this.cancelEpochByChat = new Map();
         this.suppressNextExitAsCancel = false;
+        this.suppressNextExitAsBackendRetry = false;
         this.restoreAttempted = false;
     }
     async restoreAccountIfAvailable() {
@@ -126,7 +136,7 @@ class CodexRuntimeController {
             const challenge = normalizeDeviceCodeChallenge(result);
             this.updateAuth({
                 status: "checking",
-                message: "Откройте URL в браузере, введите код и дождитесь завершения login на сервере Element.",
+                message: "Ожидаем завершения авторизации. Откройте ссылку или QR на устройстве с доступом к OpenAI и введите код.",
                 deviceCode: {
                     status: "awaiting",
                     loginId: challenge.loginId,
@@ -135,7 +145,6 @@ class CodexRuntimeController {
                 }
             });
             this.options.logger.info(`Device Code login started: loginId=${challenge.loginId || "-"}; verificationUrl=${challenge.verificationUrl ? "set" : "-"}.`);
-            await this.openDeviceCodeUrl();
         }
         catch (error) {
             const message = normalizeAuthError(error);
@@ -209,6 +218,28 @@ class CodexRuntimeController {
         }
         await vscode.env.clipboard.writeText(code);
         this.updateAuth({ message: "Device Code скопирован." });
+    }
+    async copyDeviceCodeUrl() {
+        const url = this.options.state.getSidebarSnapshot().auth.deviceCode.verificationUrl;
+        if (!url) {
+            this.updateAuth({ message: "Device Code URL еще не получен." });
+            return;
+        }
+        await vscode.env.clipboard.writeText(url);
+        this.updateAuth({ message: "Ссылка авторизации скопирована." });
+    }
+    async copyDeviceCodeBundle() {
+        const deviceCode = this.options.state.getSidebarSnapshot().auth.deviceCode;
+        if (!deviceCode.verificationUrl || !deviceCode.userCode) {
+            this.updateAuth({ message: "Device Code еще не получен." });
+            return;
+        }
+        await vscode.env.clipboard.writeText([
+            "OpenAI Device Code authorization",
+            `URL: ${deviceCode.verificationUrl}`,
+            `Code: ${deviceCode.userCode}`
+        ].join("\n"));
+        this.updateAuth({ message: "Ссылка и Device Code скопированы." });
     }
     async sendPrompt(chatId, prompt, mode = "normal", transcriptText, explicitContextBlocks = []) {
         return this.sendPromptCore(chatId, prompt, mode, transcriptText, explicitContextBlocks, {
@@ -850,10 +881,10 @@ class CodexRuntimeController {
             return;
         }
         const hasError = turnContext.worklog.entries.some((entry) => entry.status === "error");
-        this.options.state.addOrUpdateActivityItem(chatId, {
+        this.options.state.addOrUpdateWorklogItem(chatId, {
             id: `context-worklog-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`,
-            activityKind: "context",
-            label: turnContext.worklog.label,
+            operationKind: "context",
+            title: turnContext.worklog.label,
             summary: turnContext.worklog.label,
             status: hasError ? "error" : "completed"
         }, "immediate");
@@ -1006,7 +1037,7 @@ class CodexRuntimeController {
         this.options.state.setChatContextWindow(chatId, contextWindow);
         this.options.onDidChangeChat(chatId);
     }
-    startCompactionActivity(chatId, threadId, itemId) {
+    startCompactionActivity(chatId, threadId, itemId, turnId) {
         const activityId = this.compactionActivityId(chatId, threadId, itemId);
         this.rememberCompactionActivity(activityId, threadId, itemId);
         this.options.state.addOrUpdateActivityItem(chatId, {
@@ -1015,11 +1046,16 @@ class CodexRuntimeController {
             label: "Выполняется автоматическое сжатие контекста",
             summary: "Выполняется автоматическое сжатие контекста",
             status: "running",
+            turnId,
             itemId
         }, "immediate");
     }
-    completeCompactionActivity(chatId, threadId, itemId) {
+    completeCompactionActivity(chatId, threadId, itemId, turnId) {
         const activityId = this.lookupCompactionActivityId(chatId, threadId, itemId);
+        const resolvedTurnId = turnId
+            || (itemId ? this.contextCompactionItemTurnIds.get(itemId) : undefined)
+            || this.options.state.getChat(chatId)?.activeTurnId
+            || undefined;
         if (activityId) {
             this.options.state.addOrUpdateActivityItem(chatId, {
                 id: activityId,
@@ -1027,15 +1063,17 @@ class CodexRuntimeController {
                 label: "Выполняется автоматическое сжатие контекста",
                 summary: "Выполняется автоматическое сжатие контекста",
                 status: "completed",
+                turnId: resolvedTurnId,
                 itemId
             }, "immediate");
         }
-        this.options.state.addCompactionItem(chatId);
+        this.options.state.addCompactionItem(chatId, "Контекст автоматически сжат", "immediate", resolvedTurnId);
         if (threadId) {
             this.contextCompactionActivityIds.delete(`thread:${threadId}`);
         }
         if (itemId) {
             this.contextCompactionActivityIds.delete(`item:${itemId}`);
+            this.contextCompactionItemTurnIds.delete(itemId);
         }
     }
     compactionActivityId(chatId, threadId, itemId) {
@@ -1055,8 +1093,90 @@ class CodexRuntimeController {
             this.contextCompactionActivityIds.set(`item:${itemId}`, activityId);
         }
     }
+    markConcreteItemStarted(chatId, itemId) {
+        const active = this.activeConcreteItemsByChat.get(chatId) ?? new Set();
+        active.add(itemId);
+        this.activeConcreteItemsByChat.set(chatId, active);
+        this.completeThinking(chatId);
+    }
+    markConcreteItemCompleted(chatId, itemId, turnId) {
+        const active = this.activeConcreteItemsByChat.get(chatId);
+        if (active) {
+            active.delete(itemId);
+            if (active.size) {
+                return;
+            }
+            this.activeConcreteItemsByChat.delete(chatId);
+        }
+        const chat = this.options.state.getChat(chatId);
+        const activeTurnId = turnId || chat?.activeTurnId || undefined;
+        if (chat?.status === "running" && activeTurnId) {
+            this.scheduleThinking(chatId, activeTurnId);
+        }
+    }
+    scheduleThinking(chatId, turnId, delayMs = 1200) {
+        this.clearThinkingTimer(chatId);
+        this.thinkingTimers.set(chatId, setTimeout(() => {
+            this.thinkingTimers.delete(chatId);
+            const chat = this.options.state.getChat(chatId);
+            if (!chat || chat.status !== "running" || chat.activeTurnId !== turnId || this.activeThinkingByChat.has(chatId)) {
+                return;
+            }
+            const activeItems = this.activeConcreteItemsByChat.get(chatId);
+            if (activeItems?.size) {
+                return;
+            }
+            const sequence = (this.thinkingSequenceByTurn.get(turnId) ?? 0) + 1;
+            this.thinkingSequenceByTurn.set(turnId, sequence);
+            const id = `worklog-${turnId}-reasoning-${sequence}`;
+            this.activeThinkingByChat.set(chatId, { id, turnId });
+            this.options.state.addOrUpdateWorklogItem(chatId, {
+                id,
+                operationKind: "reasoning",
+                status: "running",
+                title: "Думает",
+                turnId
+            });
+            this.options.onDidChangeChat(chatId);
+        }, delayMs));
+    }
+    completeThinking(chatId) {
+        this.clearThinkingTimer(chatId);
+        const active = this.activeThinkingByChat.get(chatId);
+        if (!active) {
+            return;
+        }
+        this.activeThinkingByChat.delete(chatId);
+        this.options.state.addOrUpdateWorklogItem(chatId, {
+            id: active.id,
+            operationKind: "reasoning",
+            status: "completed",
+            title: "Думал",
+            turnId: active.turnId
+        });
+    }
+    clearThinkingTimer(chatId) {
+        const timer = this.thinkingTimers.get(chatId);
+        if (timer) {
+            clearTimeout(timer);
+            this.thinkingTimers.delete(chatId);
+        }
+    }
+    cleanupThinkingForChat(chatId) {
+        this.clearThinkingTimer(chatId);
+        this.activeThinkingByChat.delete(chatId);
+        this.activeConcreteItemsByChat.delete(chatId);
+    }
+    cleanupThinking() {
+        for (const chatId of this.thinkingTimers.keys()) {
+            this.clearThinkingTimer(chatId);
+        }
+        this.activeThinkingByChat.clear();
+        this.activeConcreteItemsByChat.clear();
+    }
     async stop() {
         this.rejectAllHiddenPlannerRuns(new Error("Codex runtime stopped before docs planner completed."));
+        this.cleanupThinking();
         this.rpcClient?.dispose();
         this.rpcClient = undefined;
         await this.processManager.stop();
@@ -1082,6 +1202,7 @@ class CodexRuntimeController {
             this.cancelledTurnIds.add(turnId);
             this.activeTurnChatId.delete(turnId);
         }
+        this.cleanupThinkingForChat(chatId);
         this.declinePendingApprovalsForChat(chatId);
         this.options.state.updateChat(chatId, {
             status: "idle",
@@ -1127,6 +1248,7 @@ class CodexRuntimeController {
     }
     dispose() {
         this.rejectAllHiddenPlannerRuns(new Error("Codex runtime disposed before docs planner completed."));
+        this.cleanupThinking();
         this.rpcClient?.dispose();
         this.processManager.dispose();
     }
@@ -1137,6 +1259,7 @@ class CodexRuntimeController {
         this.loadedThreadIds.clear();
         this.contextCompactionItemThreads.clear();
         this.contextCompactionActivityIds.clear();
+        this.contextCompactionItemTurnIds.clear();
         this.diagnosticsRetryAttemptedTurnIds.clear();
         this.diagnosticsRetryTurnIds.clear();
         this.fileChangingTurnIds.clear();
@@ -1153,9 +1276,28 @@ class CodexRuntimeController {
             this.options.onDidChange();
             throw new Error(`Bundled codex.exe не найден: ${runtimePath}`);
         }
+        const runtimeValidation = validateBundledRuntimeExecutable(runtimePath);
+        if (!runtimeValidation.ok) {
+            this.options.state.setRuntime({
+                status: "error",
+                label: runtimeValidation.message
+            });
+            this.options.onDidChange();
+            this.options.logger.error(`Bundled codex.exe invalid: ${runtimeValidation.message}; path=${runtimePath}`);
+            throw new Error(runtimeValidation.message);
+        }
         const proxy = await this.options.settings.getRuntimeProxySettings();
-        const env = buildRuntimeEnv(codexHome, proxy);
-        const cwd = resolveWorkspaceCwd(this.options.context);
+        const toolEnvResult = this.options.settings.getRuntimeToolEnvPatchResult();
+        const toolEnv = toolEnvResult.env;
+        const env = buildRuntimeEnv(codexHome, proxy, toolEnv);
+        if (toolEnvResult.warning) {
+            this.options.logger.warn(toolEnvResult.warning);
+        }
+        if (toolEnvResult.ripgrepPath) {
+            const pathPatched = Boolean(toolEnv.Path || toolEnv.PATH);
+            this.options.logger.info(`Runtime ripgrep configured: path=${toolEnvResult.ripgrepPath}; pathPatched=${pathPatched ? "yes" : "no"}.`);
+        }
+        const cwd = resolveRuntimeCwd(this.options.context, codexHome);
         const args = ["app-server"];
         this.options.state.setRuntime({
             status: "starting",
@@ -1165,14 +1307,71 @@ class CodexRuntimeController {
             profileLabel: profileId,
             message: "Запускаем Codex runtime на сервере Element..."
         });
+        try {
+            const attempt = await this.startBackendProcessAttempt({
+                runtimePath,
+                args,
+                cwd,
+                env,
+                mode: "normal"
+            });
+            if (attempt.earlyError) {
+                throw attempt.earlyError;
+            }
+            await this.initializeBackendSession();
+            return;
+        }
+        catch (error) {
+            const message = normalizeErrorMessage(error);
+            if (!shouldRetryBackendStart(error)) {
+                throw error;
+            }
+            this.options.logger.warn(`Backend start failed in normal mode, retrying with minimal environment: ${message}`);
+            await this.resetBackendAfterFailedStart();
+        }
+        const fallbackCwd = resolveRuntimeCwd(this.options.context, codexHome, { forceSafe: true });
+        const fallbackEnv = buildMinimalRuntimeEnv(codexHome, proxy);
+        try {
+            const fallbackAttempt = await this.startBackendProcessAttempt({
+                runtimePath,
+                args,
+                cwd: fallbackCwd,
+                env: fallbackEnv,
+                mode: "minimal"
+            });
+            if (fallbackAttempt.earlyError) {
+                throw fallbackAttempt.earlyError;
+            }
+            await this.initializeBackendSession();
+        }
+        catch (error) {
+            const message = normalizeErrorMessage(error);
+            const diagnostics = await diagnoseRuntimeLaunchFailure(runtimePath, fallbackCwd, fallbackEnv);
+            this.options.state.setRuntime({
+                status: "error",
+                label: `Backend не запустился: ${message}`
+            });
+            this.options.onDidChange();
+            this.options.logger.error(`Backend start failed after minimal-env retry: ${message}`);
+            this.options.logger.error(`Backend launch diagnostics: ${diagnostics}`);
+            throw error;
+        }
+    }
+    async startBackendProcessAttempt(input) {
         const rpcClient = new jsonRpcClient_1.JsonRpcClient((line) => this.processManager.writeLine(line), (notification) => this.handleNotification(notification), (request) => this.handleServerRequest(request));
         this.rpcClient?.dispose();
         this.rpcClient = rpcClient;
+        const diagnostics = summarizeRuntimeStart(input.runtimePath, input.cwd, input.env);
+        this.options.logger.info(`Starting bundled codex.exe app-server: mode=${input.mode}; ${diagnostics}.`);
+        let resolveSpawnError = () => undefined;
+        const spawnErrorPromise = new Promise((resolve) => {
+            resolveSpawnError = resolve;
+        });
         const pid = this.processManager.start({
-            command: runtimePath,
-            args,
-            cwd,
-            env,
+            command: input.runtimePath,
+            args: input.args,
+            cwd: input.cwd,
+            env: input.env,
             onStdout: (line) => {
                 const handled = rpcClient.handleLine(line);
                 if (!handled) {
@@ -1182,6 +1381,9 @@ class CodexRuntimeController {
             onStderr: (line) => {
                 this.options.logger.warn(`stderr: ${line}`);
             },
+            onError: (error) => {
+                resolveSpawnError(error);
+            },
             onExit: (code, signal) => this.handleExit(code, signal)
         });
         this.options.state.setRuntime({
@@ -1189,8 +1391,16 @@ class CodexRuntimeController {
             label: `Backend запущен, PID ${pid || "-"}`
         });
         this.options.onDidChange();
-        this.options.logger.info(`Spawned bundled codex.exe app-server with pid ${pid || "-"}.`);
-        await this.initializeBackendSession();
+        this.options.logger.info(`Spawned bundled codex.exe app-server with pid ${pid || "-"} in ${input.mode} mode.`);
+        const earlyError = await waitForEarlySpawnError(spawnErrorPromise, 500);
+        return { pid, earlyError };
+    }
+    async resetBackendAfterFailedStart() {
+        this.suppressNextExitAsBackendRetry = true;
+        this.rpcClient?.dispose();
+        this.rpcClient = undefined;
+        await this.processManager.stop(1000);
+        this.suppressNextExitAsBackendRetry = false;
     }
     async initializeBackendSession() {
         const rpcClient = this.requireRpcClient();
@@ -1376,6 +1586,7 @@ class CodexRuntimeController {
                     status: "running",
                     turnId
                 });
+                this.scheduleThinking(chatId, turnId);
                 this.options.onDidChange();
                 this.options.onDidChangeChat(chatId);
             }
@@ -1389,17 +1600,13 @@ class CodexRuntimeController {
             if (notificationTurnId && extractItemType(notification.params) === "fileChange") {
                 this.fileChangingTurnIds.add(notificationTurnId);
             }
-            const chatId = this.findChatIdForNotification(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
             if (itemId && chatId) {
-                const activity = normalizeItemActivity(notification.params);
-                if (activity) {
-                    this.options.state.addOrUpdateActivityItem(chatId, {
-                        id: `item-${itemId}`,
-                        itemId,
-                        turnId: notificationTurnId || undefined,
-                        ...activity,
-                        status: "running"
-                    });
+                this.activeItemChatId.set(itemId, chatId);
+                const worklog = this.worklogNormalizer.applyItemStarted(notification.params);
+                if (worklog) {
+                    this.markConcreteItemStarted(chatId, itemId);
+                    this.options.state.addOrUpdateWorklogItem(chatId, worklog);
                     this.options.onDidChange();
                     this.options.onDidChangeChat(chatId);
                 }
@@ -1409,13 +1616,16 @@ class CodexRuntimeController {
                 if (threadId) {
                     this.contextCompactionItemThreads.set(itemId, threadId);
                 }
+                if (notificationTurnId) {
+                    this.contextCompactionItemTurnIds.set(itemId, notificationTurnId);
+                }
                 if (chatId) {
                     this.setContextWindow(chatId, {
                         ...this.options.state.getChatContextWindow(chatId),
                         status: "compacting",
                         message: "Codex сжимает контекст..."
                     });
-                    this.startCompactionActivity(chatId, threadId, itemId);
+                    this.startCompactionActivity(chatId, threadId, itemId, notificationTurnId);
                     this.options.onDidChange();
                     this.options.onDidChangeChat(chatId);
                 }
@@ -1423,7 +1633,7 @@ class CodexRuntimeController {
             return;
         }
         if (notification.method === "turn/diff/updated") {
-            const chatId = this.findChatIdForNotification(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
             const turnId = extractTurnId(notification.params);
             const diff = extractDiffText(extractItemRecord(notification.params));
             if (chatId && diff) {
@@ -1437,7 +1647,7 @@ class CodexRuntimeController {
             return;
         }
         if (notification.method === "turn/plan/updated") {
-            const chatId = this.findChatIdForNotification(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
             const turnId = extractTurnId(notification.params);
             const markdown = normalizePlanMarkdown(notification.params);
             if (chatId && markdown) {
@@ -1448,7 +1658,7 @@ class CodexRuntimeController {
             return;
         }
         if (notification.method === "item/fileChange/patchUpdated") {
-            const chatId = this.findChatIdForNotification(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
             const turnId = extractTurnId(notification.params);
             const files = normalizePatchUpdatedFiles(notification.params);
             if (chatId && files.length) {
@@ -1462,11 +1672,11 @@ class CodexRuntimeController {
             return;
         }
         if (notification.method === "item/commandExecution/outputDelta" || notification.method === "item/fileChange/outputDelta" || notification.method === "item/reasoning/summaryTextDelta" || notification.method === "item/reasoning/textDelta") {
-            const chatId = this.findChatIdForNotification(notification.params);
-            const itemId = extractItemId(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
             const delta = extractDelta(notification.params);
-            if (chatId && itemId && delta) {
-                this.options.state.appendActivityOutput(chatId, `item-${itemId}`, delta);
+            const outputPatch = this.worklogNormalizer.outputPatch(notification.params);
+            if (chatId && outputPatch && delta) {
+                this.options.state.appendWorklogChildOutput(chatId, outputPatch.worklogId, outputPatch.childId, delta);
                 this.options.onDidChangeChat(chatId);
             }
             return;
@@ -1482,9 +1692,10 @@ class CodexRuntimeController {
         }
         if (notification.method === "item/agentMessage/delta") {
             const delta = extractDelta(notification.params);
-            const chatId = this.findChatIdForNotification(notification.params);
+            const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
             if (chatId && delta) {
-                this.options.state.appendAssistantDelta(chatId, delta);
+                this.completeThinking(chatId);
+                this.options.state.appendAssistantDelta(chatId, delta, notificationTurnId || extractTurnId(notification.params) || undefined);
                 this.options.onDidChangeChat(chatId);
             }
             return;
@@ -1492,11 +1703,14 @@ class CodexRuntimeController {
         if (notification.method === "item/completed") {
             const itemId = extractItemId(notification.params);
             const itemType = extractItemType(notification.params);
+            const itemStartedPayload = itemId ? this.itemPayloads.get(itemId) : undefined;
+            const itemTurnId = notificationTurnId || extractTurnId(notification.params) || extractTurnId(itemStartedPayload) || undefined;
             if (itemId && (itemType === "contextCompaction" || this.contextCompactionItemThreads.has(itemId))) {
                 const threadId = extractThreadId(notification.params) || this.contextCompactionItemThreads.get(itemId) || "";
                 const chatId = this.findChatIdForNotification(notification.params);
                 if (itemId) {
                     this.itemPayloads.delete(itemId);
+                    this.activeItemChatId.delete(itemId);
                     this.contextCompactionItemThreads.delete(itemId);
                 }
                 if (chatId) {
@@ -1505,7 +1719,7 @@ class CodexRuntimeController {
                         status: "ready",
                         message: undefined
                     });
-                    this.completeCompactionActivity(chatId, threadId, itemId);
+                    this.completeCompactionActivity(chatId, threadId, itemId, itemTurnId);
                     this.options.onDidChange();
                     this.options.onDidChangeChat(chatId);
                 }
@@ -1514,25 +1728,34 @@ class CodexRuntimeController {
                 }
                 return;
             }
+            const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
+            if (itemId && chatId) {
+                const worklog = this.worklogNormalizer.applyItemCompleted(notification.params);
+                if (worklog) {
+                    this.options.state.addOrUpdateWorklogItem(chatId, worklog, "immediate");
+                }
+                this.markConcreteItemCompleted(chatId, itemId, itemTurnId);
+            }
             if (itemId) {
                 this.itemPayloads.delete(itemId);
-            }
-            const chatId = this.findChatIdForNotification(notification.params);
-            if (itemId && chatId) {
-                const activity = normalizeItemActivity(notification.params);
-                if (activity) {
-                    this.options.state.addOrUpdateActivityItem(chatId, {
-                        id: `item-${itemId}`,
-                        itemId,
-                        turnId: notificationTurnId || undefined,
-                        ...activity,
-                        status: "completed"
-                    }, "immediate");
-                }
+                this.activeItemChatId.delete(itemId);
+                this.worklogNormalizer.forgetItem(notification.params);
             }
             const agentText = extractCompletedAgentMessage(notification.params);
             if (chatId && agentText) {
-                this.options.state.setLastAssistantText(chatId, agentText);
+                const classification = classifyCompletedAssistantText(agentText);
+                const completedTurnId = itemTurnId;
+                if (classification.kind === "clarification") {
+                    this.options.state.removeLastStreamingAssistantMessage(chatId, completedTurnId);
+                    this.options.state.addOrUpdateClarificationItem(chatId, completedTurnId || "", classification.question, classification.options, "immediate");
+                }
+                else if (classification.kind === "plan") {
+                    this.options.state.removeLastStreamingAssistantMessage(chatId, completedTurnId);
+                    this.options.state.addOrUpdatePlanItem(chatId, completedTurnId || "", classification.markdown, "immediate");
+                }
+                else {
+                    this.options.state.setLastAssistantText(chatId, agentText, completedTurnId);
+                }
                 this.options.onDidChange();
                 this.options.onDidChangeChat(chatId);
             }
@@ -1554,6 +1777,9 @@ class CodexRuntimeController {
                 this.activeTurnChatId.delete(turnId);
             }
             if (chatId) {
+                this.clearThinkingTimer(chatId);
+                this.completeThinking(chatId);
+                this.activeConcreteItemsByChat.delete(chatId);
                 if (turnId) {
                     this.options.state.addOrUpdateActivityItem(chatId, {
                         id: `turn-${turnId}`,
@@ -1654,7 +1880,9 @@ class CodexRuntimeController {
     }
     handleExit(code, signal) {
         const wasCancelFallback = this.suppressNextExitAsCancel;
+        const wasBackendRetry = this.suppressNextExitAsBackendRetry;
         this.suppressNextExitAsCancel = false;
+        this.suppressNextExitAsBackendRetry = false;
         for (const pending of this.pendingApprovals.values()) {
             pending.resolve(false);
             this.options.state.setPendingApproval(pending.chatId, null);
@@ -1662,8 +1890,10 @@ class CodexRuntimeController {
         this.pendingApprovals.clear();
         this.rejectAllHiddenPlannerRuns(new Error("Codex app-server exited before docs planner completed."));
         this.loadedThreadIds.clear();
+        this.activeItemChatId.clear();
         this.contextCompactionItemThreads.clear();
         this.contextCompactionActivityIds.clear();
+        this.contextCompactionItemTurnIds.clear();
         this.diagnosticsRetryAttemptedTurnIds.clear();
         this.diagnosticsRetryTurnIds.clear();
         this.fileChangingTurnIds.clear();
@@ -1671,14 +1901,19 @@ class CodexRuntimeController {
         this.rpcClient?.dispose();
         this.rpcClient = undefined;
         this.options.state.setRuntime({
-            status: wasCancelFallback ? "notStarted" : "error",
+            status: wasCancelFallback || wasBackendRetry ? "notStarted" : "error",
             label: wasCancelFallback
                 ? "Backend остановлен после отмены запроса"
-                : `Backend остановлен${code === null ? "" : `, код ${code}`}${signal ? `, ${signal}` : ""}`
+                : wasBackendRetry
+                    ? "Backend перезапускается с минимальным окружением"
+                    : `Backend остановлен${code === null ? "" : `, код ${code}`}${signal ? `, ${signal}` : ""}`
         });
         this.options.onDidChange();
         if (wasCancelFallback) {
             this.options.logger.info(`codex app-server stopped after cancel fallback: code=${code ?? "-"} signal=${signal ?? "-"}.`);
+        }
+        else if (wasBackendRetry) {
+            this.options.logger.info(`codex app-server stopped before minimal-env retry: code=${code ?? "-"} signal=${signal ?? "-"}.`);
         }
         else {
             this.options.logger.warn(`codex app-server exited: code=${code ?? "-"} signal=${signal ?? "-"}.`);
@@ -1698,7 +1933,7 @@ class CodexRuntimeController {
         this.options.state.setRateLimits(rateLimits);
         this.options.onDidChange();
     }
-    findChatIdForNotification(params) {
+    findChatIdForNotification(params, options = {}) {
         const turnId = extractTurnId(params);
         if (turnId) {
             const mapped = this.activeTurnChatId.get(turnId);
@@ -1717,7 +1952,14 @@ class CodexRuntimeController {
                 return mapped;
             }
         }
-        return this.latestChatId;
+        const itemId = extractItemId(params);
+        if (itemId) {
+            const mapped = this.activeItemChatId.get(itemId);
+            if (mapped) {
+                return mapped;
+            }
+        }
+        return options.allowLatestFallback === false ? undefined : this.latestChatId;
     }
 }
 exports.CodexRuntimeController = CodexRuntimeController;
@@ -1775,6 +2017,42 @@ function truncateForPrompt(value, maxChars) {
 function resolveBundledRuntimePath(context) {
     return path.join(context.extensionUri.fsPath, "bin", "windows-x86_64", "codex.exe");
 }
+function validateBundledRuntimeExecutable(runtimePath) {
+    try {
+        const stat = fs.statSync(runtimePath);
+        if (!stat.isFile()) {
+            return { ok: false, message: "Bundled codex.exe не является файлом." };
+        }
+        const prefix = readFilePrefix(runtimePath, 128);
+        if (prefix.startsWith("version https://git-lfs.github.com/spec/v1")) {
+            return {
+                ok: false,
+                message: "Bundled codex.exe является Git LFS pointer. В поставку нужен реальный codex.exe, выполните git lfs pull перед копированием plugin."
+            };
+        }
+        if (process.platform === "win32" && readPeMachine(runtimePath) === "not-mz") {
+            return {
+                ok: false,
+                message: "Bundled codex.exe не является Windows executable. Проверьте, что в /plugins скопирован реальный бинарник, а не текстовый placeholder."
+            };
+        }
+        return { ok: true, message: "" };
+    }
+    catch (error) {
+        return { ok: false, message: `Bundled codex.exe недоступен: ${normalizeErrorMessage(error)}` };
+    }
+}
+function readFilePrefix(filePath, length) {
+    const fd = fs.openSync(filePath, "r");
+    try {
+        const buffer = Buffer.alloc(length);
+        const bytesRead = fs.readSync(fd, buffer, 0, length, 0);
+        return buffer.subarray(0, bytesRead).toString("utf8");
+    }
+    finally {
+        fs.closeSync(fd);
+    }
+}
 function getApprovalPolicy(accessMode) {
     return accessMode === "read-only" ? "never" : "on-request";
 }
@@ -1813,14 +2091,74 @@ function resolveWorkspaceCwd(context) {
     }
     return context.globalStorageUri.fsPath;
 }
-function buildRuntimeEnv(codexHome, proxy) {
+function resolveRuntimeCwd(context, codexHome, options = {}) {
+    const candidates = [];
+    if (!options.forceSafe) {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (workspaceFolder) {
+            candidates.push({ path: workspaceFolder, create: false });
+        }
+        if (vscode.workspace.workspaceFile?.fsPath) {
+            candidates.push({ path: path.dirname(vscode.workspace.workspaceFile.fsPath), create: false });
+        }
+    }
+    candidates.push({ path: context.globalStorageUri.fsPath, create: true }, { path: codexHome, create: true });
+    for (const candidate of candidates) {
+        if (ensureAccessibleDirectory(candidate.path, candidate.create)) {
+            return candidate.path;
+        }
+    }
+    fs.mkdirSync(codexHome, { recursive: true });
+    return codexHome;
+}
+function ensureAccessibleDirectory(dir, create) {
+    try {
+        if (create) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        const stat = fs.statSync(dir);
+        if (!stat.isDirectory()) {
+            return false;
+        }
+        fs.accessSync(dir, fs.constants.R_OK);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+function buildRuntimeEnv(codexHome, proxy, toolEnv = {}) {
     const env = {
         ...process.env,
+        CODEX_HOME: codexHome,
+        ...toolEnv
+    };
+    normalizeRuntimePathEnv(env);
+    applyProxyEnv(env, proxy);
+    return env;
+}
+function buildMinimalRuntimeEnv(codexHome, proxy) {
+    const env = {
         CODEX_HOME: codexHome
     };
+    for (const key of minimalRuntimeEnvKeys()) {
+        const value = process.env[key];
+        if (value) {
+            env[key] = value;
+        }
+    }
+    const minimalPath = minimalRuntimePathValue();
+    if (minimalPath) {
+        env[process.platform === "win32" ? "Path" : "PATH"] = minimalPath;
+    }
+    normalizeRuntimePathEnv(env);
+    applyProxyEnv(env, proxy);
+    return env;
+}
+function applyProxyEnv(env, proxy) {
     const proxyUrl = buildProxyUrl(proxy);
     if (!proxyUrl) {
-        return env;
+        return;
     }
     for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "WS_PROXY", "WSS_PROXY", "ALL_PROXY"]) {
         env[key] = proxyUrl;
@@ -1828,7 +2166,238 @@ function buildRuntimeEnv(codexHome, proxy) {
     }
     env.NO_PROXY = "localhost,127.0.0.1,::1,.local";
     env.no_proxy = env.NO_PROXY;
-    return env;
+}
+function minimalRuntimeEnvKeys() {
+    if (process.platform !== "win32") {
+        return ["HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR"];
+    }
+    return [
+        "SystemRoot",
+        "WINDIR",
+        "ComSpec",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "ProgramData",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "PROCESSOR_ARCHITECTURE",
+        "NUMBER_OF_PROCESSORS",
+        "USERNAME",
+        "USERDOMAIN"
+    ];
+}
+function minimalRuntimePathValue() {
+    if (process.platform !== "win32") {
+        return process.env.PATH || "";
+    }
+    const windowsRoot = process.env.SystemRoot || process.env.WINDIR || "C:\\Windows";
+    return uniquePathEntries([
+        path.join(windowsRoot, "System32"),
+        windowsRoot,
+        path.join(windowsRoot, "System32", "Wbem"),
+        path.join(windowsRoot, "System32", "WindowsPowerShell", "v1.0")
+    ]).join(path.delimiter);
+}
+function uniquePathEntries(entries) {
+    const seen = new Set();
+    const result = [];
+    for (const entry of entries) {
+        const trimmed = entry.trim();
+        if (!trimmed) {
+            continue;
+        }
+        const key = process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        result.push(trimmed);
+    }
+    return result;
+}
+function normalizeRuntimePathEnv(env) {
+    if (process.platform !== "win32") {
+        return;
+    }
+    const pathValue = env.Path ?? env.PATH;
+    delete env.PATH;
+    delete env.Path;
+    if (pathValue) {
+        env.Path = pathValue;
+    }
+}
+function summarizeRuntimeStart(runtimePath, cwd, env) {
+    const pathKey = Object.prototype.hasOwnProperty.call(env, "Path") ? "Path" : "PATH";
+    const pathValue = env[pathKey] ?? "";
+    return [
+        `runtimeExists=${fs.existsSync(runtimePath) ? "yes" : "no"}`,
+        `cwd=${cwd}`,
+        `cwdExists=${fs.existsSync(cwd) ? "yes" : "no"}`,
+        `envKeys=${Object.keys(env).length}`,
+        `envBlockSize=${estimateEnvironmentBlockSize(env)}`,
+        `pathKey=${pathKey}`,
+        `pathLength=${pathValue.length}`,
+        `codexHome=${env.CODEX_HOME || "-"}`
+    ].join("; ");
+}
+function estimateEnvironmentBlockSize(env) {
+    let total = 0;
+    for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) {
+            continue;
+        }
+        total += key.length + String(value).length + 2;
+    }
+    return total;
+}
+function waitForEarlySpawnError(spawnErrorPromise, timeoutMs) {
+    return Promise.race([
+        spawnErrorPromise,
+        new Promise((resolve) => setTimeout(() => resolve(undefined), timeoutMs))
+    ]);
+}
+function shouldRetryBackendStart(error) {
+    const message = normalizeErrorMessage(error);
+    return /spawn UNKNOWN/i.test(message)
+        || /Codex backend не запущен/i.test(message)
+        || /JSON-RPC client already disposed/i.test(message)
+        || /JSON-RPC client disposed/i.test(message)
+        || /initialize: timeout/i.test(message)
+        || /\bE2BIG\b/i.test(message)
+        || /\bEINVAL\b/i.test(message);
+}
+async function diagnoseRuntimeLaunchFailure(runtimePath, cwd, env) {
+    const statSummary = summarizeRuntimeExecutable(runtimePath);
+    const zoneSummary = readWindowsZoneIdentifier(runtimePath);
+    if (process.platform !== "win32") {
+        return `${statSummary}; zone=${zoneSummary}; cmdProbe=skipped-non-windows`;
+    }
+    const cmdProbe = await runWindowsRuntimeCmdProbe(runtimePath, cwd, env);
+    return `${statSummary}; zone=${zoneSummary}; cmdProbe=${cmdProbe}`;
+}
+function summarizeRuntimeExecutable(runtimePath) {
+    try {
+        const stat = fs.statSync(runtimePath);
+        const peMachine = readPeMachine(runtimePath);
+        return [
+            `path=${runtimePath}`,
+            `isFile=${stat.isFile() ? "yes" : "no"}`,
+            `size=${stat.size}`,
+            `mtime=${stat.mtime.toISOString()}`,
+            `peMachine=${peMachine || "unknown"}`
+        ].join("; ");
+    }
+    catch (error) {
+        return `path=${runtimePath}; statError=${normalizeErrorMessage(error)}`;
+    }
+}
+function readPeMachine(runtimePath) {
+    try {
+        const fd = fs.openSync(runtimePath, "r");
+        try {
+            const dosHeader = Buffer.alloc(64);
+            fs.readSync(fd, dosHeader, 0, dosHeader.length, 0);
+            if (dosHeader[0] !== 0x4d || dosHeader[1] !== 0x5a) {
+                return "not-mz";
+            }
+            const peOffset = dosHeader.readUInt32LE(0x3c);
+            const peHeader = Buffer.alloc(6);
+            fs.readSync(fd, peHeader, 0, peHeader.length, peOffset);
+            if (peHeader[0] !== 0x50 || peHeader[1] !== 0x45 || peHeader[2] !== 0 || peHeader[3] !== 0) {
+                return "not-pe";
+            }
+            const machine = peHeader.readUInt16LE(4);
+            if (machine === 0x8664) {
+                return "x64";
+            }
+            if (machine === 0xaa64) {
+                return "arm64";
+            }
+            if (machine === 0x14c) {
+                return "x86";
+            }
+            return `0x${machine.toString(16)}`;
+        }
+        finally {
+            fs.closeSync(fd);
+        }
+    }
+    catch {
+        return "";
+    }
+}
+function readWindowsZoneIdentifier(runtimePath) {
+    if (process.platform !== "win32") {
+        return "skipped-non-windows";
+    }
+    try {
+        const value = fs.readFileSync(`${runtimePath}:Zone.Identifier`, "utf8").trim();
+        if (!value) {
+            return "empty";
+        }
+        return truncateForPrompt(value.replace(/\s+/g, " "), 240);
+    }
+    catch (error) {
+        const code = isRecord(error) && typeof error.code === "string" ? error.code : "";
+        if (code === "ENOENT") {
+            return "absent";
+        }
+        return `unreadable:${normalizeErrorMessage(error)}`;
+    }
+}
+async function runWindowsRuntimeCmdProbe(runtimePath, cwd, env) {
+    const comSpec = process.env.ComSpec || path.join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe");
+    const command = `"${runtimePath}" --version`;
+    return new Promise((resolve) => {
+        let settled = false;
+        let stdout = "";
+        let stderr = "";
+        const child = (0, child_process_1.spawn)(comSpec, ["/d", "/s", "/c", command], {
+            cwd,
+            env,
+            windowsHide: true,
+            stdio: ["ignore", "pipe", "pipe"]
+        });
+        const finish = (value) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            resolve(value);
+        };
+        const timer = setTimeout(() => {
+            child.kill();
+            finish("timeout-after-5000ms");
+        }, 5000);
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+            stdout = `${stdout}${chunk}`.slice(0, 4000);
+        });
+        child.stderr.on("data", (chunk) => {
+            stderr = `${stderr}${chunk}`.slice(0, 4000);
+        });
+        child.once("error", (error) => {
+            finish(`cmd-spawn-error:${normalizeErrorMessage(error)}`);
+        });
+        child.once("close", (code, signal) => {
+            finish([
+                `code=${code ?? "-"}`,
+                `signal=${signal ?? "-"}`,
+                `stdout=${compactProbeText(stdout)}`,
+                `stderr=${compactProbeText(stderr)}`
+            ].join("; "));
+        });
+    });
+}
+function compactProbeText(value) {
+    const compact = value.replace(/\s+/g, " ").trim();
+    return compact ? truncateForPrompt(compact, 500) : "-";
 }
 function buildProxyUrl(proxy) {
     if (!proxy.url) {
@@ -2121,6 +2690,68 @@ function extractCompletedAgentMessage(value) {
     }
     return getString(item.text);
 }
+function classifyCompletedAssistantText(text) {
+    const clarification = extractCodexClarification(text);
+    if (clarification) {
+        return { kind: "clarification", ...clarification };
+    }
+    const plan = extractCodexPlan(text);
+    if (plan) {
+        return { kind: "plan", markdown: plan };
+    }
+    return { kind: "message" };
+}
+function extractCodexPlan(text) {
+    const match = text.match(/<codex_plan>\s*([\s\S]*?)\s*<\/codex_plan>/i);
+    const markdown = match?.[1]?.trim();
+    return markdown || undefined;
+}
+function extractCodexClarification(text) {
+    const match = text.match(/<codex_clarification>\s*([\s\S]*?)\s*<\/codex_clarification>/i);
+    const jsonText = match?.[1]?.trim();
+    if (!jsonText) {
+        return undefined;
+    }
+    try {
+        const parsed = JSON.parse(stripJsonCodeFence(jsonText));
+        if (!isRecord(parsed)) {
+            return undefined;
+        }
+        const question = getString(parsed.question).trim();
+        if (!question) {
+            return undefined;
+        }
+        const options = Array.isArray(parsed.options)
+            ? parsed.options
+                .map((option) => {
+                const record = isRecord(option) ? option : {};
+                const title = getString(record.title).trim();
+                const answer = (getString(record.answer) || title).trim();
+                const description = getString(record.description).trim();
+                if (!title || !answer) {
+                    return undefined;
+                }
+                return {
+                    title,
+                    answer,
+                    description: description || undefined
+                };
+            })
+                .filter((option) => Boolean(option))
+                .slice(0, 5)
+            : [];
+        return { question, options };
+    }
+    catch {
+        return undefined;
+    }
+}
+function stripJsonCodeFence(value) {
+    return value
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/i, "")
+        .trim();
+}
 function normalizeLoginCompletedNotification(params) {
     const root = isRecord(params) ? params : {};
     const success = getBoolean(root.success, false);
@@ -2210,12 +2841,13 @@ function normalizeModelOptions(value) {
     return normalized.length ? normalized : FALLBACK_MODEL_OPTIONS;
 }
 function normalizeItemActivity(value) {
-    const root = isRecord(value) ? value : {};
     const item = extractItemRecord(value);
     const type = extractItemType(value);
+    const normalizedType = type.toLowerCase();
     const command = extractFirstString(item, ["command", "cmd", "shellCommand", "argv", "commandLine"]);
     const filePath = extractFirstString(item, ["path", "filePath", "absolutePath", "targetPath"]);
     const summary = extractFirstString(item, ["summary", "message", "description", "title"]);
+    const outputPreview = limitText(extractFirstString(item, ["output", "stdout", "stderr", "result", "preview"]), 1200);
     if (type === "agentMessage"
         || type === "userMessage"
         || type === "hookPrompt"
@@ -2223,45 +2855,84 @@ function normalizeItemActivity(value) {
         || type === "plan") {
         return undefined;
     }
-    if (type === "commandExecution") {
+    if (type === "commandExecution" || normalizedType.includes("command")) {
+        const label = command ? `Выполняется ${command}` : "Выполняется команда";
         return {
             activityKind: "command",
-            label: command ? `Выполняется ${command}` : "Выполняется команда",
+            label,
             command,
-            summary
+            summary,
+            details: [buildActivityDetail("command", label, { command, summary, outputPreview })]
         };
     }
-    if (type === "fileChange") {
+    if (type === "fileChange"
+        || (normalizedType.includes("file") && /change|patch|edit|write|create|delete|rename/.test(normalizedType))) {
+        const label = filePath ? `Изменяется ${filePath}` : "Изменяются файлы";
         return {
             activityKind: "file",
-            label: filePath ? `Изменяется ${filePath}` : "Изменяются файлы",
+            label,
             path: filePath,
-            summary
+            summary,
+            details: [buildActivityDetail("file", label, { path: filePath, summary, outputPreview })]
         };
     }
-    if (type === "webSearch") {
+    if (type === "webSearch" || normalizedType.includes("search") || normalizedType.includes("grep")) {
+        const query = extractFirstString(item, ["query", "pattern", "searchQuery", "needle", "regex", "term", "glob"]);
+        const searchPath = extractFirstString(item, ["directory", "folder", "cwd", "root", "path", "filePath", "targetPath"]);
+        const searchSummary = summary || formatSearchSummary(query, searchPath);
+        const label = searchSummary || "Выполняется поиск";
         return {
             activityKind: "search",
-            label: summary || "Выполняется поиск",
-            summary
+            label,
+            path: searchPath,
+            summary: searchSummary || query || searchPath,
+            details: [buildActivityDetail("search", label, {
+                    path: searchPath,
+                    summary: [query ? `Запрос: ${query}` : "", searchPath ? `Область: ${searchPath}` : "", summary && summary !== searchSummary ? summary : ""].filter(Boolean).join("\n"),
+                    outputPreview
+                })]
         };
     }
     if (type === "reasoning") {
+        const label = summary || "Думаю";
         return {
             activityKind: "reasoning",
-            label: summary || "Думаю",
-            summary
+            label,
+            summary,
+            details: [buildActivityDetail("reasoning", label, { summary, outputPreview })]
         };
     }
-    const method = getString(root.method);
-    if (!type && !method) {
-        return undefined;
+    if ((normalizedType.includes("tool") || normalizedType.includes("mcp")) && summary) {
+        return {
+            activityKind: "tool",
+            label: summary,
+            summary,
+            details: [buildActivityDetail("tool", summary, { summary, outputPreview })]
+        };
     }
+    return undefined;
+}
+function buildActivityDetail(activityKind, label, value) {
     return {
-        activityKind: "unknown",
-        label: summary || type || method || "Действие Codex",
-        summary
+        activityKind,
+        label,
+        command: value.command || undefined,
+        path: value.path || undefined,
+        summary: value.summary || undefined,
+        outputPreview: value.outputPreview || undefined
     };
+}
+function formatSearchSummary(query, searchPath) {
+    if (query && searchPath) {
+        return `Поиск ${query} в ${searchPath}`;
+    }
+    if (query) {
+        return `Поиск ${query}`;
+    }
+    if (searchPath) {
+        return `Поиск в ${searchPath}`;
+    }
+    return "";
 }
 function normalizePlanMarkdown(value) {
     const root = isRecord(value) ? value : {};
@@ -2295,6 +2966,9 @@ function normalizePatchUpdatedFiles(value) {
         const stats = parsed[0] ?? countDiffStats(pathValue, diff);
         files.push({
             path: pathValue,
+            oldPath: stats.oldPath,
+            newPath: stats.newPath,
+            status: normalizeDiffStatus(getString(record.status)) ?? stats.status,
             additions: stats.additions,
             deletions: stats.deletions,
             diff: diff || undefined
@@ -2312,15 +2986,48 @@ function parseUnifiedDiffFiles(diff) {
             if (current) {
                 files.push(current);
             }
-            current = { path: header[2] || header[1], additions: 0, deletions: 0, diff: "" };
+            current = {
+                path: header[2] || header[1],
+                oldPath: header[1],
+                newPath: header[2],
+                status: "modified",
+                additions: 0,
+                deletions: 0,
+                diff: ""
+            };
             continue;
+        }
+        if (current && line.startsWith("new file mode ")) {
+            current.status = "added";
+        }
+        else if (current && line.startsWith("deleted file mode ")) {
+            current.status = "deleted";
+        }
+        else if (current && line.startsWith("rename from ")) {
+            current.status = "renamed";
+            current.oldPath = line.slice("rename from ".length).trim() || current.oldPath;
+        }
+        else if (current && line.startsWith("rename to ")) {
+            current.status = "renamed";
+            current.newPath = line.slice("rename to ".length).trim() || current.newPath;
+            current.path = current.newPath || current.path;
         }
         const plusFile = line.match(/^\+\+\+ b\/(.+)$/);
         if (!current && plusFile) {
-            current = { path: plusFile[1], additions: 0, deletions: 0, diff: "" };
+            current = { path: plusFile[1], newPath: plusFile[1], status: "modified", additions: 0, deletions: 0, diff: "" };
+        }
+        const minusFile = line.match(/^--- a\/(.+)$/);
+        if (!current && minusFile) {
+            current = { path: minusFile[1], oldPath: minusFile[1], status: "modified", additions: 0, deletions: 0, diff: "" };
         }
         if (!current) {
-            current = { path: "changes.patch", additions: 0, deletions: 0, diff: "" };
+            current = { path: "changes.patch", status: "unknown", additions: 0, deletions: 0, diff: "" };
+        }
+        if (line === "--- /dev/null") {
+            current.status = "added";
+        }
+        else if (line === "+++ /dev/null") {
+            current.status = "deleted";
         }
         current.diff = `${current.diff || ""}${line}\n`;
         if (line.startsWith("+") && !line.startsWith("+++")) {
@@ -2347,6 +3054,9 @@ function mergeDiffFiles(files) {
         existing.additions += file.additions;
         existing.deletions += file.deletions;
         existing.diff = [existing.diff, file.diff].filter(Boolean).join("\n");
+        existing.status = mergeDiffStatus(existing.status, file.status);
+        existing.oldPath = existing.oldPath ?? file.oldPath;
+        existing.newPath = existing.newPath ?? file.newPath;
     }
     return [...byPath.values()];
 }
@@ -2361,7 +3071,22 @@ function countDiffStats(pathValue, diff) {
             deletions += 1;
         }
     }
-    return { path: pathValue, additions, deletions, diff: diff || undefined };
+    return { path: pathValue, status: "modified", additions, deletions, diff: diff || undefined };
+}
+function normalizeDiffStatus(value) {
+    if (value === "added" || value === "modified" || value === "deleted" || value === "renamed" || value === "unknown") {
+        return value;
+    }
+    return undefined;
+}
+function mergeDiffStatus(left, right) {
+    if (!left) {
+        return right;
+    }
+    if (!right || left === right) {
+        return left;
+    }
+    return "modified";
 }
 function parseReconnectMessage(message) {
     const match = message.match(/(?:reconnecting|повтор).*?(\d+)\s*\/\s*(\d+)/i) || message.match(/(\d+)\s*\/\s*(\d+)/);

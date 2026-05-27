@@ -9,7 +9,9 @@
     snapshot: undefined,
     proxyDraft: undefined,
     docsDraft: undefined,
+    toolsDraft: undefined,
     normalizer: undefined,
+    ripgrepInstaller: undefined,
     message: "",
     messageKind: "info"
   };
@@ -21,6 +23,7 @@
       if (state.messageKind === "success") {
         state.proxyDraft = undefined;
         state.docsDraft = undefined;
+        state.toolsDraft = undefined;
       }
       render();
       return;
@@ -42,6 +45,11 @@
       state.message = "";
       render();
     }
+    if (message.type === "event" && message.event === "settings.tools.ripgrep.install.progress") {
+      state.ripgrepInstaller = message.payload || { status: "running", percent: 0, stage: "running", message: "Установка ripgrep выполняется" };
+      state.message = "";
+      render();
+    }
   });
 
   vscode.postMessage({ type: "ready", assetMode });
@@ -51,11 +59,22 @@
     const root = document.getElementById("root");
     const snapshotProxy = state.snapshot && state.snapshot.proxy ? state.snapshot.proxy : { url: "", username: "", passwordSaved: false };
     const snapshotDocs = state.snapshot && state.snapshot.docs ? state.snapshot.docs : { normalizedPath: "", validationMessage: "" };
+    const snapshotTools = state.snapshot && state.snapshot.tools ? state.snapshot.tools : {
+      ripgrepPath: "",
+      ripgrepManaged: false,
+      ripgrepVersion: "",
+      ripgrepStatus: "notConfigured",
+      validationMessage: ""
+    };
     const snapshotNormalizer = state.snapshot && state.snapshot.normalizer ? state.snapshot.normalizer : { status: "idle", percent: 0, stage: "idle", message: "" };
+    const snapshotRipgrepInstaller = state.snapshot && state.snapshot.ripgrepInstaller ? state.snapshot.ripgrepInstaller : { status: "idle", percent: 0, stage: "idle", message: "" };
     const proxy = state.proxyDraft || snapshotProxy;
     const docs = state.docsDraft || snapshotDocs;
+    const tools = state.toolsDraft || snapshotTools;
     const normalizer = state.normalizer || snapshotNormalizer;
+    const ripgrepInstaller = state.ripgrepInstaller || snapshotRipgrepInstaller;
     const normalizerRunning = normalizer.status === "running";
+    const ripgrepInstalling = ripgrepInstaller.status === "running";
     root.innerHTML = `
       <main class="settings-app">
         <header class="settings-header">
@@ -92,6 +111,19 @@
             <button class="button" id="save-docs" type="button" ${normalizerRunning ? "disabled" : ""}>Сохранить</button>
             <button class="button secondary" id="normalize-docs" type="button" ${normalizerRunning ? "disabled" : ""}>Нормализовать</button>
             <button class="button secondary" id="open-base-context" type="button">Базовый контекст</button>
+          </div>
+        </section>
+        <section class="settings-section" aria-label="Прочие настройки">
+          <h2>Прочее</h2>
+          <label class="field">
+            <span>Путь до ripgrep (rg)</span>
+            <input id="tools-ripgrep-path" type="text" autocomplete="off" placeholder="C:\\Program Files\\ripgrep\\rg.exe" value="${escapeAttribute(tools.ripgrepPath)}" />
+          </label>
+          ${ripgrepStatusView(tools)}
+          ${ripgrepInstallerView(ripgrepInstaller)}
+          <div class="button-row">
+            <button class="button" id="save-ripgrep" type="button" ${ripgrepInstalling ? "disabled" : ""}>Сохранить</button>
+            <button class="button secondary" id="install-ripgrep" type="button" ${ripgrepInstalling ? "disabled" : ""}>Установить</button>
           </div>
         </section>
         ${message()}
@@ -157,6 +189,39 @@
         });
       });
     }
+
+    const saveRipgrepButton = root.querySelector("#save-ripgrep");
+    if (saveRipgrepButton) {
+      saveRipgrepButton.addEventListener("click", () => {
+        const ripgrepPath = valueOf("#tools-ripgrep-path");
+        state.toolsDraft = {
+          ripgrepPath,
+          ripgrepManaged: false,
+          ripgrepVersion: "",
+          ripgrepStatus: "notConfigured",
+          validationMessage: ""
+        };
+        state.message = "";
+        vscode.postMessage({
+          type: "command",
+          command: "settings.tools.ripgrep.save",
+          payload: { ripgrepPath }
+        });
+      });
+    }
+
+    const installRipgrepButton = root.querySelector("#install-ripgrep");
+    if (installRipgrepButton) {
+      installRipgrepButton.addEventListener("click", () => {
+        state.ripgrepInstaller = { status: "running", percent: 0, stage: "start", message: "Запуск установки ripgrep" };
+        state.message = "";
+        render();
+        vscode.postMessage({
+          type: "command",
+          command: "settings.tools.ripgrep.install"
+        });
+      });
+    }
   }
 
   function valueOf(selector) {
@@ -183,6 +248,34 @@
           <div class="progress-bar" style="width: ${percent}%"></div>
         </div>
         <div class="normalizer-status">${escapeHtml(normalizer.message)}${normalizer.status === "running" ? ` · ${percent}%` : ""}</div>
+      </div>
+    `;
+  }
+
+  function ripgrepStatusView(tools) {
+    if (!tools || tools.ripgrepStatus === "notConfigured") {
+      return `<div class="hint">rg не настроен. Codex сможет работать, но поиск по проекту может быть медленнее или падать на командах rg.</div>`;
+    }
+    if (tools.ripgrepStatus === "error") {
+      return `<div class="hint error">${escapeHtml(tools.validationMessage || "Путь до rg недоступен.")}</div>`;
+    }
+    const version = tools.ripgrepVersion ? `, версия ${tools.ripgrepVersion}` : "";
+    const managed = tools.ripgrepManaged ? " · установлен плагином" : "";
+    return `<div class="hint success">rg найден${version}${managed}.</div>`;
+  }
+
+  function ripgrepInstallerView(progress) {
+    if (!progress || !progress.message) {
+      return "";
+    }
+    const statusClass = progress.status === "error" ? " error" : progress.status === "completed" ? " success" : "";
+    const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
+    return `
+      <div class="normalizer${statusClass}">
+        <div class="progress" aria-label="Прогресс установки ripgrep">
+          <div class="progress-bar" style="width: ${percent}%"></div>
+        </div>
+        <div class="normalizer-status">${escapeHtml(progress.message)}${progress.status === "running" ? ` · ${percent}%` : ""}</div>
       </div>
     `;
   }

@@ -45,6 +45,7 @@ const contextTurnOrchestrator_1 = require("./contextTurnOrchestrator");
 const codexRuntimeController_1 = require("./codexRuntimeController");
 const diagnosticsContextService_1 = require("./diagnosticsContextService");
 const diagnosticsToolsService_1 = require("./diagnosticsToolsService");
+const diffArtifactService_1 = require("./diffArtifactService");
 const docsContextService_1 = require("./docsContextService");
 const docsRetrievalLoopService_1 = require("./docsRetrievalLoopService");
 const docsNormalizerService_1 = require("./docsNormalizerService");
@@ -56,6 +57,7 @@ const nativeContextToolLoopService_1 = require("./nativeContextToolLoopService")
 const performance_1 = require("./performance");
 const projectContextService_1 = require("./projectContextService");
 const projectToolsService_1 = require("./projectToolsService");
+const ripgrepInstallerService_1 = require("./ripgrepInstallerService");
 const rulesContextService_1 = require("./rulesContextService");
 const settingsPanelManager_1 = require("./settingsPanelManager");
 const settingsService_1 = require("./settingsService");
@@ -70,9 +72,19 @@ async function activate(context) {
     logger.info("Codex Element V1 activating.");
     perf.mark("logger");
     const settings = new settingsService_1.SettingsService(context);
+    try {
+        const discoveredRipgrep = await settings.discoverRipgrepPath();
+        if (discoveredRipgrep?.ripgrepPath) {
+            logger.info(`ripgrep discovered: version=${discoveredRipgrep.ripgrepVersion || "-"}; path=${discoveredRipgrep.ripgrepPath}.`);
+        }
+    }
+    catch (error) {
+        logger.warn(`ripgrep discovery skipped: ${error instanceof Error ? error.message : "unknown error"}`);
+    }
     const contextRouter = new contextRouterService_1.ContextRouterService();
     const baseContext = new baseContextService_1.BaseContextService(context, logger);
     const diagnosticsContext = new diagnosticsContextService_1.DiagnosticsContextService(logger);
+    const diffArtifacts = new diffArtifactService_1.DiffArtifactService(logger);
     const docsCorpusContext = new docsContextService_1.DocsContextService(settings, logger);
     const nativeContextTools = new nativeContextToolLoopService_1.NativeContextToolLoopService(logger);
     const editorContext = new editorContextService_1.EditorContextService();
@@ -89,8 +101,9 @@ async function activate(context) {
     });
     const rulesContext = new rulesContextService_1.RulesContextService(logger);
     const docsNormalizer = new docsNormalizerService_1.DocsNormalizerService(context, settings, logger);
+    const ripgrepInstaller = new ripgrepInstallerService_1.RipgrepInstallerService(settings, logger);
     const history = new chatHistoryService_1.ChatHistoryService(context, settings.getConfigRoot(), logger);
-    context.subscriptions.push(history, projectContext);
+    context.subscriptions.push(history, projectContext, diffArtifacts);
     let historyProfileId;
     let sidebar;
     let runtime;
@@ -196,6 +209,14 @@ async function activate(context) {
             ].join("\n");
             await runtime.sendPrompt(chatId, prompt, "implementPlan", "Реализовать утвержденный план.");
         },
+        openDiffInEditor: async (chatId, diffId, fileIndex) => {
+            const entry = state.getDiffFile(chatId, diffId, fileIndex);
+            if (!entry) {
+                vscode.window.showWarningMessage("Diff не найден.");
+                return;
+            }
+            await diffArtifacts.openDiff(entry.item, entry.file);
+        },
         resolveApproval: (chatId, approvalId, approved) => runtime.resolveApproval(chatId, approvalId, approved)
     });
     const ensureHistoryLoaded = async (profileId) => {
@@ -255,7 +276,7 @@ async function activate(context) {
         onDidResolveProfile: ensureHistoryLoaded
     });
     context.subscriptions.push(runtime);
-    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, docsNormalizer, baseContext, logger, async (options) => {
+    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, logger, async (options) => {
         if (options?.docsChanged) {
             docsContext.invalidate();
         }
@@ -280,7 +301,9 @@ async function activate(context) {
         startDeviceCodeLogin: async () => runtime.startDeviceCodeLogin(),
         loginWithApiKey: async (apiKey) => runtime.loginWithApiKey(apiKey),
         openDeviceCodeUrl: async () => runtime.openDeviceCodeUrl(),
-        copyDeviceCode: async () => runtime.copyDeviceCode()
+        copyDeviceCode: async () => runtime.copyDeviceCode(),
+        copyDeviceCodeUrl: async () => runtime.copyDeviceCodeUrl(),
+        copyDeviceCodeBundle: async () => runtime.copyDeviceCodeBundle()
     });
     approvalAttention = new approvalAttentionService_1.ApprovalAttentionService(state, logger, async () => {
         const pendingChat = state.getSidebarSnapshot().chats.find((chat) => chat.pendingApproval);

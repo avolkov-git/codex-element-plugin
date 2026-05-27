@@ -8,6 +8,7 @@ import { ContextTurnOrchestrator } from "./contextTurnOrchestrator";
 import { CodexRuntimeController } from "./codexRuntimeController";
 import { DiagnosticsContextService } from "./diagnosticsContextService";
 import { DiagnosticsToolsService } from "./diagnosticsToolsService";
+import { DiffArtifactService } from "./diffArtifactService";
 import { DocsContextService } from "./docsContextService";
 import { DocsRetrievalLoopService } from "./docsRetrievalLoopService";
 import { DocsNormalizerService } from "./docsNormalizerService";
@@ -19,6 +20,7 @@ import { NativeContextToolLoopService } from "./nativeContextToolLoopService";
 import { PerfMarks } from "./performance";
 import { ProjectContextService } from "./projectContextService";
 import { ProjectToolsService } from "./projectToolsService";
+import { RipgrepInstallerService } from "./ripgrepInstallerService";
 import { RulesContextService } from "./rulesContextService";
 import { SettingsPanelManager } from "./settingsPanelManager";
 import { SettingsService } from "./settingsService";
@@ -37,9 +39,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   perf.mark("logger");
 
   const settings = new SettingsService(context);
+  try {
+    const discoveredRipgrep = await settings.discoverRipgrepPath();
+    if (discoveredRipgrep?.ripgrepPath) {
+      logger.info(
+        `ripgrep discovered: version=${discoveredRipgrep.ripgrepVersion || "-"}; path=${discoveredRipgrep.ripgrepPath}.`
+      );
+    }
+  } catch (error) {
+    logger.warn(`ripgrep discovery skipped: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
   const contextRouter = new ContextRouterService();
   const baseContext = new BaseContextService(context, logger);
   const diagnosticsContext = new DiagnosticsContextService(logger);
+  const diffArtifacts = new DiffArtifactService(logger);
   const docsCorpusContext = new DocsContextService(settings, logger);
   const nativeContextTools = new NativeContextToolLoopService(logger);
   const editorContext = new EditorContextService();
@@ -56,8 +69,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   const rulesContext = new RulesContextService(logger);
   const docsNormalizer = new DocsNormalizerService(context, settings, logger);
+  const ripgrepInstaller = new RipgrepInstallerService(settings, logger);
   const history = new ChatHistoryService(context, settings.getConfigRoot(), logger);
-  context.subscriptions.push(history, projectContext);
+  context.subscriptions.push(history, projectContext, diffArtifacts);
   let historyProfileId: string | undefined;
   let sidebar: SidebarProvider | undefined;
   let runtime: CodexRuntimeController;
@@ -167,6 +181,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ].join("\n");
       await runtime.sendPrompt(chatId, prompt, "implementPlan", "Реализовать утвержденный план.");
     },
+    openDiffInEditor: async (chatId: string, diffId: string, fileIndex: number) => {
+      const entry = state.getDiffFile(chatId, diffId, fileIndex);
+      if (!entry) {
+        vscode.window.showWarningMessage("Diff не найден.");
+        return;
+      }
+      await diffArtifacts.openDiff(entry.item, entry.file);
+    },
     resolveApproval: (chatId: string, approvalId: string, approved: boolean) => runtime.resolveApproval(chatId, approvalId, approved)
   });
   const ensureHistoryLoaded = async (profileId?: string): Promise<void> => {
@@ -228,7 +250,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     onDidResolveProfile: ensureHistoryLoaded
   });
   context.subscriptions.push(runtime);
-  const settingsPanels = new SettingsPanelManager(context, settings, docsNormalizer, baseContext, logger, async (options) => {
+  const settingsPanels = new SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, logger, async (options) => {
     if (options?.docsChanged) {
       docsContext.invalidate();
     }
@@ -253,7 +275,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     startDeviceCodeLogin: async () => runtime.startDeviceCodeLogin(),
     loginWithApiKey: async (apiKey: string) => runtime.loginWithApiKey(apiKey),
     openDeviceCodeUrl: async () => runtime.openDeviceCodeUrl(),
-    copyDeviceCode: async () => runtime.copyDeviceCode()
+    copyDeviceCode: async () => runtime.copyDeviceCode(),
+    copyDeviceCodeUrl: async () => runtime.copyDeviceCodeUrl(),
+    copyDeviceCodeBundle: async () => runtime.copyDeviceCodeBundle()
   });
   approvalAttention = new ApprovalAttentionService(state, logger, async () => {
     const pendingChat = state.getSidebarSnapshot().chats.find((chat) => chat.pendingApproval);

@@ -39,14 +39,21 @@ const panelIcon_1 = require("./panelIcon");
 const webviewHtml_1 = require("./webviewHtml");
 exports.SETTINGS_PANEL_VIEW_TYPE = "codexElement.settingsPanel";
 class SettingsPanelManager {
-    constructor(context, settings, normalizer, baseContext, logger, onSettingsChanged) {
+    constructor(context, settings, normalizer, ripgrepInstaller, baseContext, logger, onSettingsChanged) {
         this.context = context;
         this.settings = settings;
         this.normalizer = normalizer;
+        this.ripgrepInstaller = ripgrepInstaller;
         this.baseContext = baseContext;
         this.logger = logger;
         this.onSettingsChanged = onSettingsChanged;
         this.normalizerProgress = {
+            status: "idle",
+            percent: 0,
+            stage: "idle",
+            message: ""
+        };
+        this.ripgrepProgress = {
             status: "idle",
             percent: 0,
             stage: "idle",
@@ -148,6 +155,40 @@ class SettingsPanelManager {
             this.logger.info(normalizedPath.trim() ? "Docs settings saved." : "Docs settings cleared.");
             return;
         }
+        if (message.command === "settings.tools.ripgrep.save") {
+            const ripgrepPath = parseRipgrepPath(message.payload);
+            if (ripgrepPath === undefined) {
+                await panel.webview.postMessage({
+                    type: "event",
+                    event: "settings.error",
+                    payload: "Некорректный путь до rg."
+                });
+                return;
+            }
+            try {
+                await this.settings.saveRipgrepPath(ripgrepPath);
+                await this.onSettingsChanged({ restartRuntime: true });
+                await panel.webview.postMessage({
+                    type: "event",
+                    event: "settings.saved",
+                    payload: ripgrepPath.trim() ? "Путь до rg сохранен." : "Путь до rg очищен."
+                });
+                await this.postSnapshot(panel);
+                this.logger.info(ripgrepPath.trim() ? "ripgrep settings saved." : "ripgrep settings cleared.");
+            }
+            catch (error) {
+                await panel.webview.postMessage({
+                    type: "event",
+                    event: "settings.error",
+                    payload: error instanceof Error ? error.message : "Не удалось сохранить путь до rg."
+                });
+            }
+            return;
+        }
+        if (message.command === "settings.tools.ripgrep.install") {
+            await this.installRipgrep(panel);
+            return;
+        }
         if (message.command !== "settings.proxy.save") {
             await panel.webview.postMessage({
                 type: "event",
@@ -190,9 +231,50 @@ class SettingsPanelManager {
             snapshot: {
                 proxy: await this.settings.getProxySettingsView(),
                 docs: this.settings.getDocsSettingsView(),
-                normalizer: this.normalizerProgress
+                tools: await this.settings.getToolsSettingsView(),
+                normalizer: this.normalizerProgress,
+                ripgrepInstaller: this.ripgrepProgress
             }
         });
+    }
+    async installRipgrep(panel) {
+        try {
+            const result = await this.ripgrepInstaller.install({
+                onProgress: (progress) => {
+                    this.ripgrepProgress = progress;
+                    void panel.webview.postMessage({
+                        type: "event",
+                        event: "settings.tools.ripgrep.install.progress",
+                        payload: progress
+                    });
+                }
+            });
+            await this.onSettingsChanged({ restartRuntime: true });
+            await panel.webview.postMessage({
+                type: "event",
+                event: "settings.saved",
+                payload: `ripgrep установлен, версия ${result.version}.`
+            });
+            await this.postSnapshot(panel);
+            this.logger.info(`ripgrep install completed: version=${result.version}; path=${result.path}.`);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : "Не удалось установить ripgrep.";
+            if (this.ripgrepProgress?.status !== "error") {
+                this.ripgrepProgress = {
+                    status: "error",
+                    percent: 0,
+                    stage: "error",
+                    message
+                };
+                await panel.webview.postMessage({
+                    type: "event",
+                    event: "settings.tools.ripgrep.install.progress",
+                    payload: this.ripgrepProgress
+                });
+            }
+            this.logger.warn(`ripgrep install failed: ${message}`);
+        }
     }
     async normalizeDocs(panel, payload) {
         const requestedOutput = parseDocsPath(payload)?.trim();
@@ -278,5 +360,12 @@ function parseDocsPath(payload) {
     }
     const value = payload;
     return typeof value.normalizedPath === "string" ? value.normalizedPath : undefined;
+}
+function parseRipgrepPath(payload) {
+    if (!payload || typeof payload !== "object") {
+        return undefined;
+    }
+    const value = payload;
+    return typeof value.ripgrepPath === "string" ? value.ripgrepPath : undefined;
 }
 //# sourceMappingURL=settingsPanelManager.js.map

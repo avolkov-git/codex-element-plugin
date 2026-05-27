@@ -3,6 +3,12 @@ import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { discoverDocsCorpora, fingerprintDocsCorpora } from "./docsCorpusService";
+import {
+  buildRipgrepEnvPatchResult,
+  discoverRipgrepCandidates,
+  probeRipgrepExecutable,
+  resolveRipgrepExecutablePath
+} from "./ripgrepUtils";
 import { DocsContextDetails, DocsRootDetail } from "./types";
 
 interface ServerSettingsFile {
@@ -14,6 +20,11 @@ interface ServerSettingsFile {
   docs?: {
     sourcePath?: string;
     normalizedPath?: string;
+  };
+  tools?: {
+    ripgrepPath?: string;
+    ripgrepManaged?: boolean;
+    ripgrepVersion?: string;
   };
 }
 
@@ -50,6 +61,20 @@ export interface RuntimeProxySettings {
   url: string;
   username: string;
   password: string;
+}
+
+export interface ToolsSettingsView {
+  ripgrepPath: string;
+  ripgrepManaged: boolean;
+  ripgrepVersion: string;
+  ripgrepStatus: "notConfigured" | "configured" | "error";
+  validationMessage: string;
+}
+
+export interface RuntimeToolEnvPatch {
+  env: NodeJS.ProcessEnv;
+  ripgrepPath: string;
+  warning: string;
 }
 
 export class SettingsService {
@@ -92,6 +117,30 @@ export class SettingsService {
       sourcePath,
       normalizedPath,
       validationMessage: validateDocsPath(normalizedPath)
+    };
+  }
+
+  async getToolsSettingsView(): Promise<ToolsSettingsView> {
+    const tools = this.readSettings().tools;
+    const ripgrepPath = tools?.ripgrepPath?.trim() ?? "";
+    if (!ripgrepPath) {
+      return {
+        ripgrepPath: "",
+        ripgrepManaged: Boolean(tools?.ripgrepManaged),
+        ripgrepVersion: tools?.ripgrepVersion?.trim() ?? "",
+        ripgrepStatus: "notConfigured",
+        validationMessage: "rg не настроен"
+      };
+    }
+
+    const resolvedPath = await resolveRipgrepExecutablePath(ripgrepPath);
+    const probe = await probeRipgrepExecutable(resolvedPath);
+    return {
+      ripgrepPath: probe.path || ripgrepPath,
+      ripgrepManaged: Boolean(tools?.ripgrepManaged),
+      ripgrepVersion: probe.version || tools?.ripgrepVersion?.trim() || "",
+      ripgrepStatus: probe.ok ? "configured" : "error",
+      validationMessage: probe.ok ? probe.message : probe.message || "Путь до rg недоступен."
     };
   }
 
@@ -204,6 +253,23 @@ export class SettingsService {
     };
   }
 
+  getRuntimeToolEnvPatch(): NodeJS.ProcessEnv {
+    return this.getRuntimeToolEnvPatchResult().env;
+  }
+
+  getRuntimeToolEnvPatchResult(): RuntimeToolEnvPatch {
+    const ripgrepPath = this.readSettings().tools?.ripgrepPath?.trim() ?? "";
+    if (!ripgrepPath) {
+      return { env: {}, ripgrepPath: "", warning: "" };
+    }
+    const result = buildRipgrepEnvPatchResult(ripgrepPath);
+    return {
+      env: result.env,
+      ripgrepPath: result.ripgrepPath,
+      warning: result.warning
+    };
+  }
+
   async saveProxy(input: ProxySaveInput): Promise<void> {
     const url = input.url.trim();
     const username = input.username.trim();
@@ -269,6 +335,80 @@ export class SettingsService {
         normalizedPath: normalizedPath.trim()
       }
     });
+  }
+
+  async saveRipgrepPath(inputPath: string): Promise<ToolsSettingsView> {
+    const normalizedInput = inputPath.trim();
+    const current = this.readSettings();
+    if (!normalizedInput) {
+      this.writeSettings({
+        ...current,
+        tools: {
+          ...current.tools,
+          ripgrepPath: "",
+          ripgrepManaged: false,
+          ripgrepVersion: ""
+        }
+      });
+      return this.getToolsSettingsView();
+    }
+
+    const resolvedPath = await resolveRipgrepExecutablePath(normalizedInput);
+    const probe = await probeRipgrepExecutable(resolvedPath);
+    if (!probe.ok) {
+      throw new Error(probe.message || "Указанный путь до rg недоступен.");
+    }
+
+    this.writeSettings({
+      ...current,
+      tools: {
+        ...current.tools,
+        ripgrepPath: probe.path,
+        ripgrepManaged: false,
+        ripgrepVersion: probe.version
+      }
+    });
+    return this.getToolsSettingsView();
+  }
+
+  saveInstalledRipgrepPath(ripgrepPath: string, version: string): void {
+    const current = this.readSettings();
+    this.writeSettings({
+      ...current,
+      tools: {
+        ...current.tools,
+        ripgrepPath,
+        ripgrepManaged: true,
+        ripgrepVersion: version
+      }
+    });
+  }
+
+  async discoverRipgrepPath(): Promise<ToolsSettingsView | undefined> {
+    const currentPath = this.readSettings().tools?.ripgrepPath?.trim();
+    if (currentPath) {
+      return undefined;
+    }
+
+    for (const candidate of discoverRipgrepCandidates()) {
+      const probe = await probeRipgrepExecutable(candidate, 1200);
+      if (!probe.ok) {
+        continue;
+      }
+      const current = this.readSettings();
+      this.writeSettings({
+        ...current,
+        tools: {
+          ...current.tools,
+          ripgrepPath: probe.path,
+          ripgrepManaged: false,
+          ripgrepVersion: probe.version
+        }
+      });
+      return this.getToolsSettingsView();
+    }
+
+    return undefined;
   }
 
   private async getProxySnapshot(): Promise<ProxySettingsSnapshot> {

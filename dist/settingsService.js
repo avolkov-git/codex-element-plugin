@@ -39,6 +39,7 @@ const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const docsCorpusService_1 = require("./docsCorpusService");
+const ripgrepUtils_1 = require("./ripgrepUtils");
 class SettingsService {
     constructor(context) {
         this.context = context;
@@ -75,6 +76,28 @@ class SettingsService {
             sourcePath,
             normalizedPath,
             validationMessage: validateDocsPath(normalizedPath)
+        };
+    }
+    async getToolsSettingsView() {
+        const tools = this.readSettings().tools;
+        const ripgrepPath = tools?.ripgrepPath?.trim() ?? "";
+        if (!ripgrepPath) {
+            return {
+                ripgrepPath: "",
+                ripgrepManaged: Boolean(tools?.ripgrepManaged),
+                ripgrepVersion: tools?.ripgrepVersion?.trim() ?? "",
+                ripgrepStatus: "notConfigured",
+                validationMessage: "rg не настроен"
+            };
+        }
+        const resolvedPath = await (0, ripgrepUtils_1.resolveRipgrepExecutablePath)(ripgrepPath);
+        const probe = await (0, ripgrepUtils_1.probeRipgrepExecutable)(resolvedPath);
+        return {
+            ripgrepPath: probe.path || ripgrepPath,
+            ripgrepManaged: Boolean(tools?.ripgrepManaged),
+            ripgrepVersion: probe.version || tools?.ripgrepVersion?.trim() || "",
+            ripgrepStatus: probe.ok ? "configured" : "error",
+            validationMessage: probe.ok ? probe.message : probe.message || "Путь до rg недоступен."
         };
     }
     getSidebarDocsStatus() {
@@ -174,6 +197,21 @@ class SettingsService {
             password
         };
     }
+    getRuntimeToolEnvPatch() {
+        return this.getRuntimeToolEnvPatchResult().env;
+    }
+    getRuntimeToolEnvPatchResult() {
+        const ripgrepPath = this.readSettings().tools?.ripgrepPath?.trim() ?? "";
+        if (!ripgrepPath) {
+            return { env: {}, ripgrepPath: "", warning: "" };
+        }
+        const result = (0, ripgrepUtils_1.buildRipgrepEnvPatchResult)(ripgrepPath);
+        return {
+            env: result.env,
+            ripgrepPath: result.ripgrepPath,
+            warning: result.warning
+        };
+    }
     async saveProxy(input) {
         const url = input.url.trim();
         const username = input.username.trim();
@@ -231,6 +269,73 @@ class SettingsService {
                 normalizedPath: normalizedPath.trim()
             }
         });
+    }
+    async saveRipgrepPath(inputPath) {
+        const normalizedInput = inputPath.trim();
+        const current = this.readSettings();
+        if (!normalizedInput) {
+            this.writeSettings({
+                ...current,
+                tools: {
+                    ...current.tools,
+                    ripgrepPath: "",
+                    ripgrepManaged: false,
+                    ripgrepVersion: ""
+                }
+            });
+            return this.getToolsSettingsView();
+        }
+        const resolvedPath = await (0, ripgrepUtils_1.resolveRipgrepExecutablePath)(normalizedInput);
+        const probe = await (0, ripgrepUtils_1.probeRipgrepExecutable)(resolvedPath);
+        if (!probe.ok) {
+            throw new Error(probe.message || "Указанный путь до rg недоступен.");
+        }
+        this.writeSettings({
+            ...current,
+            tools: {
+                ...current.tools,
+                ripgrepPath: probe.path,
+                ripgrepManaged: false,
+                ripgrepVersion: probe.version
+            }
+        });
+        return this.getToolsSettingsView();
+    }
+    saveInstalledRipgrepPath(ripgrepPath, version) {
+        const current = this.readSettings();
+        this.writeSettings({
+            ...current,
+            tools: {
+                ...current.tools,
+                ripgrepPath,
+                ripgrepManaged: true,
+                ripgrepVersion: version
+            }
+        });
+    }
+    async discoverRipgrepPath() {
+        const currentPath = this.readSettings().tools?.ripgrepPath?.trim();
+        if (currentPath) {
+            return undefined;
+        }
+        for (const candidate of (0, ripgrepUtils_1.discoverRipgrepCandidates)()) {
+            const probe = await (0, ripgrepUtils_1.probeRipgrepExecutable)(candidate, 1200);
+            if (!probe.ok) {
+                continue;
+            }
+            const current = this.readSettings();
+            this.writeSettings({
+                ...current,
+                tools: {
+                    ...current.tools,
+                    ripgrepPath: probe.path,
+                    ripgrepManaged: false,
+                    ripgrepVersion: probe.version
+                }
+            });
+            return this.getToolsSettingsView();
+        }
+        return undefined;
     }
     async getProxySnapshot() {
         const settings = this.readSettings();

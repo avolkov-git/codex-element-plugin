@@ -165,7 +165,8 @@ class StateStore {
             contextWindow: this.contextWindows.get(chat.id) ?? EMPTY_CONTEXT_WINDOW,
             modelOptions: this.modelOptions,
             modelOptionsStatus: this.modelOptionsStatus,
-            transcriptWindow: this.getTranscriptTail(chat.id)
+            transcriptWindow: this.getTranscriptTail(chat.id),
+            activeClarification: this.getActiveClarification(chat.id)
         };
     }
     getActiveChatId() {
@@ -196,6 +197,31 @@ class StateStore {
         }
         const safeCount = normalizeTranscriptWindowCount(count, exports.TRANSCRIPT_PAGE_SIZE);
         return this.buildTranscriptWindow(chatId, index + 1, Math.min(transcript.length, index + 1 + safeCount));
+    }
+    getActiveClarification(chatId) {
+        const chat = this.getChat(chatId);
+        if (!chat || chat.status !== "idle") {
+            return undefined;
+        }
+        const transcript = this.transcripts.get(chatId) ?? [];
+        for (let index = transcript.length - 1; index >= 0; index -= 1) {
+            const item = transcript[index];
+            if (item.kind === "message" && item.role === "user") {
+                return undefined;
+            }
+            if (item.kind === "clarification") {
+                return item;
+            }
+        }
+        return undefined;
+    }
+    getDiffFile(chatId, diffId, fileIndex) {
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const item = transcript.find((entry) => entry.kind === "diff" && entry.id === diffId);
+        if (!item || !Number.isInteger(fileIndex) || fileIndex < 0 || fileIndex >= item.files.length) {
+            return undefined;
+        }
+        return { item, file: item.files[fileIndex] };
     }
     buildTranscriptWindow(chatId, start, end) {
         const transcript = this.transcripts.get(chatId) ?? [];
@@ -486,18 +512,19 @@ class StateStore {
         this.updateChat(chatId, role === "user" ? {} : { hasUnread: true }, mode);
         return item;
     }
-    appendAssistantDelta(chatId, delta) {
+    appendAssistantDelta(chatId, delta, turnId) {
         const chat = this.getChat(chatId);
         if (!chat || !delta) {
             return;
         }
         const transcript = this.transcripts.get(chatId) ?? [];
-        const streamingIndex = findLastStreamingAssistantMessageIndex(transcript);
+        const streamingIndex = findLastStreamingAssistantMessageIndex(transcript, turnId);
         if (streamingIndex >= 0) {
             const last = transcript[streamingIndex];
             const updatedLast = {
                 ...last,
                 text: `${last.text}${delta}`,
+                turnId: last.turnId ?? turnId,
                 status: "streaming"
             };
             this.transcripts.set(chatId, [
@@ -515,24 +542,25 @@ class StateStore {
                     role: "assistant",
                     text: delta,
                     createdAt: new Date().toISOString(),
+                    turnId,
                     status: "streaming"
                 }
             ]);
         }
         this.updateChat(chatId, { hasUnread: true }, "debounced");
     }
-    setLastAssistantText(chatId, text) {
+    setLastAssistantText(chatId, text, turnId) {
         const chat = this.getChat(chatId);
         if (!chat || !text) {
             return;
         }
         const transcript = this.transcripts.get(chatId) ?? [];
-        const index = findLastAssistantMessageIndex(transcript);
+        const index = findLastAssistantMessageIndex(transcript, turnId);
         if (index >= 0) {
             const existing = transcript[index];
             this.transcripts.set(chatId, [
                 ...transcript.slice(0, index),
-                { ...existing, text, status: "complete", completedAt: new Date().toISOString() },
+                { ...existing, text, turnId: existing.turnId ?? turnId, status: "complete", completedAt: new Date().toISOString() },
                 ...transcript.slice(index + 1)
             ]);
         }
@@ -545,12 +573,29 @@ class StateStore {
                     role: "assistant",
                     text,
                     createdAt: new Date().toISOString(),
+                    turnId,
                     status: "complete",
                     completedAt: new Date().toISOString()
                 }
             ]);
         }
         this.updateChat(chatId, { hasUnread: true }, "immediate");
+    }
+    removeLastStreamingAssistantMessage(chatId, turnId, mode = "debounced") {
+        if (!this.getChat(chatId)) {
+            return false;
+        }
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const index = findLastStreamingAssistantMessageIndex(transcript, turnId);
+        if (index < 0) {
+            return false;
+        }
+        this.transcripts.set(chatId, [
+            ...transcript.slice(0, index),
+            ...transcript.slice(index + 1)
+        ]);
+        this.emitMutation(mode);
+        return true;
     }
     addOrUpdateActivityItem(chatId, patch, mode = "debounced") {
         const chat = this.getChat(chatId);
@@ -574,6 +619,7 @@ class StateStore {
             updatedAt: now,
             completedAt: patch.status === "completed" || patch.status === "error" ? now : existing?.completedAt
         };
+        item.details = mergeActivityDetails(existing?.details, patch.details);
         if (existingIndex >= 0) {
             this.transcripts.set(chatId, [
                 ...transcript.slice(0, existingIndex),
@@ -583,6 +629,12 @@ class StateStore {
         }
         else {
             this.transcripts.set(chatId, [...transcript, item]);
+        }
+        if (patch.turnId) {
+            this.linkTurnRunItem(chatId, patch.turnId, {
+                status: patch.activityKind === "turn" ? item.status : undefined,
+                activityIds: patch.activityKind === "turn" ? [] : [item.id]
+            });
         }
         this.updateChat(chatId, { hasUnread: true }, mode);
         return item;
@@ -598,9 +650,75 @@ class StateStore {
         }
         const existing = transcript[index];
         const output = `${existing.outputPreview ?? ""}${delta}`;
+        const detailOutput = appendActivityDetailOutput(existing, delta);
         const updated = {
             ...existing,
-            outputPreview: output.length > 1200 ? output.slice(output.length - 1200) : output,
+            outputPreview: existing.activityKind === "command" ? existing.outputPreview : limitActivityOutput(output),
+            details: detailOutput,
+            updatedAt: new Date().toISOString()
+        };
+        this.transcripts.set(chatId, [...transcript.slice(0, index), updated, ...transcript.slice(index + 1)]);
+        this.updateChat(chatId, { hasUnread: true }, mode);
+    }
+    addOrUpdateWorklogItem(chatId, patch, mode = "debounced") {
+        const chat = this.getChat(chatId);
+        if (!chat) {
+            return undefined;
+        }
+        const now = new Date().toISOString();
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const existingIndex = transcript.findIndex((item) => item.kind === "worklog" && item.id === patch.id);
+        const existing = existingIndex >= 0 ? transcript[existingIndex] : undefined;
+        const item = {
+            ...(existing ?? {
+                kind: "worklog",
+                id: patch.id,
+                operationKind: patch.operationKind,
+                status: patch.status,
+                title: patch.title,
+                createdAt: now,
+                children: []
+            }),
+            ...patch,
+            children: mergeWorklogChildren(existing?.children, patch.children),
+            updatedAt: now,
+            completedAt: patch.status === "completed" || patch.status === "error" ? now : existing?.completedAt
+        };
+        if (existingIndex >= 0) {
+            this.transcripts.set(chatId, [
+                ...transcript.slice(0, existingIndex),
+                item,
+                ...transcript.slice(existingIndex + 1)
+            ]);
+        }
+        else {
+            this.transcripts.set(chatId, [...transcript, item]);
+        }
+        if (patch.turnId) {
+            this.linkTurnRunItem(chatId, patch.turnId, { worklogIds: [item.id] });
+        }
+        this.updateChat(chatId, { hasUnread: true }, mode);
+        return item;
+    }
+    appendWorklogChildOutput(chatId, worklogId, childId, delta, mode = "debounced") {
+        if (!this.getChat(chatId) || !delta) {
+            return;
+        }
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const index = transcript.findIndex((item) => item.kind === "worklog" && item.id === worklogId);
+        if (index < 0) {
+            return;
+        }
+        const existing = transcript[index];
+        const children = existing.children.map((child) => child.id === childId
+            ? {
+                ...child,
+                outputPreview: limitActivityOutput(`${child.outputPreview ?? ""}${delta}`)
+            }
+            : child);
+        const updated = {
+            ...existing,
+            children,
             updatedAt: new Date().toISOString()
         };
         this.transcripts.set(chatId, [...transcript.slice(0, index), updated, ...transcript.slice(index + 1)]);
@@ -630,6 +748,9 @@ class StateStore {
         this.transcripts.set(chatId, index >= 0
             ? [...transcript.slice(0, index), item, ...transcript.slice(index + 1)]
             : [...transcript, item]);
+        if (turnId) {
+            this.linkTurnRunItem(chatId, turnId, { diffIds: [id] });
+        }
         this.updateChat(chatId, { hasUnread: true }, mode);
     }
     addOrUpdatePlanItem(chatId, turnId, markdown, mode = "debounced") {
@@ -653,7 +774,37 @@ class StateStore {
             : [...transcript, item]);
         this.updateChat(chatId, { hasUnread: true }, mode);
     }
-    addCompactionItem(chatId, label = "Контекст автоматически сжат", mode = "immediate") {
+    addOrUpdateClarificationItem(chatId, turnId, question, options, mode = "immediate") {
+        if (!this.getChat(chatId) || !question.trim()) {
+            return;
+        }
+        const id = turnId ? `clarification-${turnId}` : `${chatId}-clarification`;
+        const now = new Date().toISOString();
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const index = transcript.findIndex((item) => item.kind === "clarification" && item.id === id);
+        const normalizedOptions = options
+            .map((option) => ({
+            title: option.title.trim(),
+            description: option.description?.trim() || undefined,
+            answer: option.answer.trim()
+        }))
+            .filter((option) => option.title && option.answer)
+            .slice(0, 5);
+        const item = {
+            kind: "clarification",
+            id,
+            question: question.trim(),
+            options: normalizedOptions,
+            createdAt: index >= 0 ? transcript[index].createdAt : now,
+            updatedAt: now,
+            turnId
+        };
+        this.transcripts.set(chatId, index >= 0
+            ? [...transcript.slice(0, index), item, ...transcript.slice(index + 1)]
+            : [...transcript, item]);
+        this.updateChat(chatId, { hasUnread: true }, mode);
+    }
+    addCompactionItem(chatId, label = "Контекст автоматически сжат", mode = "immediate", turnId) {
         if (!this.getChat(chatId)) {
             return;
         }
@@ -669,15 +820,20 @@ class StateStore {
         if (hasRecentMarker) {
             return;
         }
+        const item = {
+            kind: "compaction",
+            id: `${chatId}-compaction-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            label,
+            createdAt: new Date().toISOString(),
+            turnId
+        };
         this.transcripts.set(chatId, [
             ...transcript,
-            {
-                kind: "compaction",
-                id: `${chatId}-compaction-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                label,
-                createdAt: new Date().toISOString()
-            }
+            item
         ]);
+        if (turnId) {
+            this.linkTurnRunItem(chatId, turnId, { compactionIds: [item.id] });
+        }
         this.updateChat(chatId, { hasUnread: true }, mode);
     }
     addConnectionItem(chatId, message, status, attempt, maxAttempts, mode = "debounced") {
@@ -771,6 +927,48 @@ class StateStore {
             transcripts
         };
     }
+    linkTurnRunItem(chatId, turnId, patch) {
+        if (!turnId) {
+            return;
+        }
+        const now = new Date().toISOString();
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const id = `turn-run-${turnId}`;
+        const existingIndex = transcript.findIndex((item) => item.kind === "turn-run" && item.id === id);
+        const existing = existingIndex >= 0 ? transcript[existingIndex] : undefined;
+        const status = patch.status ?? existing?.status ?? "running";
+        const item = {
+            ...(existing ?? {
+                kind: "turn-run",
+                id,
+                turnId,
+                status,
+                createdAt: now,
+                activityIds: [],
+                worklogIds: [],
+                diffIds: [],
+                compactionIds: []
+            }),
+            status,
+            updatedAt: now,
+            completedAt: status === "completed" || status === "error" ? now : existing?.completedAt,
+            activityIds: mergeUniqueStrings(existing?.activityIds, patch.activityIds),
+            worklogIds: mergeUniqueStrings(existing?.worklogIds, patch.worklogIds),
+            diffIds: mergeUniqueStrings(existing?.diffIds, patch.diffIds),
+            compactionIds: mergeUniqueStrings(existing?.compactionIds, patch.compactionIds)
+        };
+        item.counts = buildTurnRunCounts(item, transcript);
+        if (existingIndex >= 0) {
+            this.transcripts.set(chatId, [
+                ...transcript.slice(0, existingIndex),
+                item,
+                ...transcript.slice(existingIndex + 1)
+            ]);
+        }
+        else {
+            this.transcripts.set(chatId, [...transcript, item]);
+        }
+    }
     emitMutation(mode) {
         this.onDidMutate?.(mode);
     }
@@ -800,19 +998,125 @@ function normalizeTranscriptWindowCount(count, fallback) {
     }
     return Math.max(1, Math.min(40, Math.floor(count)));
 }
-function findLastAssistantMessageIndex(items) {
+function mergeActivityDetails(existing, next) {
+    if (!existing?.length) {
+        return next?.length ? next : undefined;
+    }
+    if (!next?.length) {
+        return existing;
+    }
+    const merged = next.map((detail, index) => ({
+        ...existing[index],
+        ...detail,
+        outputPreview: detail.outputPreview ?? existing[index]?.outputPreview
+    }));
+    if (existing.length > next.length) {
+        merged.push(...existing.slice(next.length));
+    }
+    return merged;
+}
+function appendActivityDetailOutput(item, delta) {
+    const details = item.details?.length
+        ? item.details
+        : [{
+                activityKind: item.activityKind,
+                label: item.label,
+                status: item.status,
+                command: item.command,
+                path: item.path,
+                summary: item.summary,
+                outputPreview: item.outputPreview
+            }];
+    const target = details[0] ?? {
+        activityKind: item.activityKind,
+        label: item.label,
+        status: item.status
+    };
+    return [
+        {
+            ...target,
+            outputPreview: limitActivityOutput(`${target.outputPreview ?? ""}${delta}`)
+        },
+        ...details.slice(1)
+    ];
+}
+function mergeWorklogChildren(existing, next) {
+    const merged = new Map();
+    for (const child of existing ?? []) {
+        merged.set(child.id, child);
+    }
+    for (const child of next ?? []) {
+        const current = merged.get(child.id);
+        merged.set(child.id, {
+            ...(current ?? child),
+            ...child,
+            createdAt: current?.createdAt ?? child.createdAt,
+            outputPreview: child.outputPreview ?? current?.outputPreview,
+            completedAt: child.completedAt ?? current?.completedAt
+        });
+    }
+    return [...merged.values()];
+}
+function mergeUniqueStrings(existing, next) {
+    const result = [];
+    const seen = new Set();
+    for (const value of [...(existing ?? []), ...(next ?? [])]) {
+        if (!value || seen.has(value)) {
+            continue;
+        }
+        seen.add(value);
+        result.push(value);
+    }
+    return result;
+}
+function buildTurnRunCounts(turnRun, transcript) {
+    const counts = {};
+    const byId = new Map(transcript.map((item) => [item.id, item]));
+    for (const id of turnRun.worklogIds) {
+        const item = byId.get(id);
+        if (item?.kind === "worklog") {
+            counts[item.operationKind] = (counts[item.operationKind] ?? 0) + Math.max(1, item.children?.length || 0);
+        }
+    }
+    for (const id of turnRun.activityIds) {
+        const item = byId.get(id);
+        if (item?.kind === "activity" && item.activityKind !== "turn" && item.activityKind !== "unknown") {
+            const kind = activityKindToTurnRunCounter(item.activityKind);
+            if (kind) {
+                counts[kind] = (counts[kind] ?? 0) + 1;
+            }
+        }
+    }
+    if (turnRun.diffIds.length) {
+        counts.diff = turnRun.diffIds.length;
+    }
+    if (turnRun.compactionIds.length) {
+        counts.compaction = turnRun.compactionIds.length;
+    }
+    return counts;
+}
+function activityKindToTurnRunCounter(kind) {
+    if (kind === "command" || kind === "file" || kind === "search" || kind === "reasoning" || kind === "context" || kind === "tool") {
+        return kind;
+    }
+    return undefined;
+}
+function limitActivityOutput(output) {
+    return output.length > 1200 ? output.slice(output.length - 1200) : output;
+}
+function findLastAssistantMessageIndex(items, turnId) {
     for (let index = items.length - 1; index >= 0; index -= 1) {
         const item = items[index];
-        if (item.kind === "message" && item.role === "assistant") {
+        if (item.kind === "message" && item.role === "assistant" && (!turnId || !item.turnId || item.turnId === turnId)) {
             return index;
         }
     }
     return -1;
 }
-function findLastStreamingAssistantMessageIndex(items) {
+function findLastStreamingAssistantMessageIndex(items, turnId) {
     for (let index = items.length - 1; index >= 0; index -= 1) {
         const item = items[index];
-        if (item.kind === "message" && item.role === "assistant" && item.status === "streaming") {
+        if (item.kind === "message" && item.role === "assistant" && item.status === "streaming" && (!turnId || !item.turnId || item.turnId === turnId)) {
             return index;
         }
     }

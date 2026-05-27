@@ -156,6 +156,7 @@ export interface ChatPanelSnapshot {
   modelOptions: ModelOption[];
   modelOptionsStatus: "idle" | "loading" | "ready" | "error";
   transcriptWindow: ChatTranscriptWindow;
+  activeClarification?: ChatClarificationTranscriptItem;
 }
 
 export interface ChatTranscriptWindow {
@@ -234,7 +235,10 @@ export type ContextDetails = ProjectContextDetails | DocsContextDetails;
 
 export type ChatTranscriptItem =
   | ChatMessageTranscriptItem
+  | ChatClarificationTranscriptItem
+  | ChatTurnRunTranscriptItem
   | ChatActivityTranscriptItem
+  | ChatWorklogTranscriptItem
   | ChatDiffTranscriptItem
   | ChatPlanTranscriptItem
   | ChatCompactionTranscriptItem
@@ -247,12 +251,57 @@ export interface ChatMessageTranscriptItem {
   role: "system" | "user" | "assistant";
   text: string;
   createdAt: string;
+  turnId?: string;
   status?: "streaming" | "complete";
   completedAt?: string;
   durationMs?: number;
 }
 
+export interface ChatClarificationOption {
+  title: string;
+  description?: string;
+  answer: string;
+}
+
+export interface ChatClarificationTranscriptItem {
+  kind: "clarification";
+  id: string;
+  question: string;
+  options: ChatClarificationOption[];
+  createdAt: string;
+  updatedAt?: string;
+  turnId?: string;
+}
+
+export type ChatTurnRunStatus = "running" | "completed" | "error";
+export type ChatTurnRunCounterKind = "search" | "command" | "file" | "read" | "reasoning" | "diagnostics" | "context" | "tool" | "compaction" | "diff";
+
+export interface ChatTurnRunTranscriptItem {
+  kind: "turn-run";
+  id: string;
+  turnId: string;
+  status: ChatTurnRunStatus;
+  createdAt: string;
+  updatedAt?: string;
+  completedAt?: string;
+  activityIds: string[];
+  worklogIds: string[];
+  diffIds: string[];
+  compactionIds: string[];
+  counts?: Partial<Record<ChatTurnRunCounterKind, number>>;
+}
+
 export type ChatActivityKind = "turn" | "command" | "file" | "search" | "reasoning" | "context" | "tool" | "unknown";
+
+export interface ChatActivityDetail {
+  activityKind?: ChatActivityKind;
+  label: string;
+  status?: "running" | "completed" | "error";
+  command?: string;
+  path?: string;
+  summary?: string;
+  outputPreview?: string;
+}
 
 export interface ChatActivityTranscriptItem {
   kind: "activity";
@@ -269,13 +318,53 @@ export interface ChatActivityTranscriptItem {
   path?: string;
   summary?: string;
   outputPreview?: string;
+  details?: ChatActivityDetail[];
 }
+
+export type WorklogOperationKind = "search" | "command" | "file" | "read" | "reasoning" | "diagnostics" | "context" | "tool";
+export type WorklogStatus = "running" | "completed" | "error";
+export type WorklogSource = "project" | "docs" | "web" | "shell" | "ide" | "runtime";
+
+export interface WorklogChild {
+  id: string;
+  kind: WorklogOperationKind;
+  status: WorklogStatus;
+  title: string;
+  source?: WorklogSource;
+  query?: string;
+  path?: string;
+  command?: string;
+  resultCount?: number;
+  outputPreview?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface ChatWorklogTranscriptItem {
+  kind: "worklog";
+  id: string;
+  turnId?: string;
+  operationKind: WorklogOperationKind;
+  status: WorklogStatus;
+  title: string;
+  summary?: string;
+  createdAt: string;
+  updatedAt?: string;
+  completedAt?: string;
+  children: WorklogChild[];
+}
+
+export type ChatDiffFileStatus = "added" | "modified" | "deleted" | "renamed" | "unknown";
 
 export interface ChatDiffFileSummary {
   path: string;
+  oldPath?: string;
+  newPath?: string;
+  status?: ChatDiffFileStatus;
   additions: number;
   deletions: number;
   diff?: string;
+  truncated?: boolean;
 }
 
 export interface ChatDiffTranscriptItem {
@@ -304,6 +393,7 @@ export interface ChatCompactionTranscriptItem {
   id: string;
   label: string;
   createdAt: string;
+  turnId?: string;
 }
 
 export interface ChatConnectionTranscriptItem {

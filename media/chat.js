@@ -27,6 +27,10 @@
     contextDetailsLoading: false,
     drafts: Object.create(null),
     planningArmedByChat: Object.create(null),
+    expandedDiffFiles: Object.create(null),
+    expandedActivities: Object.create(null),
+    expandedWorklogs: Object.create(null),
+    expandedTurnRuns: Object.create(null),
     liveDurationTimer: 0,
     showScrollToBottom: false,
     loadingBefore: false,
@@ -34,7 +38,10 @@
     pendingScrollAnchor: null,
     scrollToBottomAfterWindow: false,
     lastTranscriptUserNavigationAt: 0,
-    lastTranscriptNavigationDirection: "both"
+    lastTranscriptNavigationDirection: "both",
+    lastTranscriptStructureSignature: "",
+    lastChromeSignature: "",
+    allowStreamingPatch: false
   };
 
   document.addEventListener("click", (event) => {
@@ -68,6 +75,7 @@
       if (state.snapshot && state.snapshot.chat) {
         vscode.setState({ activeChatId: state.snapshot.chat.id });
       }
+      state.allowStreamingPatch = true;
       render();
     }
     if (message.type === "event" && message.event === "shell.notice") {
@@ -128,11 +136,14 @@
       return;
     }
 
-    if ((!state.stickToBottom || state.transcriptWindow.hasAfter) && state.showScrollToBottom) {
+    if (!state.stickToBottom || state.transcriptWindow.hasAfter) {
+      const currentEnd = (state.transcriptWindow.offset || 0) + (state.transcriptWindow.items?.length || 0);
+      const incomingTotal = incoming.totalCount || 0;
+      const hasNewerData = incoming.hasAfter || incomingTotal > currentEnd || incoming.lastItemId !== state.transcriptWindow.lastItemId;
       state.transcriptWindow = {
         ...state.transcriptWindow,
-        totalCount: Math.max(state.transcriptWindow.totalCount || 0, incoming.totalCount || 0),
-        hasAfter: true
+        totalCount: Math.max(state.transcriptWindow.totalCount || 0, incomingTotal),
+        hasAfter: Boolean(state.transcriptWindow.hasAfter || hasNewerData)
       };
       return;
     }
@@ -266,6 +277,7 @@
           </section>
         </main>
       `;
+      state.allowStreamingPatch = false;
       syncLiveDurationTimer();
       return;
     }
@@ -293,6 +305,25 @@
       state.contextPopup = null;
       state.contextDetails = null;
       state.contextDetailsLoading = false;
+      state.lastTranscriptStructureSignature = "";
+      state.lastChromeSignature = "";
+    }
+    const currentChromeSignature = chatChromeSignature(snapshot);
+    const currentTranscriptStructureSignature = transcriptStructureSignature(snapshot);
+    if (
+      state.hasRenderedCurrentChat
+      && state.renderedChatId === snapshot.chat.id
+      && state.allowStreamingPatch
+      && currentChromeSignature === state.lastChromeSignature
+      && currentTranscriptStructureSignature === state.lastTranscriptStructureSignature
+      && tryPatchStreamingTranscript(snapshot)
+    ) {
+      state.lastTranscriptSignature = transcriptSignature(snapshot);
+      state.lastChromeSignature = currentChromeSignature;
+      state.lastTranscriptStructureSignature = currentTranscriptStructureSignature;
+      state.allowStreamingPatch = false;
+      syncLiveDurationTimer();
+      return;
     }
     const initialUnreadRender = snapshot.chat.hasUnread && !state.hasRenderedCurrentChat;
     const shouldStickToBottom = !initialUnreadRender && (state.stickToBottom || previousWasNearBottom);
@@ -351,6 +382,9 @@
       });
     }
     state.lastTranscriptSignature = signature;
+    state.lastChromeSignature = currentChromeSignature;
+    state.lastTranscriptStructureSignature = currentTranscriptStructureSignature;
+    state.allowStreamingPatch = false;
     state.hasRenderedCurrentChat = true;
     restorePromptFocus(focusState, snapshot.chat.id);
     syncLiveDurationTimer();
@@ -397,11 +431,23 @@
             input.value = "";
           }
           setDraft(snapshot.chat.id, "");
-          const sendMode = isPlanningArmed(snapshot.chat.id) ? "planning" : "normal";
+          const sendMode = isPlanningArmed(snapshot.chat.id) || getActiveClarification(snapshot) ? "planning" : "normal";
           setPlanningArmed(snapshot.chat.id, false);
           state.notice = "";
           state.stickToBottom = true;
           vscode.postMessage({ type: "command", command, payload: { prompt, mode: sendMode } });
+          return;
+        }
+        if (command === "chat.clarification.answer") {
+          const answer = button.dataset.answer || "";
+          if (!answer.trim()) {
+            return;
+          }
+          setDraft(snapshot.chat.id, "");
+          setPlanningArmed(snapshot.chat.id, false);
+          state.notice = "";
+          state.stickToBottom = true;
+          vscode.postMessage({ type: "command", command: "chat.send", payload: { prompt: answer, mode: "planning" } });
           return;
         }
         if (command === "approval.approve" || command === "approval.deny") {
@@ -439,6 +485,48 @@
         }
         if (command === "chat.restore") {
           vscode.postMessage({ type: "command", command });
+          return;
+        }
+        if (command === "activity.toggle") {
+          toggleActivity(button.dataset.activityId || "");
+          return;
+        }
+        if (command === "worklog.toggle") {
+          toggleWorklog(button.dataset.worklogId || "");
+          return;
+        }
+        if (command === "turnRun.toggle") {
+          toggleTurnRun(button.dataset.turnRunId || "");
+          return;
+        }
+        if (command === "diff.toggleFile") {
+          toggleDiffFile(button.dataset.diffId || "", Number(button.dataset.fileIndex || 0));
+          return;
+        }
+        if (command === "diff.toggleAll") {
+          toggleAllDiffFiles(button.dataset.diffId || "");
+          return;
+        }
+        if (command === "diff.openNative") {
+          vscode.postMessage({
+            type: "command",
+            command,
+            payload: {
+              diffId: button.dataset.diffId || "",
+              fileIndex: Number(button.dataset.fileIndex || 0)
+            }
+          });
+          return;
+        }
+        if (command === "markdown.openLink") {
+          const target = button.dataset.target || "";
+          if (target) {
+            vscode.postMessage({
+              type: "command",
+              command,
+              payload: { target }
+            });
+          }
           return;
         }
         if (command === "chat.header.toggle") {
@@ -544,6 +632,7 @@
   function composerFooter(snapshot) {
     return `
       <footer class="composer">
+        ${clarificationDock(snapshot)}
         <div class="composer-box">
           <textarea data-role="prompt-input" placeholder="Напишите задачу для Codex">${escapeHtml(getDraft(snapshot.chat.id))}</textarea>
           <div class="composer-actions${snapshot.chat.activeRunMode === "planning" ? " planning-active" : ""}">
@@ -564,6 +653,33 @@
           </div>
         </div>
       </footer>
+    `;
+  }
+
+  function clarificationDock(snapshot) {
+    const clarification = getActiveClarification(snapshot);
+    if (!clarification) {
+      return "";
+    }
+    const options = Array.isArray(clarification.options) ? clarification.options : [];
+    return `
+      <div class="clarification-dock" data-clarification-id="${escapeAttribute(clarification.id)}">
+        <section class="clarification-card" aria-label="Уточняющий вопрос Codex">
+          <div class="clarification-kicker">Уточняющий вопрос</div>
+          <div class="clarification-question">${escapeHtml(clarification.question)}</div>
+          ${options.length ? `
+            <div class="clarification-options">
+              ${options.map((option) => `
+                <button class="clarification-option" type="button" data-command="chat.clarification.answer" data-answer="${escapeAttribute(option.answer)}">
+                  <span class="clarification-option-title">${escapeHtml(option.title)}</span>
+                  ${option.description ? `<span class="clarification-option-description">${escapeHtml(option.description)}</span>` : ""}
+                </button>
+              `).join("")}
+            </div>
+          ` : ""}
+          <div class="clarification-hint">Выберите вариант или напишите свой ответ ниже.</div>
+        </section>
+      </div>
     `;
   }
 
@@ -1097,7 +1213,7 @@
   }
 
   function planningSelector(snapshot) {
-    const armed = isPlanningArmed(snapshot.chat.id);
+    const armed = isPlanningArmed(snapshot.chat.id) || Boolean(getActiveClarification(snapshot));
     const running = snapshot.chat.status === "running" && snapshot.chat.activeRunMode === "planning";
     const label = running ? "Планируется" : "План";
     return `
@@ -1368,34 +1484,351 @@
     return getTranscriptWindow().items || [];
   }
 
+  function getActiveClarification(snapshotOverride) {
+    const snapshot = snapshotOverride || state.snapshot;
+    if (!snapshot || !snapshot.chat || snapshot.chat.status !== "idle") {
+      return null;
+    }
+    if (snapshot.activeClarification) {
+      return parseClarificationItem(snapshot.activeClarification);
+    }
+    return activeClarificationFromItems(getTranscriptItems());
+  }
+
+  function activeClarificationFromItems(items) {
+    const source = Array.isArray(items) ? items : [];
+    for (let index = source.length - 1; index >= 0; index -= 1) {
+      const item = source[index];
+      if (!item) {
+        continue;
+      }
+      if (item.kind === "message" && item.role === "user") {
+        return null;
+      }
+      if (item.kind === "clarification") {
+        const parsed = parseClarificationItem(item);
+        return parsed && parsed.question ? parsed : null;
+      }
+    }
+    return null;
+  }
+
+  function parseClarificationItem(item) {
+    if (!item || item.kind !== "clarification" || !String(item.question || "").trim()) {
+      return null;
+    }
+    return {
+      id: item.id || "",
+      question: String(item.question || "").trim(),
+      options: normalizeClarificationOptions(item.options),
+      createdAt: item.createdAt || ""
+    };
+  }
+
+  function normalizeClarificationOptions(options) {
+    if (!Array.isArray(options)) {
+      return [];
+    }
+    return options.map((option) => {
+      const title = String(option && option.title || "").trim();
+      const answer = String(option && option.answer || title).trim();
+      const description = String(option && option.description || "").trim();
+      return title && answer ? { title, answer, description } : null;
+    }).filter(Boolean).slice(0, 5);
+  }
+
   function renderTranscriptWindow(windowState) {
     const window = normalizeTranscriptWindow(windowState);
+    const hasItems = Array.isArray(window.items) && window.items.length > 0;
     return `
       ${window.hasBefore ? `<div class="transcript-window-sentinel before" data-role="transcript-before">Загрузить предыдущие сообщения</div>` : ""}
-      ${renderTranscript(window.items)}
+      ${hasItems ? renderTranscript(window.items) : emptyTranscriptBlock(window)}
       ${window.hasAfter ? `<div class="transcript-window-sentinel after" data-role="transcript-after">Ниже есть новые сообщения</div>` : ""}
     `;
   }
 
+  function emptyTranscriptBlock(windowState) {
+    const chat = state.snapshot && state.snapshot.chat ? state.snapshot.chat : undefined;
+    if (!chat) {
+      return transcriptStateBlock({
+        tone: "empty",
+        icon: "info",
+        title: "Диалог не выбран",
+        message: "Выберите диалог в sidebar или создайте новый."
+      });
+    }
+    if ((windowState.totalCount || 0) > 0) {
+      return transcriptStateBlock({
+        tone: "empty",
+        icon: "info",
+        title: "Фрагмент истории не загружен",
+        message: "Перейдите в конец диалога или загрузите соседнюю часть истории."
+      });
+    }
+    if (chat.archivedAt) {
+      return transcriptStateBlock({
+        tone: "empty",
+        icon: "info",
+        title: "Диалог в архиве",
+        message: "В этом архивном диалоге пока нет сообщений."
+      });
+    }
+    return transcriptStateBlock({
+      tone: "empty",
+      icon: "info",
+      title: "Диалог пуст",
+      message: "Отправьте первое сообщение, чтобы начать."
+    });
+  }
+
   function renderTranscript(items) {
     const source = Array.isArray(items) ? items : [];
-    return source
-      .filter((item, index) => item && (item.kind !== "connection" || !source[index + 1] || source[index + 1].kind !== "connection"))
+    const activeClarification = getActiveClarification();
+    const visibleSource = source.filter((item, index) => {
+      if (!item) {
+        return false;
+      }
+      if (activeClarification && item.id === activeClarification.id) {
+        return false;
+      }
+      return item.kind !== "connection" || !source[index + 1] || source[index + 1].kind !== "connection";
+    });
+    return compactActivityItems(buildTranscriptPresentation(visibleSource))
       .map(transcriptItem)
       .filter(Boolean)
       .join("");
   }
 
+  function buildTranscriptPresentation(items) {
+    const source = Array.isArray(items) ? items : [];
+    const itemById = new Map();
+    const itemIndex = new Map();
+    const turnRunByTurnId = new Map();
+    source.forEach((item, index) => {
+      if (!item || !item.id) return;
+      itemById.set(item.id, item);
+      itemIndex.set(item.id, index);
+      if (item.kind === "turn-run" && item.turnId) {
+        turnRunByTurnId.set(item.turnId, item);
+      }
+    });
+
+    const output = [];
+    for (const item of source) {
+      if (!item) {
+        continue;
+      }
+      if (item.kind === "turn-run") {
+        output.push({
+          ...item,
+          __related: collectTurnRunRelatedItems(item, itemById, itemIndex)
+        });
+        continue;
+      }
+      const turnRun = item.turnId ? turnRunByTurnId.get(item.turnId) : undefined;
+      if (turnRun && isTurnRunOperationalItem(item)) {
+        if (item.kind === "activity" && item.activityKind === "turn") {
+          continue;
+        }
+        if (turnRun.status !== "running") {
+          continue;
+        }
+      }
+      output.push(item);
+    }
+    return output;
+  }
+
+  function collectTurnRunRelatedItems(turnRun, itemById, itemIndex) {
+    const ids = [
+      ...(Array.isArray(turnRun.activityIds) ? turnRun.activityIds : []),
+      ...(Array.isArray(turnRun.worklogIds) ? turnRun.worklogIds : []),
+      ...(Array.isArray(turnRun.compactionIds) ? turnRun.compactionIds : [])
+    ];
+    const seen = new Set();
+    return ids
+      .map((id) => itemById.get(id))
+      .filter((item) => {
+        if (!item || !item.id || seen.has(item.id)) return false;
+        seen.add(item.id);
+        return isTurnRunOperationalItem(item) && !(item.kind === "activity" && item.activityKind === "turn");
+      })
+      .sort((left, right) => (itemIndex.get(left.id) || 0) - (itemIndex.get(right.id) || 0));
+  }
+
+  function isTurnRunOperationalItem(item) {
+    return Boolean(item && (item.kind === "activity" || item.kind === "worklog" || item.kind === "compaction"));
+  }
+
+  function compactActivityItems(items) {
+    const output = [];
+    let buffer = [];
+
+    const flush = () => {
+      if (buffer.length === 1) {
+        output.push(buffer[0]);
+      } else if (buffer.length > 1) {
+        output.push(activityGroupItem(buffer));
+      }
+      buffer = [];
+    };
+
+    for (const item of items) {
+      if (canCompactActivity(item)) {
+        buffer.push(item);
+        continue;
+      }
+      flush();
+      output.push(item);
+    }
+    flush();
+    return output;
+  }
+
+  function canCompactActivity(item) {
+    if (!item || item.kind !== "activity" || isHiddenActivity(item)) {
+      return false;
+    }
+    return (
+      item.status === "completed"
+      && !item.outputPreview
+      && item.activityKind !== "turn"
+      && item.activityKind !== "reasoning"
+      && item.activityKind !== "unknown"
+    );
+  }
+
+  function activityGroupItem(items) {
+    const counts = Object.create(null);
+    for (const item of items) {
+      counts[item.activityKind] = (counts[item.activityKind] || 0) + 1;
+    }
+    const parts = [];
+    if (counts.file) parts.push(formatActivityCount("изменён", "изменено", counts.file, "файл", "файла", "файлов"));
+    if (counts.search) parts.push(formatActivityCount("изучен", "изучено", counts.search, "поиск", "поиска", "поисков"));
+    if (counts.command) parts.push(formatActivityCount("выполнена", "выполнено", counts.command, "команда", "команды", "команд"));
+    if (counts.tool) parts.push(formatActivityCount("выполнен", "выполнено", counts.tool, "инструмент", "инструмента", "инструментов"));
+    if (counts.context) parts.push("обработан контекст");
+    return {
+      kind: "activity",
+      id: `activity-group-${items[0].id}-${items[items.length - 1].id}`,
+      activityKind: counts.file ? "file" : counts.search ? "search" : counts.command ? "command" : "tool",
+      label: capitalize(parts.join(", ")),
+      status: "completed",
+      createdAt: items[0].createdAt,
+      updatedAt: items[items.length - 1].updatedAt,
+      completedAt: items[items.length - 1].completedAt || items[items.length - 1].updatedAt,
+      details: items.map(activityDetailFromItem).filter(Boolean)
+    };
+  }
+
+  function activityDetailFromItem(item) {
+    const details = Array.isArray(item.details) ? item.details.filter(Boolean) : [];
+    if (details.length) {
+      return {
+        ...details[0],
+        activityKind: details[0].activityKind || item.activityKind,
+        status: details[0].status || item.status,
+        label: details[0].label || normalizeActivityLabel(item)
+      };
+    }
+    return {
+      activityKind: item.activityKind,
+      status: item.status,
+      label: normalizeActivityLabel(item),
+      command: item.command || "",
+      path: item.path || "",
+      summary: item.summary || "",
+      outputPreview: item.outputPreview || ""
+    };
+  }
+
+  function formatActivityCount(oneVerb, manyVerb, count, one, few, many) {
+    const noun = pluralRu(count, one, few, many);
+    return `${count === 1 ? oneVerb : manyVerb} ${count} ${noun}`;
+  }
+
+  function pluralRu(count, one, few, many) {
+    const abs = Math.abs(count);
+    const mod10 = abs % 10;
+    const mod100 = abs % 100;
+    if (mod10 === 1 && mod100 !== 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+    return many;
+  }
+
+  function capitalize(value) {
+    return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+  }
+
   function transcriptItem(item) {
     const kind = item.kind || "message";
     if (kind === "message") return messageBlock(item);
+    if (kind === "turn-run") return turnRunBlock(item);
     if (kind === "activity") return activityBlock(item);
+    if (kind === "worklog") return worklogBlock(item);
     if (kind === "diff") return diffBlock(item);
     if (kind === "plan") return planBlock(item);
+    if (kind === "clarification") return "";
     if (kind === "compaction") return compactionBlock(item);
     if (kind === "connection") return connectionBlock(item);
     if (kind === "error") return errorBlock(item);
     return "";
+  }
+
+  function turnRunBlock(item) {
+    const status = item.status || "running";
+    const related = Array.isArray(item.__related) ? item.__related : [];
+    const expanded = isTurnRunExpanded(item.id);
+    const expandable = status !== "running" && related.length > 0;
+    const label = turnRunLabel(item);
+    const details = expandable && expanded ? turnRunDetailsHtml(related) : "";
+    return `
+      <article class="transcript-item turn-run-row ${escapeAttribute(status)} ${expandable ? "expandable" : ""} ${expanded ? "expanded" : ""}" data-item-id="${escapeAttribute(item.id)}">
+        <${expandable ? "button" : "div"} class="turn-run-line" ${expandable ? `type="button" data-command="turnRun.toggle" data-turn-run-id="${escapeAttribute(item.id)}" aria-expanded="${expanded ? "true" : "false"}"` : ""}>
+          ${activityIcon(status === "error" ? "unknown" : "turn")}
+          <span class="turn-run-label">${label}</span>
+          ${expandable ? `<span class="turn-run-chevron">${expanded ? angleDownIcon() : angleRightIcon()}</span>` : ""}
+        </${expandable ? "button" : "div"}>
+        ${details}
+      </article>
+    `;
+  }
+
+  function turnRunLabel(item) {
+    const status = item.status || "running";
+    if (status === "running") {
+      return `Работает уже <span class="turn-run-time" data-live-duration="activity-time" data-created-at="${escapeAttribute(item.createdAt || "")}">${escapeHtml(elapsedLabel(item.createdAt))}</span>`;
+    }
+    const duration = durationLabel(item.createdAt, item.completedAt || item.updatedAt, { hideZero: true });
+    if (status === "error") {
+      return `Завершено с ошибкой${duration ? ` <span class="turn-run-time">${escapeHtml(duration)}</span>` : ""}`;
+    }
+    return `Работал на протяжении${duration ? ` <span class="turn-run-time">${escapeHtml(duration)}</span>` : ""}`;
+  }
+
+  function turnRunDetailsHtml(related) {
+    const items = compactActivityItems(related)
+      .map((item) => transcriptItem(item))
+      .filter(Boolean)
+      .join("");
+    return items ? `<div class="turn-run-details">${items}</div>` : "";
+  }
+
+  function isTurnRunExpanded(turnRunId) {
+    return Boolean(turnRunId && state.expandedTurnRuns[turnRunId]);
+  }
+
+  function toggleTurnRun(turnRunId) {
+    if (!turnRunId) {
+      return;
+    }
+    if (state.expandedTurnRuns[turnRunId]) {
+      delete state.expandedTurnRuns[turnRunId];
+    } else {
+      state.expandedTurnRuns[turnRunId] = true;
+    }
+    render();
   }
 
   function messageBlock(item) {
@@ -1410,6 +1843,9 @@
         createdAt: item.createdAt,
         updatedAt: item.completedAt
       });
+    }
+    if (roleValue === "assistant" && containsClarificationMarker(text)) {
+      return "";
     }
     if (roleValue === "user") {
       return `
@@ -1427,9 +1863,12 @@
       `;
     }
     const duration = messageDurationHtml(item);
+    const meta = [
+      duration
+    ].filter(Boolean);
     return `
       <article class="transcript-item assistant-message ${item.status === "streaming" ? "streaming" : ""}" data-item-id="${escapeAttribute(item.id)}">
-        ${duration ? `<div class="assistant-meta">${duration}</div>` : ""}
+        ${meta.length ? `<div class="assistant-meta">${meta.join("")}</div>` : ""}
         <div class="markdown-body">${markdown(text || (item.status === "streaming" ? "Думаю" : ""))}</div>
       </article>
     `;
@@ -1441,21 +1880,174 @@
     }
     const label = activityLabelHtml(item);
     const elapsed = activityTimeHtml(item);
+    const expanded = isActivityExpanded(item.id);
+    const expandable = isActivityExpandable(item);
+    const outputPreview = !expanded ? activityOutputPreviewHtml(item) : "";
+    const details = expanded ? activityDetailsHtml(item) : "";
     return `
-      <article class="transcript-item activity-row ${escapeAttribute(item.status || "completed")}" data-item-id="${escapeAttribute(item.id)}">
-        <div class="activity-line">
+      <article class="transcript-item activity-row ${escapeAttribute(item.status || "completed")} ${expandable ? "expandable" : ""} ${expanded ? "expanded" : ""}" data-item-id="${escapeAttribute(item.id)}">
+        <${expandable ? "button" : "div"} class="activity-line" ${expandable ? `type="button" data-command="activity.toggle" data-activity-id="${escapeAttribute(item.id)}" aria-expanded="${expanded ? "true" : "false"}"` : ""}>
           ${activityIcon(item.activityKind)}
           <span class="activity-label">${label}</span>
           ${elapsed}
-        </div>
-        ${item.outputPreview ? `<pre class="activity-output">${escapeHtml(item.outputPreview)}</pre>` : ""}
+          ${expandable ? `<span class="activity-chevron">${expanded ? angleDownIcon() : angleRightIcon()}</span>` : ""}
+        </${expandable ? "button" : "div"}>
+        ${outputPreview}
+        ${details}
       </article>
     `;
   }
 
+  function worklogBlock(item) {
+    const children = visibleWorklogChildren(item);
+    const expanded = isWorklogExpanded(item.id);
+    const expandable = children.length > 0;
+    const elapsed = worklogTimeHtml(item);
+    return `
+      <article class="transcript-item worklog-row ${escapeAttribute(item.status || "completed")} ${expandable ? "expandable" : ""} ${expanded ? "expanded" : ""}" data-item-id="${escapeAttribute(item.id)}">
+        <${expandable ? "button" : "div"} class="worklog-line" ${expandable ? `type="button" data-command="worklog.toggle" data-worklog-id="${escapeAttribute(item.id)}" aria-expanded="${expanded ? "true" : "false"}"` : ""}>
+          ${activityIcon(item.operationKind)}
+          <span class="worklog-label">${escapeHtml(item.title || "Действие Codex")}</span>
+          ${elapsed}
+          ${expandable ? `<span class="worklog-chevron">${expanded ? angleDownIcon() : angleRightIcon()}</span>` : ""}
+        </${expandable ? "button" : "div"}>
+        ${expanded ? worklogChildrenHtml(item, children) : ""}
+      </article>
+    `;
+  }
+
+  function visibleWorklogChildren(item) {
+    const parentTitle = String(item.title || "").trim();
+    return (Array.isArray(item.children) ? item.children : [])
+      .filter((child) => {
+        if (!child) return false;
+        const title = String(child.title || "").trim();
+        if (!title) return false;
+        return !(
+          title === parentTitle
+          && !child.query
+          && !child.path
+          && !child.command
+          && !child.outputPreview
+          && typeof child.resultCount !== "number"
+        );
+      });
+  }
+
+  function worklogChildrenHtml(item, children) {
+    const visible = children.slice(0, 20);
+    const hiddenCount = Math.max(0, children.length - visible.length);
+    return `
+      <div class="worklog-children">
+        ${visible.map(worklogChildRowHtml).join("")}
+        ${hiddenCount ? `<div class="worklog-more">Еще ${escapeHtml(hiddenCount)} ${escapeHtml(pluralRu(hiddenCount, "деталь", "детали", "деталей"))}</div>` : ""}
+      </div>
+    `;
+  }
+
+  function worklogChildRowHtml(child) {
+    const durationHtml = child.status === "running"
+      ? `<span class="worklog-child-time" data-live-duration="activity-time" data-created-at="${escapeAttribute(child.createdAt || "")}">${escapeHtml(elapsedLabel(child.createdAt))}</span>`
+      : (() => {
+        const duration = durationLabel(child.createdAt, child.completedAt, { hideZero: true });
+        return duration ? `<span class="worklog-child-time">${escapeHtml(duration)}</span>` : "";
+      })();
+    const output = safeWorklogOutputPreview(child.outputPreview);
+    const details = worklogChildDetailsHtml(child, output);
+    const hasDetails = details.trim().length > 0;
+    const status = worklogStatusIcon(child.status);
+    return `
+      <div class="worklog-child ${escapeAttribute(child.kind || "tool")} ${escapeAttribute(child.status || "completed")}">
+        <div class="worklog-child-line">
+          ${activityIcon(child.kind || "tool")}
+          <span class="worklog-child-title">${escapeHtml(child.title || "Действие")}</span>
+          ${durationHtml}
+          <span class="worklog-child-status">${status}</span>
+        </div>
+        ${hasDetails ? details : ""}
+      </div>
+    `;
+  }
+
+  function worklogChildDetailsHtml(child, output) {
+    if (child.kind === "command") {
+      return `
+        <div class="worklog-shell-card">
+          <div class="worklog-shell-kicker">Shell</div>
+          <pre class="worklog-shell-output">${escapeHtml(child.command ? `$ ${child.command}` : "$ команда")}${output ? `\n\n${escapeHtml(output)}` : "\n\nНет вывода"}</pre>
+          <div class="worklog-shell-status">${child.status === "error" ? "Ошибка" : "✓ Успех"}</div>
+        </div>
+      `;
+    }
+    const rows = [
+      child.query ? ["Запрос", child.query] : null,
+      child.path ? ["Область", child.path] : null,
+      child.source ? ["Источник", worklogSourceLabel(child.source)] : null,
+      typeof child.resultCount === "number" ? ["Результатов", String(child.resultCount)] : null
+    ].filter(Boolean);
+    return `
+      <div class="worklog-child-details">
+        ${rows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><code>${escapeHtml(value)}</code></div>`).join("")}
+        ${output ? `<pre class="worklog-child-output">${escapeHtml(output)}</pre>` : ""}
+      </div>
+    `;
+  }
+
+  function worklogTimeHtml(item) {
+    if (item.status === "running") {
+      return `<span class="worklog-time" data-live-duration="activity-time" data-created-at="${escapeAttribute(item.createdAt || "")}">${escapeHtml(elapsedLabel(item.createdAt))}</span>`;
+    }
+    const duration = durationLabel(item.createdAt, item.completedAt || item.updatedAt, { hideZero: true });
+    return duration ? `<span class="worklog-time">${escapeHtml(duration)}</span>` : "";
+  }
+
+  function isWorklogExpanded(worklogId) {
+    return Boolean(worklogId && state.expandedWorklogs[worklogId]);
+  }
+
+  function toggleWorklog(worklogId) {
+    if (!worklogId) {
+      return;
+    }
+    if (state.expandedWorklogs[worklogId]) {
+      delete state.expandedWorklogs[worklogId];
+    } else {
+      state.expandedWorklogs[worklogId] = true;
+    }
+    render();
+  }
+
+  function worklogStatusIcon(status) {
+    if (status === "error") {
+      return "Ошибка";
+    }
+    if (status === "running") {
+      return "…";
+    }
+    return "✓";
+  }
+
+  function worklogSourceLabel(source) {
+    if (source === "docs") return "документация 1C: Element";
+    if (source === "project") return "проект";
+    if (source === "web") return "web";
+    if (source === "shell") return "shell";
+    if (source === "ide") return "IDE";
+    return "runtime";
+  }
+
+  function safeWorklogOutputPreview(value) {
+    const preview = String(value || "").trim();
+    if (!preview || looksLikeMojibake(preview)) {
+      return "";
+    }
+    return preview.length > 2000 ? `${preview.slice(0, 2000)}\n...` : preview;
+  }
+
   function diffBlock(item) {
     const files = Array.isArray(item.files) ? item.files : [];
-    const hasDiff = files.some((file) => file.diff);
+    const hasDiff = files.some((file) => hasRenderableDiff(file.diff));
+    const allExpanded = hasDiff && files.every((file, index) => !hasRenderableDiff(file.diff) || isDiffFileExpanded(item.id, file, index));
     return `
       <article class="transcript-item diff-card" data-item-id="${escapeAttribute(item.id)}">
         <div class="diff-header">
@@ -1465,41 +2057,159 @@
             <span class="diff-add">+${escapeHtml(item.additions ?? 0)}</span>
             <span class="diff-del">-${escapeHtml(item.deletions ?? 0)}</span>
           </div>
-          <button class="diff-review-button" type="button" disabled>Просмотреть изменения</button>
+          <button class="diff-review-button" type="button" data-command="diff.toggleAll" data-diff-id="${escapeAttribute(item.id)}" ${hasDiff ? "" : "disabled"}>
+            ${hasDiff ? escapeHtml(allExpanded ? "Свернуть изменения" : "Просмотреть изменения") : "Diff недоступен"}
+          </button>
         </div>
-        <div class="diff-file-list">
-          ${files.map((file, index) => diffFileRow(file, hasDiff && index === 0)).join("")}
-        </div>
+        ${files.length ? `
+          <div class="diff-file-list">
+            ${files.map((file, index) => diffFileRow(item.id, file, index)).join("")}
+          </div>
+        ` : inlineStateBlock({ tone: "empty", icon: "info", message: "Изменения пока не получены." })}
       </article>
     `;
   }
 
-  function diffFileRow(file, expanded) {
-    const diff = file.diff ? renderDiff(file.diff) : "";
+  function diffFileRow(diffId, file, index) {
+    const expanded = isDiffFileExpanded(diffId, file, index);
+    const rawDiff = String(file.diff || "");
+    const hasDiff = hasRenderableDiff(rawDiff);
+    const tooLarge = rawDiff.length > 50000;
+    const diff = hasDiff && !tooLarge ? renderDiff(rawDiff, file.path) : "";
+    const disabled = !hasDiff;
+    const status = diffFileStatusLabel(file.status);
     return `
       <section class="diff-file ${expanded ? "expanded" : ""}">
         <div class="diff-file-header">
-          <code>${escapeHtml(file.path || "unknown")}</code>
+          <button class="diff-file-toggle" type="button" data-command="diff.toggleFile" data-diff-id="${escapeAttribute(diffId)}" data-file-index="${index}" ${disabled ? "disabled" : ""} aria-label="${expanded ? "Свернуть diff" : "Раскрыть diff"}">
+            <span class="diff-file-chevron">${expanded ? angleDownIcon() : angleRightIcon()}</span>
+            <code>${escapeHtml(file.path || "unknown")}</code>
+          </button>
+          <span class="diff-file-status">${escapeHtml(status)}</span>
           <span class="diff-add">+${escapeHtml(file.additions ?? 0)}</span>
           <span class="diff-del">-${escapeHtml(file.deletions ?? 0)}</span>
+          <button class="diff-open-button" type="button" data-command="diff.openNative" data-diff-id="${escapeAttribute(diffId)}" data-file-index="${index}" ${hasDiff ? "" : "disabled"} title="${hasDiff ? "Открыть side-by-side diff в редакторе" : "Diff недоступен"}">
+            Открыть в редакторе
+          </button>
         </div>
+        ${expanded && tooLarge ? inlineStateBlock({ tone: "warning", icon: "warning", message: "Слишком большой diff, откройте его в редакторе." }) : ""}
         ${expanded && diff ? `<pre class="diff-code">${diff}</pre>` : ""}
+        ${expanded && !hasDiff ? inlineStateBlock({ tone: "empty", icon: "info", message: "Diff недоступен." }) : ""}
       </section>
     `;
   }
 
+  function diffFileStatusLabel(status) {
+    if (status === "added") {
+      return "создан";
+    }
+    if (status === "deleted") {
+      return "удален";
+    }
+    if (status === "renamed") {
+      return "переименован";
+    }
+    if (status === "unknown") {
+      return "изменение";
+    }
+    return "изменен";
+  }
+
+  function hasRenderableDiff(diff) {
+    return String(diff || "")
+      .split("\n")
+      .some((line) => (
+        line.startsWith("@@")
+        || (line.startsWith("+") && !line.startsWith("+++"))
+        || (line.startsWith("-") && !line.startsWith("---"))
+      ));
+  }
+
+  function toggleDiffFile(diffId, fileIndex) {
+    const item = getDiffItem(diffId);
+    if (!item || !Array.isArray(item.files) || !item.files[fileIndex] || !item.files[fileIndex].diff) {
+      return;
+    }
+    const file = item.files[fileIndex];
+    const key = diffFileStateKey(diffId, file, fileIndex);
+    state.expandedDiffFiles[key] = !isDiffFileExpanded(diffId, file, fileIndex);
+    render();
+  }
+
+  function toggleAllDiffFiles(diffId) {
+    const item = getDiffItem(diffId);
+    if (!item || !Array.isArray(item.files) || !item.files.some((file) => file.diff)) {
+      return;
+    }
+    const shouldExpand = !item.files.every((file, index) => !file.diff || isDiffFileExpanded(diffId, file, index));
+    item.files.forEach((file, index) => {
+      if (file.diff) {
+        state.expandedDiffFiles[diffFileStateKey(diffId, file, index)] = shouldExpand;
+      }
+    });
+    render();
+  }
+
+  function getDiffItem(diffId) {
+    return getTranscriptItems().find((item) => item && item.kind === "diff" && item.id === diffId);
+  }
+
+  function isDiffFileExpanded(diffId, file, index) {
+    const key = diffFileStateKey(diffId, file, index);
+    if (Object.prototype.hasOwnProperty.call(state.expandedDiffFiles, key)) {
+      return Boolean(state.expandedDiffFiles[key]);
+    }
+    return isDefaultExpandedDiffFile(diffId, index);
+  }
+
+  function isDefaultExpandedDiffFile(diffId, index) {
+    const item = getDiffItem(diffId);
+    if (!item || !Array.isArray(item.files) || diffHasExplicitState(diffId)) {
+      return false;
+    }
+    return item.files.findIndex((file) => Boolean(file.diff)) === index;
+  }
+
+  function diffHasExplicitState(diffId) {
+    const prefix = `${diffId}:`;
+    return Object.keys(state.expandedDiffFiles).some((key) => key.startsWith(prefix));
+  }
+
+  function diffFileStateKey(diffId, file, index) {
+    return `${diffId}:${file.path || index}`;
+  }
+
   function planBlock(item) {
+    const chat = state.snapshot && state.snapshot.chat ? state.snapshot.chat : {};
+    const canAct = !chat.archivedAt && chat.status === "idle";
+    const disabledAttrs = canAct ? "" : ` disabled title="${escapeAttribute(chat.archivedAt ? "Диалог в архиве" : "Дождитесь завершения текущего запроса")}"`;
     return `
       <article class="transcript-item plan-message" data-item-id="${escapeAttribute(item.id)}">
-        <div class="plan-card">
-          <div class="plan-kicker">План</div>
+        <div class="plan-card" role="region" aria-label="Финальный план Codex">
+          <div class="plan-header">
+            <div class="plan-heading">
+              ${planIcon()}
+              <div>
+                <div class="plan-kicker">Финальный план</div>
+                <div class="plan-title">Готов к реализации</div>
+              </div>
+            </div>
+          </div>
           <div class="plan-text markdown-body">${markdown(item.markdown || "")}</div>
           <div class="plan-actions">
-            <button class="button secondary" data-command="chat.plan.revise" data-plan-id="${escapeAttribute(item.id)}">Изменить</button>
-            <button class="button" data-command="chat.plan.implement" data-plan-id="${escapeAttribute(item.id)}">Реализовать</button>
+            <button class="button secondary plan-secondary" data-command="chat.plan.revise" data-plan-id="${escapeAttribute(item.id)}"${disabledAttrs}>Изменить план</button>
+            <button class="button plan-primary" data-command="chat.plan.implement" data-plan-id="${escapeAttribute(item.id)}"${disabledAttrs}>Реализовать</button>
           </div>
         </div>
       </article>
+    `;
+  }
+
+  function planIcon() {
+    return `
+      <svg class="plan-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M7 3h10a3 3 0 0 1 3 3v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3Zm0 2a1 1 0 0 0-1 1v13h12V6a1 1 0 0 0-1-1H7Zm2 4h6v2H9V9Zm0 4h6v2H9v-2Zm0 4h4v2H9v-2Z"/>
+      </svg>
     `;
   }
 
@@ -1515,20 +2225,94 @@
 
   function connectionBlock(item) {
     const message = item.message || connectionStatusLabel(item);
+    const status = item.status || "reconnecting";
+    const title = status === "failed"
+      ? "Соединение не восстановлено"
+      : status === "recovered"
+        ? "Соединение восстановлено"
+        : "Восстановление соединения";
+    return transcriptStateBlock({
+      id: item.id,
+      tone: `connection ${status}`,
+      icon: status === "failed" ? "error" : status === "recovered" ? "success" : "sync",
+      title,
+      message
+    });
+  }
+
+  function errorBlock(item) {
+    return transcriptStateBlock({
+      id: item.id,
+      tone: "error",
+      icon: "error",
+      title: "Ошибка выполнения",
+      messageHtml: markdown(item.message || "Codex сообщил об ошибке."),
+      details: item.details
+    });
+  }
+
+  function transcriptStateBlock(options) {
+    const id = options.id ? ` data-item-id="${escapeAttribute(options.id)}"` : "";
+    const message = options.messageHtml || escapeHtml(options.message || "");
     return `
-      <article class="transcript-item connection-row ${escapeAttribute(item.status || "reconnecting")}" data-item-id="${escapeAttribute(item.id)}">
-        ${escapeHtml(message)}
+      <article class="transcript-item transcript-state ${escapeAttribute(options.tone || "info")}"${id}>
+        <div class="transcript-state-icon">${transcriptStateIcon(options.icon || "info")}</div>
+        <div class="transcript-state-content">
+          <div class="transcript-state-title">${escapeHtml(options.title || "Состояние")}</div>
+          ${message ? `<div class="transcript-state-message markdown-body">${message}</div>` : ""}
+          ${options.details ? `
+            <details class="transcript-state-details">
+              <summary>Подробности</summary>
+              <pre>${escapeHtml(options.details)}</pre>
+            </details>
+          ` : ""}
+        </div>
       </article>
     `;
   }
 
-  function errorBlock(item) {
+  function inlineStateBlock(options) {
     return `
-      <article class="transcript-item error-block" data-item-id="${escapeAttribute(item.id)}">
-        <div class="error-title">Ошибка</div>
-        <div class="markdown-body">${markdown(item.message || "Codex сообщил об ошибке.")}</div>
-        ${item.details ? `<pre class="error-details">${escapeHtml(item.details)}</pre>` : ""}
-      </article>
+      <div class="inline-state ${escapeAttribute(options.tone || "empty")}">
+        <span class="inline-state-icon">${transcriptStateIcon(options.icon || "info")}</span>
+        <span>${escapeHtml(options.message || "")}</span>
+      </div>
+    `;
+  }
+
+  function transcriptStateIcon(kind) {
+    if (kind === "error") {
+      return `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 14.75a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5Zm1-2.75h-2V6h2v8Z"/>
+        </svg>
+      `;
+    }
+    if (kind === "success") {
+      return `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-1.2 14.6-4-4 1.4-1.4 2.6 2.58 5-5 1.4 1.42-6.4 6.4Z"/>
+        </svg>
+      `;
+    }
+    if (kind === "sync") {
+      return `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="currentColor" d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 0 0-7.75 6h2.1A6 6 0 0 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h8V3l-3.35 3.35ZM6.35 17.65A7.95 7.95 0 0 0 12 20a8 8 0 0 0 7.75-6h-2.1A6 6 0 0 1 12 18a5.96 5.96 0 0 1-4.22-1.78L11 13H3v8l3.35-3.35Z"/>
+        </svg>
+      `;
+    }
+    if (kind === "warning") {
+      return `
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="currentColor" d="M1 21h22L12 2 1 21Zm12-3h-2v-2h2v2Zm0-4h-2v-4h2v4Z"/>
+        </svg>
+      `;
+    }
+    return `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M11 17h2v-6h-2v6Zm1-14a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 16a7 7 0 1 1 0-14 7 7 0 0 1 0 14Zm-1-10h2V7h-2v2Z"/>
+      </svg>
     `;
   }
 
@@ -1567,6 +2351,133 @@
     return "Действие";
   }
 
+  function tryPatchStreamingTranscript(snapshot) {
+    const body = root.querySelector("[data-role='transcript']");
+    if (!body) {
+      return false;
+    }
+
+    const items = getTranscriptItems();
+    let patched = false;
+    const wasAtTail = isAtTranscriptTail(body);
+    for (const item of items) {
+      if (!item || item.kind !== "message" || item.role !== "assistant" || item.status !== "streaming") {
+        continue;
+      }
+      if (extractPlan(item.text) || containsClarificationMarker(item.text)) {
+        return false;
+      }
+      const node = transcriptItemNode(item.id);
+      const markdownNode = node ? node.querySelector(".markdown-body") : null;
+      if (!markdownNode) {
+        return false;
+      }
+      const nextHtml = markdown(String(item.text || "Думаю"));
+      if (markdownNode.innerHTML !== nextHtml) {
+        markdownNode.innerHTML = nextHtml;
+        patched = true;
+      }
+    }
+
+    if (!patched) {
+      return false;
+    }
+
+    if (state.stickToBottom || wasAtTail) {
+      const end = root.querySelector("[data-role='transcript-end']");
+      requestAnimationFrame(() => scrollTranscriptToBottom(body, end));
+    } else {
+      updateScrollToBottomButton(body);
+      notifyReadToBottomIfNeeded(body, snapshot);
+    }
+    return true;
+  }
+
+  function transcriptItemNode(itemId) {
+    if (!itemId) {
+      return null;
+    }
+    return Array.from(root.querySelectorAll("[data-item-id]")).find((node) => node.dataset.itemId === itemId) || null;
+  }
+
+  function chatChromeSignature(snapshot) {
+    const chat = snapshot.chat || {};
+    const pendingApproval = chat.pendingApproval || {};
+    const contextWindow = snapshot.contextWindow || {};
+    return [
+      chat.id || "",
+      chat.title || "",
+      chat.kind || "",
+      chat.status || "",
+      chat.activeRunMode || "",
+      chat.accessMode || "",
+      chat.modelId || "",
+      chat.modelLabel || "",
+      chat.effort || "",
+      chat.speed || "",
+      chat.rulesEnabled ? "rules-on" : "rules-off",
+      chat.archivedAt || "",
+      pendingApproval.id || "",
+      snapshot.chatHeaderMode || "",
+      snapshot.modelOptionsStatus || "",
+      contextWindow.status || "",
+      contextWindow.usedTokens ?? "",
+      contextWindow.maxTokens ?? "",
+      contextWindow.usedPercent ?? ""
+    ].join("|");
+  }
+
+  function transcriptStructureSignature(snapshot) {
+    const window = getTranscriptWindow();
+    return [
+      window.offset,
+      window.totalCount,
+      window.hasBefore ? "before" : "",
+      window.hasAfter ? "after" : "",
+      ...getTranscriptItems().map((item) => {
+        const kind = item.kind || "message";
+        if (kind === "message") {
+          const role = item.role || "";
+          const textShape = role === "assistant" && item.status === "streaming"
+            ? "streaming"
+            : String(item.text || "").length;
+          return `${item.id}:message:${role}:${item.status || ""}:${textShape}:${item.completedAt || ""}`;
+        }
+        if (kind === "activity") {
+          return `${item.id}:activity:${item.activityKind}:${item.status}:${item.label}:${String(item.outputPreview || "").length}:${item.updatedAt || ""}`;
+        }
+        if (kind === "turn-run") {
+          return `${item.id}:turn-run:${item.status || ""}:${item.updatedAt || ""}:${item.completedAt || ""}:${(item.activityIds || []).join(",")}:${(item.worklogIds || []).join(",")}:${(item.compactionIds || []).join(",")}`;
+        }
+        if (kind === "worklog") {
+          const children = Array.isArray(item.children) ? item.children : [];
+          return `${item.id}:worklog:${item.operationKind}:${item.status}:${item.title}:${children.length}:${item.updatedAt || ""}:${children.map((child) => `${child.id}:${child.status}:${child.title}:${String(child.outputPreview || "").length}:${child.completedAt || ""}`).join(",")}`;
+        }
+        if (kind === "diff") {
+          const files = Array.isArray(item.files) ? item.files : [];
+          return `${item.id}:diff:${files.length}:${item.additions}:${item.deletions}:${item.updatedAt || ""}:${files.map((file) => `${file.path}:${file.additions}:${file.deletions}:${String(file.diff || "").length}`).join(",")}`;
+        }
+        if (kind === "plan") {
+          return `${item.id}:plan:${String(item.markdown || "").length}:${item.updatedAt || ""}`;
+        }
+        if (kind === "clarification") {
+          const options = Array.isArray(item.options) ? item.options : [];
+          return `${item.id}:clarification:${String(item.question || "").length}:${options.length}:${item.updatedAt || ""}`;
+        }
+        if (kind === "compaction") {
+          return `${item.id}:compaction:${item.label || ""}`;
+        }
+        if (kind === "connection") {
+          return `${item.id}:connection:${item.message || ""}:${item.status || ""}:${item.attempt || ""}`;
+        }
+        if (kind === "error") {
+          return `${item.id}:error:${item.message || ""}:${item.details || ""}`;
+        }
+        return `${item.id}:${kind}`;
+      })
+    ].join("|");
+  }
+
   function transcriptSignature(snapshot) {
     const window = getTranscriptWindow();
     return [
@@ -1582,12 +2493,23 @@
         if (kind === "activity") {
           return `${item.id}:activity:${item.activityKind}:${item.status}:${item.label}:${String(item.outputPreview || "").length}:${item.updatedAt || ""}`;
         }
+        if (kind === "turn-run") {
+          return `${item.id}:turn-run:${item.status || ""}:${item.updatedAt || ""}:${item.completedAt || ""}:${(item.activityIds || []).join(",")}:${(item.worklogIds || []).join(",")}:${(item.compactionIds || []).join(",")}`;
+        }
+        if (kind === "worklog") {
+          const children = Array.isArray(item.children) ? item.children : [];
+          return `${item.id}:worklog:${item.operationKind}:${item.status}:${item.title}:${children.length}:${item.updatedAt || ""}:${children.map((child) => `${child.id}:${child.status}:${child.title}:${String(child.outputPreview || "").length}:${child.completedAt || ""}`).join(",")}`;
+        }
         if (kind === "diff") {
           const files = Array.isArray(item.files) ? item.files : [];
           return `${item.id}:diff:${files.length}:${item.additions}:${item.deletions}:${item.updatedAt || ""}:${files.map((file) => `${file.path}:${file.additions}:${file.deletions}:${String(file.diff || "").length}`).join(",")}`;
         }
         if (kind === "plan") {
           return `${item.id}:plan:${String(item.markdown || "").length}:${item.updatedAt || ""}`;
+        }
+        if (kind === "clarification") {
+          const options = Array.isArray(item.options) ? item.options : [];
+          return `${item.id}:clarification:${String(item.question || "").length}:${options.length}:${item.updatedAt || ""}`;
         }
         if (kind === "compaction") {
           return `${item.id}:compaction:${item.label || ""}`;
@@ -1812,6 +2734,157 @@
     return { plan: partial || "Codex готовит план..." };
   }
 
+  function containsClarificationMarker(text) {
+    return /<codex_clarification>/i.test(String(text || ""));
+  }
+
+  function normalizeCodeLanguage(language) {
+    const value = String(language || "").trim().toLowerCase();
+    if (!value) return "";
+    if (["yml", "yaml"].includes(value)) return "yaml";
+    if (["json", "jsonc"].includes(value)) return "json";
+    if (["ts", "tsx", "js", "jsx", "javascript", "typescript"].includes(value)) return value.startsWith("ts") || value === "typescript" ? "typescript" : "javascript";
+    if (["sh", "bash", "shell", "zsh"].includes(value)) return "shell";
+    if (["ps1", "powershell", "pwsh"].includes(value)) return "powershell";
+    if (["xbsl", "bsl", "1c", "1c-element", "element"].includes(value)) return "xbsl";
+    if (["diff", "patch"].includes(value)) return "diff";
+    return value.replace(/[^a-z0-9_-]/g, "");
+  }
+
+  function languageFromPath(path) {
+    const value = String(path || "").toLowerCase();
+    if (value.endsWith(".yaml") || value.endsWith(".yml")) return "yaml";
+    if (value.endsWith(".json") || value.endsWith(".jsonc")) return "json";
+    if (value.endsWith(".ts") || value.endsWith(".tsx")) return "typescript";
+    if (value.endsWith(".js") || value.endsWith(".jsx")) return "javascript";
+    if (value.endsWith(".ps1")) return "powershell";
+    if (value.endsWith(".sh") || value.endsWith(".bash") || value.endsWith(".zsh")) return "shell";
+    if (value.endsWith(".xbsl") || value.endsWith(".bsl")) return "xbsl";
+    return "";
+  }
+
+  function wordPattern(words) {
+    return `(^|[^\\p{L}\\p{N}_])(${words.join("|")})(?=$|[^\\p{L}\\p{N}_])`;
+  }
+
+  function highlightRules(language) {
+    const lang = normalizeCodeLanguage(language);
+    const xbslControls = ["абстрактный", "импорт", "иначе\\s+если", "если", "иначе", "пока", "для", "по", "из", "до", "вниз", "шаг", "попытка", "поймать", "вконце", "прервать", "продолжить", "выбросить", "возврат", "не", "и", "или", "как", "это", "этот", "когда", "выбор", "новый"];
+    const xbslDeclarations = ["метод", "структура", "перечисление", "контракт", "исключение"];
+    const xbslModifiers = ["пер", "знч", "обз", "исп", "конст", "статический"];
+    if (lang === "xbsl") {
+      return [
+        { className: "comment", regex: /\/\/.*$/gu },
+        { className: "string", regex: /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/gu },
+        { className: "annotation", regex: /@[A-ZА-ЯЁa-zа-яё_][A-ZА-ЯЁa-zа-яё0-9_]*/gu },
+        { className: "function", regex: new RegExp(wordPattern(["метод"]) + "\\s+([\\p{L}_][\\p{L}\\p{N}_]*)", "giu"), group: 3 },
+        { className: "type", regex: new RegExp(wordPattern(["структура", "перечисление", "контракт", "исключение"]) + "\\s+([\\p{L}_][\\p{L}\\p{N}_]*)", "giu"), group: 3 },
+        { className: "keyword", regex: new RegExp(wordPattern(xbslControls), "giu"), group: 2 },
+        { className: "declaration", regex: new RegExp(wordPattern(xbslDeclarations), "giu"), group: 2 },
+        { className: "modifier", regex: new RegExp(wordPattern(xbslModifiers), "giu"), group: 2 },
+        { className: "constant", regex: new RegExp(wordPattern(["Истина", "Ложь", "Неопределено", "ничто", "неизвестно", "никогда", "Авто"]), "gu"), group: 2 },
+        { className: "number", regex: /\b\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?\b/gu },
+        { className: "type", regex: /(:\s*)([A-ZА-ЯЁa-zа-яё_][A-ZА-ЯЁa-zа-яё0-9_]*(?:(?:::|\.)[A-ZА-ЯЁa-zа-яё_][A-ZА-ЯЁa-zа-яё0-9_]*)*)/gu, group: 2 },
+        { className: "function", regex: /([A-ZА-ЯЁa-zа-яё_][A-ZА-ЯЁa-zа-яё0-9_]*)(?=\s*\()/gu }
+      ];
+    }
+    if (lang === "yaml") {
+      return [
+        { className: "comment", regex: /#.*$/gu },
+        { className: "string", regex: /"(?:\\.|[^"\\])*"|'(?:''|[^'])*'/gu },
+        { className: "property", regex: /^(\s*-?\s*)([A-ZА-ЯЁa-zа-яё0-9_.-]+)(?=\s*:)/gu, group: 2 },
+        { className: "constant", regex: /\b(true|false|null|yes|no|on|off)\b/giu },
+        { className: "number", regex: /(^|[^\w.-])(-?\d+(?:\.\d+)?)(?=$|[^\w.-])/gu, group: 2 }
+      ];
+    }
+    if (lang === "json") {
+      return [
+        { className: "property", regex: /"(?:\\.|[^"\\])*"(?=\s*:)/gu },
+        { className: "string", regex: /"(?:\\.|[^"\\])*"/gu },
+        { className: "constant", regex: /\b(true|false|null)\b/gu },
+        { className: "number", regex: /-?\b\d+(?:\.\d+)?(?:e[+-]?\d+)?\b/giu }
+      ];
+    }
+    if (lang === "typescript" || lang === "javascript") {
+      return [
+        { className: "comment", regex: /\/\/.*$/gu },
+        { className: "string", regex: /`(?:\\.|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/gu },
+        { className: "keyword", regex: /\b(async|await|break|case|catch|class|const|continue|default|delete|do|else|export|extends|finally|for|from|function|if|import|in|instanceof|interface|let|new|private|protected|public|return|static|switch|throw|try|type|typeof|var|void|while|yield)\b/gu },
+        { className: "constant", regex: /\b(true|false|null|undefined)\b/gu },
+        { className: "number", regex: /\b\d+(?:\.\d+)?\b/gu },
+        { className: "function", regex: /([A-Za-z_$][\w$]*)(?=\s*\()/gu }
+      ];
+    }
+    if (lang === "shell" || lang === "powershell") {
+      return [
+        { className: "comment", regex: /#.*$/gu },
+        { className: "string", regex: /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/gu },
+        { className: "variable", regex: /\$[A-Za-z_][\w-]*/gu },
+        { className: "keyword", regex: /\b(if|then|else|fi|for|do|done|while|function|param|process|begin|end)\b/giu },
+        { className: "property", regex: /(^|\s)(--?[A-Za-z][\w-]*)(?=$|\s|=)/gu, group: 2 },
+        { className: "number", regex: /\b\d+(?:\.\d+)?\b/gu }
+      ];
+    }
+    return [];
+  }
+
+  function collectHighlightRanges(line, rules) {
+    const ranges = [];
+    for (const rule of rules) {
+      const flags = rule.regex.flags.includes("g") ? rule.regex.flags : `${rule.regex.flags}g`;
+      const regex = new RegExp(rule.regex.source, flags);
+      let match;
+      while ((match = regex.exec(line))) {
+        const group = rule.group || 0;
+        const text = match[group] || "";
+        if (!text) {
+          if (regex.lastIndex === match.index) regex.lastIndex += 1;
+          continue;
+        }
+        const start = match.index + String(match[0]).indexOf(text);
+        const end = start + text.length;
+        const overlaps = ranges.some((range) => start < range.end && end > range.start);
+        if (!overlaps) {
+          ranges.push({ start, end, className: rule.className });
+        }
+        if (regex.lastIndex === match.index) regex.lastIndex += 1;
+      }
+    }
+    return ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+  }
+
+  function highlightCodeLine(line, language) {
+    const rules = highlightRules(language);
+    if (!rules.length || !line) {
+      return escapeHtml(line);
+    }
+    const ranges = collectHighlightRanges(line, rules);
+    if (!ranges.length) {
+      return escapeHtml(line);
+    }
+    let cursor = 0;
+    let html = "";
+    for (const range of ranges) {
+      if (range.start < cursor) continue;
+      html += escapeHtml(line.slice(cursor, range.start));
+      html += `<span class="syntax-token token-${range.className}">${escapeHtml(line.slice(range.start, range.end))}</span>`;
+      cursor = range.end;
+    }
+    html += escapeHtml(line.slice(cursor));
+    return html;
+  }
+
+  function highlightCode(value, language) {
+    const lang = normalizeCodeLanguage(language);
+    if (lang === "diff") {
+      return renderDiff(value);
+    }
+    return String(value || "")
+      .split("\n")
+      .map((line) => highlightCodeLine(line, lang))
+      .join("\n");
+  }
+
   function markdown(value) {
     const text = String(value || "");
     if (!text.trim()) {
@@ -1823,6 +2896,8 @@
     let list = [];
     let inCode = false;
     let codeLines = [];
+    let codeLanguage = "";
+    let table = [];
 
     const flushParagraph = () => {
       if (!paragraph.length) return;
@@ -1834,9 +2909,22 @@
       html.push(`<ul>${list.map((item) => `<li>${markdownInline(item)}</li>`).join("")}</ul>`);
       list = [];
     };
+    const flushTable = () => {
+      if (!table.length) return;
+      const rendered = renderMarkdownTable(table);
+      if (rendered) {
+        html.push(rendered);
+      } else {
+        html.push(...table.map((row) => `<p>${markdownInline(row.trim())}</p>`));
+      }
+      table = [];
+    };
     const flushCode = () => {
-      html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      const lang = normalizeCodeLanguage(codeLanguage);
+      const languageClass = lang ? ` language-${escapeAttribute(lang)}` : "";
+      html.push(`<pre class="code-block${languageClass}"><code>${highlightCode(codeLines.join("\n"), lang)}</code></pre>`);
       codeLines = [];
+      codeLanguage = "";
     };
 
     for (const line of lines) {
@@ -1847,7 +2935,9 @@
         } else {
           flushParagraph();
           flushList();
+          flushTable();
           inCode = true;
+          codeLanguage = line.trim().slice(3).trim().split(/\s+/)[0] || "";
         }
         continue;
       }
@@ -1858,8 +2948,16 @@
       if (!line.trim()) {
         flushParagraph();
         flushList();
+        flushTable();
         continue;
       }
+      if (isPotentialMarkdownTableLine(line)) {
+        flushParagraph();
+        flushList();
+        table.push(line);
+        continue;
+      }
+      flushTable();
       const heading = line.match(/^(#{1,4})\s+(.+)$/);
       if (heading) {
         flushParagraph();
@@ -1885,22 +2983,125 @@
     if (inCode) flushCode();
     flushParagraph();
     flushList();
+    flushTable();
     return html.join("");
   }
 
+  function isPotentialMarkdownTableLine(line) {
+    const value = String(line || "").trim();
+    return value.includes("|") && !value.startsWith("```");
+  }
+
+  function splitMarkdownTableRow(line) {
+    let value = String(line || "").trim();
+    if (value.startsWith("|")) value = value.slice(1);
+    if (value.endsWith("|")) value = value.slice(0, -1);
+    const cells = [];
+    let cell = "";
+    let escaped = false;
+    for (const char of value) {
+      if (escaped) {
+        cell += char;
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        cell += char;
+        escaped = true;
+        continue;
+      }
+      if (char === "|") {
+        cells.push(cell.trim());
+        cell = "";
+        continue;
+      }
+      cell += char;
+    }
+    cells.push(cell.trim());
+    return cells;
+  }
+
+  function parseMarkdownTableSeparator(line) {
+    const cells = splitMarkdownTableRow(line);
+    if (cells.length < 2 || !cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")))) {
+      return undefined;
+    }
+    return cells.map((cell) => {
+      const value = cell.replace(/\s+/g, "");
+      if (value.startsWith(":") && value.endsWith(":")) return "center";
+      if (value.endsWith(":")) return "right";
+      return "left";
+    });
+  }
+
+  function renderMarkdownTable(rows) {
+    if (rows.length < 2) return "";
+    const align = parseMarkdownTableSeparator(rows[1]);
+    if (!align) return "";
+    const header = splitMarkdownTableRow(rows[0]);
+    const bodyRows = rows.slice(2).filter((row) => row.trim()).map(splitMarkdownTableRow);
+    const columnCount = Math.max(header.length, align.length, ...bodyRows.map((row) => row.length));
+    if (columnCount < 2) return "";
+    const cellAlignClass = (index) => align[index] ? ` align-${align[index]}` : "";
+    const normalizeCells = (cells) => Array.from({ length: columnCount }, (_unused, index) => cells[index] || "");
+    return `
+      <div class="markdown-table-wrap">
+        <table>
+          <thead>
+            <tr>${normalizeCells(header).map((cell, index) => `<th class="${cellAlignClass(index)}">${markdownInline(cell)}</th>`).join("")}</tr>
+          </thead>
+          <tbody>
+            ${bodyRows.map((row) => `<tr>${normalizeCells(row).map((cell, index) => `<td class="${cellAlignClass(index)}">${markdownInline(cell)}</td>`).join("")}</tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
   function markdownInline(value) {
+    return String(value || "")
+      .split(/(`[^`]+`)/g)
+      .map((part) => {
+        if (!part) return "";
+        if (part.startsWith("`") && part.endsWith("`") && part.length > 1) {
+          return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
+        }
+        return markdownInlineText(part);
+      })
+      .join("");
+  }
+
+  function markdownInlineText(value) {
     return escapeHtml(value)
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\[([^\]\n]+)\]\(([^)\s]+(?:\s+&quot;[^&]*&quot;)?)\)/g, (_match, label, target) => {
+        const cleanTarget = String(target || "").replace(/\s+&quot;[^&]*&quot;$/, "");
+        return `<button class="markdown-link-button" type="button" data-command="markdown.openLink" data-target="${escapeAttribute(decodeHtmlEntities(cleanTarget))}">${label}</button>`;
+      })
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   }
 
-  function renderDiff(diff) {
+  function decodeHtmlEntities(value) {
+    return String(value || "")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#96;/g, "`");
+  }
+
+  function renderDiff(diff, filePath) {
+    const language = normalizeCodeLanguage(languageFromPath(filePath));
     return String(diff || "")
       .split("\n")
-      .slice(0, 220)
       .map((line) => {
         const css = line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "remove" : line.startsWith("@@") ? "hunk" : "context";
-        return `<span class="diff-line ${css}">${escapeHtml(line || " ")}</span>`;
+        if (css === "hunk" || line.startsWith("+++") || line.startsWith("---")) {
+          return `<span class="diff-line ${css}">${escapeHtml(line || " ")}</span>`;
+        }
+        const prefix = /^[+\- ]/.test(line) ? line[0] : "";
+        const body = prefix ? line.slice(1) : line;
+        return `<span class="diff-line ${css}">${prefix ? `<span class="diff-prefix">${escapeHtml(prefix)}</span>` : ""}<span class="diff-content">${highlightCode(body || " ", language)}</span></span>`;
       })
       .join("");
   }
@@ -1925,6 +3126,8 @@
       || label === "contextCompaction"
       || label === "plan"
       || (item.activityKind === "unknown" && /^userMessage\b/i.test(label))
+      || item.activityKind === "unknown"
+      || (item.activityKind === "reasoning" && item.status === "completed" && !String(item.summary || "").trim() && !String(item.outputPreview || "").trim())
     );
   }
 
@@ -1954,8 +3157,17 @@
 
   function normalizeActivityLabel(item) {
     const label = String(item.label || "").trim();
+    if (item.activityKind === "command") {
+      const command = formatCommandSummary(item.command || label);
+      if (item.status === "completed") {
+        return command ? `Выполнена команда ${command}` : "Выполнена команда";
+      }
+      if (item.status === "error") {
+        return command ? `Команда завершилась с ошибкой: ${command}` : "Команда завершилась с ошибкой";
+      }
+      return command ? `Выполняется ${command}` : "Выполняется команда";
+    }
     if (item.status === "completed") {
-      if (item.activityKind === "command") return item.command ? `Выполнено ${item.command}` : "Выполнена команда";
       if (item.activityKind === "file") return item.path ? `Изменён ${item.path}` : "Изменены файлы";
       if (item.activityKind === "search") return item.summary || "Выполнен поиск";
       if (item.activityKind === "reasoning") return item.summary || "Думал";
@@ -1963,10 +3175,192 @@
       if (item.activityKind === "tool") return item.summary || "Инструмент выполнен";
     }
     if (item.status === "error") {
-      if (item.activityKind === "command") return item.command ? `Команда завершилась с ошибкой: ${item.command}` : "Команда завершилась с ошибкой";
       return label || "Действие завершилось с ошибкой";
     }
     return label || "Действие Codex";
+  }
+
+  function activityOutputPreviewHtml(item) {
+    const preview = safeActivityOutputPreview(item);
+    return preview ? `<pre class="activity-output">${escapeHtml(preview)}</pre>` : "";
+  }
+
+  function isActivityExpandable(item) {
+    if (!item || item.activityKind === "turn") {
+      return false;
+    }
+    const details = Array.isArray(item.details) ? item.details.filter(Boolean) : [];
+    return Boolean(details.length || item.command || item.path || item.summary || safeActivityOutputPreview(item));
+  }
+
+  function isActivityExpanded(activityId) {
+    return Boolean(activityId && state.expandedActivities[activityId]);
+  }
+
+  function toggleActivity(activityId) {
+    if (!activityId) {
+      return;
+    }
+    if (state.expandedActivities[activityId]) {
+      delete state.expandedActivities[activityId];
+    } else {
+      state.expandedActivities[activityId] = true;
+    }
+    render();
+  }
+
+  function activityDetailsHtml(item) {
+    const details = Array.isArray(item.details) && item.details.length
+      ? item.details
+      : [activityDetailFromItem(item)];
+    const visible = details
+      .filter(Boolean)
+      .slice(0, 12);
+    if (!visible.length) {
+      return "";
+    }
+    if (visible.length === 1 && visible[0].activityKind === "command") {
+      return activityCommandDetailHtml(visible[0]);
+    }
+    return `
+      <div class="activity-details">
+        ${visible.map(activityDetailLineHtml).join("")}
+      </div>
+    `;
+  }
+
+  function activityDetailLineHtml(detail) {
+    const kind = detail.activityKind || "tool";
+    const summary = activityDetailSummary(detail);
+    const output = safeActivityDetailOutputPreview(detail);
+    return `
+      <div class="activity-detail-line ${escapeAttribute(kind)}">
+        ${activityIcon(kind)}
+        <div class="activity-detail-body">
+          <div class="activity-detail-title">${escapeHtml(activityDetailTitle(detail))}</div>
+          ${summary ? `<div class="activity-detail-summary">${escapeHtml(summary)}</div>` : ""}
+          ${output ? `<pre class="activity-detail-output">${escapeHtml(output)}</pre>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  function activityCommandDetailHtml(detail) {
+    const command = stripCommandLabelPrefix(detail.command || detail.label || "");
+    const output = safeActivityDetailOutputPreview(detail);
+    return `
+      <div class="activity-details">
+        <div class="activity-shell-card">
+          <div class="activity-shell-kicker">Shell</div>
+          <pre class="activity-shell-output">${escapeHtml(command ? `$ ${command}` : "$ команда")}${output ? `\n\n${escapeHtml(output)}` : "\n\nНет вывода"}</pre>
+          <div class="activity-shell-status">${detail.status === "error" ? "Ошибка" : "✓ Успех"}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function activityDetailTitle(detail) {
+    if (detail.activityKind === "command") {
+      const command = formatCommandSummary(detail.command || detail.label);
+      return command ? `Запущен ${command}` : "Запущена команда";
+    }
+    if (detail.activityKind === "search") {
+      return detail.label || "Выполнен поиск";
+    }
+    if (detail.activityKind === "file") {
+      return detail.path ? `Изменён ${detail.path}` : detail.label || "Изменены файлы";
+    }
+    if (detail.activityKind === "reasoning") {
+      return detail.label || "Думаю";
+    }
+    return detail.label || "Действие Codex";
+  }
+
+  function activityDetailSummary(detail) {
+    const parts = [];
+    if (detail.path && detail.activityKind !== "file") {
+      parts.push(`Путь: ${detail.path}`);
+    }
+    if (detail.summary && detail.summary !== detail.label) {
+      parts.push(detail.summary);
+    }
+    return parts.join("\n");
+  }
+
+  function safeActivityDetailOutputPreview(detail) {
+    const preview = String(detail.outputPreview || "").trim();
+    if (!preview || looksLikeMojibake(preview)) {
+      return "";
+    }
+    return preview.length > 2000 ? `${preview.slice(0, 2000)}\n...` : preview;
+  }
+
+  function safeActivityOutputPreview(item) {
+    const preview = String(item.outputPreview || "").trim();
+    if (!preview) {
+      return "";
+    }
+    if (item.activityKind === "command") {
+      return "";
+    }
+    if (looksLikeMojibake(preview)) {
+      return "";
+    }
+    return preview.length > 2000 ? `${preview.slice(0, 2000)}\n...` : preview;
+  }
+
+  function looksLikeMojibake(text) {
+    const sample = text.slice(0, 2000);
+    const matches = sample.match(/(?:Р.|С.|Ð|Ñ|Â|�)/g) || [];
+    return matches.length >= 6 || matches.length / Math.max(sample.length, 1) > 0.025;
+  }
+
+  function formatCommandSummary(command) {
+    const raw = stripCommandLabelPrefix(String(command || "").trim());
+    if (!raw) {
+      return "";
+    }
+    const powershell = extractPowerShellCommand(raw);
+    const summary = powershell ? `PowerShell: ${simplifyShellCommand(powershell)}` : simplifyShellCommand(raw);
+    return shortenMiddle(summary, 120);
+  }
+
+  function stripCommandLabelPrefix(value) {
+    return value
+      .replace(/^Выполняется\s+/i, "")
+      .replace(/^Выполнен[ао]?\s+(?:команда\s+)?/i, "")
+      .replace(/^Команда завершилась с ошибкой:\s*/i, "")
+      .trim();
+  }
+
+  function extractPowerShellCommand(command) {
+    const normalized = command.replace(/\\"/g, '"');
+    if (!/powershell(?:\.exe)?/i.test(normalized) || !/\s-Command\s/i.test(normalized)) {
+      return "";
+    }
+    const quoted = normalized.match(/\s-Command\s+(['"])([\s\S]*?)\1/i);
+    if (quoted && quoted[2]) {
+      return quoted[2].trim();
+    }
+    const plain = normalized.match(/\s-Command\s+([\s\S]*)$/i);
+    return plain?.[1]?.trim() || "";
+  }
+
+  function simplifyShellCommand(command) {
+    return command
+      .replace(/^(['"])([\s\S]*)\1$/, "$2")
+      .replace(/\s+/g, " ")
+      .replace(/\bGet-Content\s+-Raw\b/ig, "Get-Content")
+      .trim();
+  }
+
+  function shortenMiddle(value, maxLength) {
+    if (value.length <= maxLength) {
+      return value;
+    }
+    const head = Math.max(20, Math.floor((maxLength - 3) * 0.58));
+    const tail = Math.max(12, maxLength - head - 3);
+    return `${value.slice(0, head)}...${value.slice(value.length - tail)}`;
   }
 
   function turnRunningLabel(createdAt) {
@@ -1983,7 +3377,7 @@
     if (item.status === "streaming") {
       return `<span data-live-duration="assistant-streaming" data-created-at="${escapeAttribute(item.createdAt || "")}">${escapeHtml(turnRunningLabel(item.createdAt))}</span>`;
     }
-    return item.durationMs ? escapeHtml(`Работал на протяжении ${formatDuration(item.durationMs)}`) : "";
+    return item.durationMs ? `<span>${escapeHtml(`Работал на протяжении ${formatDuration(item.durationMs)}`)}</span>` : "";
   }
 
   function elapsedLabel(createdAt) {

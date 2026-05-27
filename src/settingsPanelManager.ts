@@ -3,6 +3,7 @@ import { BaseContextService } from "./baseContextService";
 import { DocsNormalizerProgress, DocsNormalizerService } from "./docsNormalizerService";
 import { Logger } from "./logger";
 import { getCodexPanelIconPath } from "./panelIcon";
+import { RipgrepInstallProgress, RipgrepInstallerService } from "./ripgrepInstallerService";
 import { ProxySaveInput, SettingsService } from "./settingsService";
 import { WebviewCommand } from "./types";
 import { renderWebviewHtml } from "./webviewHtml";
@@ -17,11 +18,18 @@ export class SettingsPanelManager {
     stage: "idle",
     message: ""
   };
+  private ripgrepProgress: RipgrepInstallProgress = {
+    status: "idle",
+    percent: 0,
+    stage: "idle",
+    message: ""
+  };
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly settings: SettingsService,
     private readonly normalizer: DocsNormalizerService,
+    private readonly ripgrepInstaller: RipgrepInstallerService,
     private readonly baseContext: BaseContextService,
     private readonly logger: Logger,
     private readonly onSettingsChanged: (options?: { restartRuntime?: boolean; docsChanged?: boolean }) => Promise<void>
@@ -142,6 +150,42 @@ export class SettingsPanelManager {
       return;
     }
 
+    if (message.command === "settings.tools.ripgrep.save") {
+      const ripgrepPath = parseRipgrepPath(message.payload);
+      if (ripgrepPath === undefined) {
+        await panel.webview.postMessage({
+          type: "event",
+          event: "settings.error",
+          payload: "Некорректный путь до rg."
+        });
+        return;
+      }
+
+      try {
+        await this.settings.saveRipgrepPath(ripgrepPath);
+        await this.onSettingsChanged({ restartRuntime: true });
+        await panel.webview.postMessage({
+          type: "event",
+          event: "settings.saved",
+          payload: ripgrepPath.trim() ? "Путь до rg сохранен." : "Путь до rg очищен."
+        });
+        await this.postSnapshot(panel);
+        this.logger.info(ripgrepPath.trim() ? "ripgrep settings saved." : "ripgrep settings cleared.");
+      } catch (error) {
+        await panel.webview.postMessage({
+          type: "event",
+          event: "settings.error",
+          payload: error instanceof Error ? error.message : "Не удалось сохранить путь до rg."
+        });
+      }
+      return;
+    }
+
+    if (message.command === "settings.tools.ripgrep.install") {
+      await this.installRipgrep(panel);
+      return;
+    }
+
     if (message.command !== "settings.proxy.save") {
       await panel.webview.postMessage({
         type: "event",
@@ -186,9 +230,50 @@ export class SettingsPanelManager {
       snapshot: {
         proxy: await this.settings.getProxySettingsView(),
         docs: this.settings.getDocsSettingsView(),
-        normalizer: this.normalizerProgress
+        tools: await this.settings.getToolsSettingsView(),
+        normalizer: this.normalizerProgress,
+        ripgrepInstaller: this.ripgrepProgress
       }
     });
+  }
+
+  private async installRipgrep(panel: vscode.WebviewPanel): Promise<void> {
+    try {
+      const result = await this.ripgrepInstaller.install({
+        onProgress: (progress) => {
+          this.ripgrepProgress = progress;
+          void panel.webview.postMessage({
+            type: "event",
+            event: "settings.tools.ripgrep.install.progress",
+            payload: progress
+          });
+        }
+      });
+      await this.onSettingsChanged({ restartRuntime: true });
+      await panel.webview.postMessage({
+        type: "event",
+        event: "settings.saved",
+        payload: `ripgrep установлен, версия ${result.version}.`
+      });
+      await this.postSnapshot(panel);
+      this.logger.info(`ripgrep install completed: version=${result.version}; path=${result.path}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось установить ripgrep.";
+      if (this.ripgrepProgress?.status !== "error") {
+        this.ripgrepProgress = {
+          status: "error",
+          percent: 0,
+          stage: "error",
+          message
+        };
+        await panel.webview.postMessage({
+          type: "event",
+          event: "settings.tools.ripgrep.install.progress",
+          payload: this.ripgrepProgress
+        });
+      }
+      this.logger.warn(`ripgrep install failed: ${message}`);
+    }
   }
 
   private async normalizeDocs(panel: vscode.WebviewPanel, payload: unknown): Promise<void> {
@@ -281,4 +366,12 @@ function parseDocsPath(payload: unknown): string | undefined {
 
   const value = payload as Record<string, unknown>;
   return typeof value.normalizedPath === "string" ? value.normalizedPath : undefined;
+}
+
+function parseRipgrepPath(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const value = payload as Record<string, unknown>;
+  return typeof value.ripgrepPath === "string" ? value.ripgrepPath : undefined;
 }

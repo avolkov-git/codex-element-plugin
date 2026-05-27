@@ -35,6 +35,7 @@ class RuntimeProcessManager {
         wireLineStream(child.stdout, options.onStdout);
         wireLineStream(child.stderr, options.onStderr);
         child.once("error", (error) => {
+            options.onError?.(error);
             options.onStderr(error.message);
             handleExit(null, null);
         });
