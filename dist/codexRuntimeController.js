@@ -40,6 +40,7 @@ const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const jsonRpcClient_1 = require("./jsonRpcClient");
 const logger_1 = require("./logger");
+const platform_1 = require("./platform");
 const runtimeProcessManager_1 = require("./runtimeProcessManager");
 const worklogNormalizer_1 = require("./worklogNormalizer");
 class UserCancelledTurnError extends Error {
@@ -1267,23 +1268,24 @@ class CodexRuntimeController {
         const profileId = await this.options.profiles.requireProfileId(this.options.settings.listExistingProfileIds());
         const codexHome = await this.options.settings.ensureUserCodexHome(profileId);
         await this.options.onDidResolveProfile?.(profileId);
-        const runtimePath = resolveBundledRuntimePath(this.options.context);
+        const runtimeResolution = (0, platform_1.resolveBundledRuntimeExecutable)(this.options.context.extensionUri.fsPath);
+        const runtimePath = runtimeResolution.path;
         if (!fs.existsSync(runtimePath)) {
             this.options.state.setRuntime({
                 status: "error",
-                label: "Bundled codex.exe не найден"
+                label: "Bundled Codex runtime не найден"
             });
             this.options.onDidChange();
-            throw new Error(`Bundled codex.exe не найден: ${runtimePath}`);
+            throw new Error(`Bundled Codex runtime не найден: ${runtimePath}. Кандидаты: ${runtimeResolution.candidates.join("; ")}`);
         }
-        const runtimeValidation = validateBundledRuntimeExecutable(runtimePath);
+        const runtimeValidation = (0, platform_1.validateRuntimeExecutable)(runtimeResolution);
         if (!runtimeValidation.ok) {
             this.options.state.setRuntime({
                 status: "error",
                 label: runtimeValidation.message
             });
             this.options.onDidChange();
-            this.options.logger.error(`Bundled codex.exe invalid: ${runtimeValidation.message}; path=${runtimePath}`);
+            this.options.logger.error(`Bundled Codex runtime invalid: ${runtimeValidation.message}; ${(0, platform_1.formatRuntimeExecutableSummary)(runtimeValidation.summary)}`);
             throw new Error(runtimeValidation.message);
         }
         const proxy = await this.options.settings.getRuntimeProxySettings();
@@ -1330,7 +1332,7 @@ class CodexRuntimeController {
             await this.resetBackendAfterFailedStart();
         }
         const fallbackCwd = resolveRuntimeCwd(this.options.context, codexHome, { forceSafe: true });
-        const fallbackEnv = buildMinimalRuntimeEnv(codexHome, proxy);
+        const fallbackEnv = buildMinimalRuntimeEnv(codexHome, proxy, toolEnv);
         try {
             const fallbackAttempt = await this.startBackendProcessAttempt({
                 runtimePath,
@@ -1346,7 +1348,7 @@ class CodexRuntimeController {
         }
         catch (error) {
             const message = normalizeErrorMessage(error);
-            const diagnostics = await diagnoseRuntimeLaunchFailure(runtimePath, fallbackCwd, fallbackEnv);
+            const diagnostics = await diagnoseRuntimeLaunchFailure(runtimeResolution, fallbackCwd, fallbackEnv);
             this.options.state.setRuntime({
                 status: "error",
                 label: `Backend не запустился: ${message}`
@@ -1362,7 +1364,7 @@ class CodexRuntimeController {
         this.rpcClient?.dispose();
         this.rpcClient = rpcClient;
         const diagnostics = summarizeRuntimeStart(input.runtimePath, input.cwd, input.env);
-        this.options.logger.info(`Starting bundled codex.exe app-server: mode=${input.mode}; ${diagnostics}.`);
+        this.options.logger.info(`Starting bundled Codex runtime app-server: mode=${input.mode}; ${diagnostics}.`);
         let resolveSpawnError = () => undefined;
         const spawnErrorPromise = new Promise((resolve) => {
             resolveSpawnError = resolve;
@@ -1391,7 +1393,7 @@ class CodexRuntimeController {
             label: `Backend запущен, PID ${pid || "-"}`
         });
         this.options.onDidChange();
-        this.options.logger.info(`Spawned bundled codex.exe app-server with pid ${pid || "-"} in ${input.mode} mode.`);
+        this.options.logger.info(`Spawned bundled Codex runtime app-server with pid ${pid || "-"} in ${input.mode} mode.`);
         const earlyError = await waitForEarlySpawnError(spawnErrorPromise, 500);
         return { pid, earlyError };
     }
@@ -2014,45 +2016,6 @@ function truncateForPrompt(value, maxChars) {
     }
     return `${value.slice(0, maxChars)}\n...<truncated>`;
 }
-function resolveBundledRuntimePath(context) {
-    return path.join(context.extensionUri.fsPath, "bin", "windows-x86_64", "codex.exe");
-}
-function validateBundledRuntimeExecutable(runtimePath) {
-    try {
-        const stat = fs.statSync(runtimePath);
-        if (!stat.isFile()) {
-            return { ok: false, message: "Bundled codex.exe не является файлом." };
-        }
-        const prefix = readFilePrefix(runtimePath, 128);
-        if (prefix.startsWith("version https://git-lfs.github.com/spec/v1")) {
-            return {
-                ok: false,
-                message: "Bundled codex.exe является Git LFS pointer. В поставку нужен реальный codex.exe, выполните git lfs pull перед копированием plugin."
-            };
-        }
-        if (process.platform === "win32" && readPeMachine(runtimePath) === "not-mz") {
-            return {
-                ok: false,
-                message: "Bundled codex.exe не является Windows executable. Проверьте, что в /plugins скопирован реальный бинарник, а не текстовый placeholder."
-            };
-        }
-        return { ok: true, message: "" };
-    }
-    catch (error) {
-        return { ok: false, message: `Bundled codex.exe недоступен: ${normalizeErrorMessage(error)}` };
-    }
-}
-function readFilePrefix(filePath, length) {
-    const fd = fs.openSync(filePath, "r");
-    try {
-        const buffer = Buffer.alloc(length);
-        const bytesRead = fs.readSync(fd, buffer, 0, length, 0);
-        return buffer.subarray(0, bytesRead).toString("utf8");
-    }
-    finally {
-        fs.closeSync(fd);
-    }
-}
 function getApprovalPolicy(accessMode) {
     return accessMode === "read-only" ? "never" : "on-request";
 }
@@ -2133,11 +2096,12 @@ function buildRuntimeEnv(codexHome, proxy, toolEnv = {}) {
         CODEX_HOME: codexHome,
         ...toolEnv
     };
-    normalizeRuntimePathEnv(env);
+    ensureUnixRuntimeHomeEnv(env, codexHome);
+    (0, platform_1.normalizePathEnv)(env);
     applyProxyEnv(env, proxy);
     return env;
 }
-function buildMinimalRuntimeEnv(codexHome, proxy) {
+function buildMinimalRuntimeEnv(codexHome, proxy, toolEnv = {}) {
     const env = {
         CODEX_HOME: codexHome
     };
@@ -2149,11 +2113,39 @@ function buildMinimalRuntimeEnv(codexHome, proxy) {
     }
     const minimalPath = minimalRuntimePathValue();
     if (minimalPath) {
-        env[process.platform === "win32" ? "Path" : "PATH"] = minimalPath;
+        env[(0, platform_1.pathEnvKey)(env)] = minimalPath;
     }
-    normalizeRuntimePathEnv(env);
+    applyMinimalToolEnv(env, toolEnv);
+    ensureUnixRuntimeHomeEnv(env, codexHome);
+    (0, platform_1.normalizePathEnv)(env);
     applyProxyEnv(env, proxy);
     return env;
+}
+function ensureUnixRuntimeHomeEnv(env, codexHome) {
+    if (process.platform === "win32") {
+        return;
+    }
+    if (!env.HOME) {
+        env.HOME = codexHome;
+    }
+    if (!env.XDG_CONFIG_HOME) {
+        env.XDG_CONFIG_HOME = path.join(codexHome, "xdg-config");
+    }
+    if (!env.XDG_CACHE_HOME) {
+        env.XDG_CACHE_HOME = path.join(codexHome, "xdg-cache");
+    }
+    if (!env.XDG_DATA_HOME) {
+        env.XDG_DATA_HOME = path.join(codexHome, "xdg-data");
+    }
+}
+function applyMinimalToolEnv(env, toolEnv) {
+    const ripgrepPath = toolEnv.RIPGREP_PATH;
+    if (ripgrepPath) {
+        env.RIPGREP_PATH = ripgrepPath;
+        const rgDir = path.dirname(ripgrepPath);
+        const key = (0, platform_1.pathEnvKey)(env);
+        env[key] = uniquePathEntries([rgDir, env[key] ?? ""]).join(path.delimiter);
+    }
 }
 function applyProxyEnv(env, proxy) {
     const proxyUrl = buildProxyUrl(proxy);
@@ -2219,19 +2211,8 @@ function uniquePathEntries(entries) {
     }
     return result;
 }
-function normalizeRuntimePathEnv(env) {
-    if (process.platform !== "win32") {
-        return;
-    }
-    const pathValue = env.Path ?? env.PATH;
-    delete env.PATH;
-    delete env.Path;
-    if (pathValue) {
-        env.Path = pathValue;
-    }
-}
 function summarizeRuntimeStart(runtimePath, cwd, env) {
-    const pathKey = Object.prototype.hasOwnProperty.call(env, "Path") ? "Path" : "PATH";
+    const pathKey = (0, platform_1.pathEnvKey)(env);
     const pathValue = env[pathKey] ?? "";
     return [
         `runtimeExists=${fs.existsSync(runtimePath) ? "yes" : "no"}`,
@@ -2270,65 +2251,22 @@ function shouldRetryBackendStart(error) {
         || /\bE2BIG\b/i.test(message)
         || /\bEINVAL\b/i.test(message);
 }
-async function diagnoseRuntimeLaunchFailure(runtimePath, cwd, env) {
-    const statSummary = summarizeRuntimeExecutable(runtimePath);
-    const zoneSummary = readWindowsZoneIdentifier(runtimePath);
+async function diagnoseRuntimeLaunchFailure(runtimeResolution, cwd, env) {
+    const summary = (0, platform_1.summarizeRuntimeExecutable)(runtimeResolution.path);
+    const statSummary = [
+        (0, platform_1.formatRuntimeExecutableSummary)(summary),
+        `platformId=${runtimeResolution.platformId}`,
+        `executableName=${runtimeResolution.executableName}`,
+        `legacy=${runtimeResolution.legacy ? "yes" : "no"}`,
+        `candidates=${runtimeResolution.candidates.join("|")}`
+    ].join("; ");
+    const zoneSummary = readWindowsZoneIdentifier(runtimeResolution.path);
     if (process.platform !== "win32") {
-        return `${statSummary}; zone=${zoneSummary}; cmdProbe=skipped-non-windows`;
+        const directProbe = await runRuntimeDirectProbe(runtimeResolution.path, cwd, env);
+        return `${statSummary}; zone=${zoneSummary}; directProbe=${directProbe}`;
     }
-    const cmdProbe = await runWindowsRuntimeCmdProbe(runtimePath, cwd, env);
+    const cmdProbe = await runWindowsRuntimeCmdProbe(runtimeResolution.path, cwd, env);
     return `${statSummary}; zone=${zoneSummary}; cmdProbe=${cmdProbe}`;
-}
-function summarizeRuntimeExecutable(runtimePath) {
-    try {
-        const stat = fs.statSync(runtimePath);
-        const peMachine = readPeMachine(runtimePath);
-        return [
-            `path=${runtimePath}`,
-            `isFile=${stat.isFile() ? "yes" : "no"}`,
-            `size=${stat.size}`,
-            `mtime=${stat.mtime.toISOString()}`,
-            `peMachine=${peMachine || "unknown"}`
-        ].join("; ");
-    }
-    catch (error) {
-        return `path=${runtimePath}; statError=${normalizeErrorMessage(error)}`;
-    }
-}
-function readPeMachine(runtimePath) {
-    try {
-        const fd = fs.openSync(runtimePath, "r");
-        try {
-            const dosHeader = Buffer.alloc(64);
-            fs.readSync(fd, dosHeader, 0, dosHeader.length, 0);
-            if (dosHeader[0] !== 0x4d || dosHeader[1] !== 0x5a) {
-                return "not-mz";
-            }
-            const peOffset = dosHeader.readUInt32LE(0x3c);
-            const peHeader = Buffer.alloc(6);
-            fs.readSync(fd, peHeader, 0, peHeader.length, peOffset);
-            if (peHeader[0] !== 0x50 || peHeader[1] !== 0x45 || peHeader[2] !== 0 || peHeader[3] !== 0) {
-                return "not-pe";
-            }
-            const machine = peHeader.readUInt16LE(4);
-            if (machine === 0x8664) {
-                return "x64";
-            }
-            if (machine === 0xaa64) {
-                return "arm64";
-            }
-            if (machine === 0x14c) {
-                return "x86";
-            }
-            return `0x${machine.toString(16)}`;
-        }
-        finally {
-            fs.closeSync(fd);
-        }
-    }
-    catch {
-        return "";
-    }
 }
 function readWindowsZoneIdentifier(runtimePath) {
     if (process.platform !== "win32") {
@@ -2348,6 +2286,49 @@ function readWindowsZoneIdentifier(runtimePath) {
         }
         return `unreadable:${normalizeErrorMessage(error)}`;
     }
+}
+async function runRuntimeDirectProbe(runtimePath, cwd, env) {
+    return new Promise((resolve) => {
+        let settled = false;
+        let stdout = "";
+        let stderr = "";
+        const child = (0, child_process_1.spawn)(runtimePath, ["--version"], {
+            cwd,
+            env,
+            stdio: ["ignore", "pipe", "pipe"]
+        });
+        const finish = (value) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            resolve(value);
+        };
+        const timer = setTimeout(() => {
+            child.kill();
+            finish("timeout-after-5000ms");
+        }, 5000);
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+            stdout = `${stdout}${chunk}`.slice(0, 4000);
+        });
+        child.stderr.on("data", (chunk) => {
+            stderr = `${stderr}${chunk}`.slice(0, 4000);
+        });
+        child.once("error", (error) => {
+            finish(`spawn-error:${normalizeErrorMessage(error)}`);
+        });
+        child.once("close", (code, signal) => {
+            finish([
+                `code=${code ?? "-"}`,
+                `signal=${signal ?? "-"}`,
+                `stdout=${compactProbeText(stdout)}`,
+                `stderr=${compactProbeText(stderr)}`
+            ].join("; "));
+        });
+    });
 }
 async function runWindowsRuntimeCmdProbe(runtimePath, cwd, env) {
     const comSpec = process.env.ComSpec || path.join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe");

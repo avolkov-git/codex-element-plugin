@@ -470,6 +470,13 @@ function resolveConfigRoot(context: vscode.ExtensionContext): ConfigRootResoluti
     }
   }
 
+  if (process.platform !== "win32") {
+    const unixRoot = resolveUnixConfigRoot();
+    if (unixRoot) {
+      return { path: unixRoot };
+    }
+  }
+
   const home = os.homedir();
   if (home) {
     const candidate = path.join(home, ".codex-element");
@@ -479,6 +486,30 @@ function resolveConfigRoot(context: vscode.ExtensionContext): ConfigRootResoluti
   }
 
   return { path: path.join(context.globalStorageUri.fsPath, "codex-element") };
+}
+
+function resolveUnixConfigRoot(): string {
+  const home = os.homedir();
+  const legacyHomeRoot = home ? path.join(home, ".codex-element") : "";
+  if (legacyHomeRoot && fs.existsSync(legacyHomeRoot) && ensureWritable(legacyHomeRoot)) {
+    return legacyHomeRoot;
+  }
+
+  const candidates = [
+    process.env.XDG_STATE_HOME ? path.join(process.env.XDG_STATE_HOME, "codex-element") : "",
+    home ? path.join(home, ".local", "state", "codex-element") : "",
+    process.env.XDG_DATA_HOME ? path.join(process.env.XDG_DATA_HOME, "codex-element") : "",
+    home ? path.join(home, ".local", "share", "codex-element") : "",
+    legacyHomeRoot
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (ensureWritable(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
 }
 
 function ensureWritable(candidate: string): boolean {

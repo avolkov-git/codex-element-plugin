@@ -31,7 +31,9 @@
   "scripts": {
     "build": "tsc -p ./",
     "check": "tsc -p ./ --noEmit",
-    "eval:context": "node scripts/context-acceptance-check.js"
+    "eval:context": "node scripts/context-acceptance-check.js",
+    "preflight:runtime": "node scripts/verify-runtime-binaries.js --require-current",
+    "preflight:runtime:release": "node scripts/verify-runtime-binaries.js --require-all"
   },
   "contributes": {
     "commands": [
