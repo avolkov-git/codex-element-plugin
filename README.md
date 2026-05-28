@@ -32,6 +32,8 @@ bin/
 ```
 
 Legacy Windows layout `bin/windows-x86_64/codex.exe` поддерживается для обратной совместимости.
+Legacy Linux layout `bin/linux-x86_64/codex` также поддерживается как источник для staging, но canonical deploy layout остается `bin/linux-x64/codex`.
+Legacy macOS layout `bin/macos-aarch64/codex` также поддерживается как источник для staging, но canonical deploy layout остается `bin/darwin-arm64/codex`.
 
 Перед копированием в `/plugins`:
 

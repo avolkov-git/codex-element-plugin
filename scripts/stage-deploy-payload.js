@@ -43,6 +43,7 @@ function main() {
     overlayPreservedRuntimes(backupBin);
     overlayRuntimeRoot();
     removeInvalidAlternativeRuntimeFiles();
+    removeInvalidUnrequestedRuntimeFiles();
     runDeployPreflight();
   } finally {
     fs.rmSync(backupRoot, { recursive: true, force: true });
@@ -140,7 +141,7 @@ function overlayPreservedRuntimes(backupBin) {
 
     const destinationPath = targetPaths(targetRoot, target)[0];
     const destinationValidation = validateRuntimeFile(destinationPath, target);
-    if (!destinationValidation.errors.length) {
+    if (destinationValidation.summary.exists && !destinationValidation.errors.length) {
       continue;
     }
 
@@ -188,6 +189,26 @@ function removeInvalidAlternativeRuntimeFiles() {
       }
       fs.rmSync(candidatePath, { force: true });
       warnings.push(`removed invalid alternative runtime for ${target.platformId}: ${candidatePath}`);
+    }
+  }
+}
+
+function removeInvalidUnrequestedRuntimeFiles() {
+  const requested = new Set(requestedRuntimeTargets().map((target) => target.platformId));
+  for (const target of targets) {
+    if (requested.has(target.platformId)) {
+      continue;
+    }
+    for (const candidatePath of targetPaths(targetRoot, target)) {
+      if (!fs.existsSync(candidatePath)) {
+        continue;
+      }
+      const validation = validateRuntimeFile(candidatePath, target, { allowLfsPointer: false });
+      if (!validation.errors.length) {
+        continue;
+      }
+      fs.rmSync(candidatePath, { force: true });
+      warnings.push(`removed invalid unrequested runtime for ${target.platformId}: ${candidatePath}`);
     }
   }
 }

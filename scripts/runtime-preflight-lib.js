@@ -4,10 +4,10 @@ const path = require("path");
 const targets = [
   { platformId: "win32-x64", legacyPlatformId: "windows-x86_64", executableName: "codex.exe", kind: "pe", arch: "x64", executableBit: false },
   { platformId: "win32-arm64", executableName: "codex.exe", kind: "pe", arch: "arm64", executableBit: false },
-  { platformId: "linux-x64", executableName: "codex", kind: "elf", arch: "x64", executableBit: true },
+  { platformId: "linux-x64", legacyPlatformId: "linux-x86_64", executableName: "codex", kind: "elf", arch: "x64", executableBit: true },
   { platformId: "linux-arm64", executableName: "codex", kind: "elf", arch: "arm64", executableBit: true },
   { platformId: "darwin-x64", executableName: "codex", kind: "macho", arch: "x64", executableBit: true },
-  { platformId: "darwin-arm64", executableName: "codex", kind: "macho", arch: "arm64", executableBit: true }
+  { platformId: "darwin-arm64", legacyPlatformId: "macos-aarch64", executableName: "codex", kind: "macho", arch: "arm64", executableBit: true }
 ];
 
 function targetForPlatform(platformId) {
