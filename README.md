@@ -61,6 +61,18 @@ node scripts/simulate-runtime-env.js --platform linux-x64 --service-user --empty
 
 Dry-run проверяет выбор runtime, config root, `CODEX_HOME`, `HOME/XDG_*`, `PATH`, `rg` patch и базовые права на каталоги. Script ничего не создает и не меняет.
 
+Для реальной Unix-проверки уже скопированного `/plugins` payload под системным пользователем Element используйте smoke-check:
+
+```bash
+node scripts/unix-smoke-check.js \
+  --platform linux-x64 \
+  --plugin-root /path/to/element/plugins/codex \
+  --config-root /var/lib/codex-element \
+  --workspace-root /path/to/workspace
+```
+
+Smoke-check запускает `codex --version`, проверяет executable bit, права на config root, `CODEX_HOME`, `HOME/XDG_*`, runtime cwd и наличие `rg`. Подробный checklist: `docs/unix-smoke-checklist.md`.
+
 ## Deploy Payload Preflight
 
 Перед копированием каталога плагина в `/plugins` нужно проверять не только runtime-бинарник, но и сам deploy payload:
