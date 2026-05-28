@@ -88,6 +88,46 @@ Deploy preflight проверяет:
 
 В dev-режиме `--allow-lfs-pointer` допускает Git LFS pointer как warning, чтобы можно было проверять текущую рабочую копию. В `--strict` pointer считается ошибкой: в реальной поставке в `/plugins` должны лежать настоящие executable-файлы.
 
+## Deploy Staging
+
+Рабочую git-копию не нужно копировать в `/plugins` напрямую. Сначала соберите чистый deploy-каталог:
+
+```bash
+npm run deploy:stage
+```
+
+По умолчанию payload собирается в соседний каталог:
+
+```text
+../codex-plugin-deploy
+```
+
+Script исключает `.git`, `node_modules`, `.DS_Store`, временные файлы, logs и VSIX-архивы. Если в deploy-каталоге уже лежали настоящие runtime-бинарники, script сохраняет их и не затирает Git LFS pointer из рабочей копии поверх валидного executable.
+
+Для strict-сборки Windows x64:
+
+```bash
+npm run deploy:stage:strict
+```
+
+Для release-сборки всей платформенной матрицы:
+
+```bash
+npm run deploy:stage:release
+```
+
+Если реальные runtime-бинарники хранятся отдельно, передайте каталог с таким же `bin/<platform>/...` layout:
+
+```bash
+node scripts/stage-deploy-payload.js \
+  --target ../codex-plugin-deploy \
+  --platform win32-x64 \
+  --runtime-root /path/to/real-runtime-root \
+  --strict
+```
+
+До появления настоящего `codex.exe` dev-сборка может пройти только с warning про LFS pointer. Это не release-ready состояние.
+
 Unix-поставка должна сохранять executable bit:
 
 ```bash
