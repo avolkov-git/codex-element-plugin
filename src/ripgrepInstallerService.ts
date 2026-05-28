@@ -1,9 +1,9 @@
-import { spawn } from "child_process";
 import * as fs from "fs";
 import * as http from "http";
 import * as https from "https";
 import * as path from "path";
 import * as tls from "tls";
+import * as zlib from "zlib";
 import { Logger } from "./logger";
 import { RuntimeProxySettings, SettingsService } from "./settingsService";
 import { probeRipgrepExecutable, ripgrepExecutableName } from "./ripgrepUtils";
@@ -159,32 +159,208 @@ async function extractArchive(archivePath: string, extractRoot: string, assetNam
     await extractZipArchive(archivePath, extractRoot);
     return;
   }
-  await runProcess("tar", ["-xzf", archivePath, "-C", extractRoot]);
+  if (assetName.toLowerCase().endsWith(".tar.gz")) {
+    await extractTarGzArchive(archivePath, extractRoot);
+    return;
+  }
+  throw new Error(`Неподдерживаемый формат архива ripgrep: ${assetName}.`);
 }
 
 async function extractZipArchive(archivePath: string, extractRoot: string): Promise<void> {
-  await runProcess("powershell.exe", [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    [
-      "& {",
-      "param([string]$ArchivePath, [string]$ExtractRoot)",
-      "$ErrorActionPreference = 'Stop';",
-      "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;",
-      "if ([string]::IsNullOrWhiteSpace($ArchivePath)) { throw 'ArchivePath is empty.' }",
-      "if ([string]::IsNullOrWhiteSpace($ExtractRoot)) { throw 'ExtractRoot is empty.' }",
-      "if (!(Test-Path -LiteralPath $ArchivePath -PathType Leaf)) { throw \"Archive not found: $ArchivePath\" }",
-      "New-Item -ItemType Directory -Force -Path $ExtractRoot | Out-Null;",
-      "Expand-Archive -LiteralPath $ArchivePath -DestinationPath $ExtractRoot -Force",
-      "}"
-    ].join(" "),
-    archivePath,
-    extractRoot
-  ]);
+  const buffer = await fs.promises.readFile(archivePath);
+  await extractZipBuffer(buffer, extractRoot);
+}
+
+async function extractTarGzArchive(archivePath: string, extractRoot: string): Promise<void> {
+  const buffer = await fs.promises.readFile(archivePath);
+  const tarBuffer = zlib.gunzipSync(buffer);
+  await extractTarBuffer(tarBuffer, extractRoot);
+}
+
+async function extractZipBuffer(buffer: Buffer, extractRoot: string): Promise<void> {
+  const entries = readZipCentralDirectory(buffer);
+  for (const entry of entries) {
+    const safePath = safeExtractPath(extractRoot, entry.name);
+    if (!safePath) {
+      continue;
+    }
+    if (entry.directory) {
+      await fs.promises.mkdir(safePath, { recursive: true });
+      continue;
+    }
+    const compressed = readZipEntryPayload(buffer, entry);
+    const payload = inflateZipEntry(compressed, entry.compressionMethod, entry.name);
+    await fs.promises.mkdir(path.dirname(safePath), { recursive: true });
+    await fs.promises.writeFile(safePath, payload);
+  }
+}
+
+async function extractTarBuffer(buffer: Buffer, extractRoot: string): Promise<void> {
+  let offset = 0;
+  while (offset + 512 <= buffer.length) {
+    const header = buffer.subarray(offset, offset + 512);
+    if (isEmptyTarBlock(header)) {
+      break;
+    }
+
+    const name = tarEntryName(header);
+    const size = parseTarOctal(header.subarray(124, 136));
+    const type = String.fromCharCode(header[156] || 0);
+    const safePath = safeExtractPath(extractRoot, name);
+    const dataStart = offset + 512;
+    const dataEnd = dataStart + size;
+    if (dataEnd > buffer.length) {
+      throw new Error("Архив ripgrep поврежден: tar entry выходит за пределы файла.");
+    }
+
+    if (safePath) {
+      if (type === "5") {
+        await fs.promises.mkdir(safePath, { recursive: true });
+      } else if (type === "0" || type === "\0" || type === "") {
+        await fs.promises.mkdir(path.dirname(safePath), { recursive: true });
+        await fs.promises.writeFile(safePath, buffer.subarray(dataStart, dataEnd));
+      }
+    }
+
+    offset = dataStart + Math.ceil(size / 512) * 512;
+  }
+}
+
+interface ZipEntry {
+  name: string;
+  directory: boolean;
+  compressionMethod: number;
+  compressedSize: number;
+  localHeaderOffset: number;
+}
+
+function readZipCentralDirectory(buffer: Buffer): ZipEntry[] {
+  const endOffset = findEndOfCentralDirectory(buffer);
+  if (endOffset < 0) {
+    throw new Error("Архив ripgrep поврежден: не найден ZIP central directory.");
+  }
+
+  const totalEntries = buffer.readUInt16LE(endOffset + 10);
+  const centralDirectorySize = buffer.readUInt32LE(endOffset + 12);
+  const centralDirectoryOffset = buffer.readUInt32LE(endOffset + 16);
+  if (centralDirectoryOffset + centralDirectorySize > buffer.length) {
+    throw new Error("Архив ripgrep поврежден: ZIP central directory выходит за пределы файла.");
+  }
+
+  const entries: ZipEntry[] = [];
+  let offset = centralDirectoryOffset;
+  for (let index = 0; index < totalEntries; index += 1) {
+    if (offset + 46 > buffer.length || buffer.readUInt32LE(offset) !== 0x02014b50) {
+      throw new Error("Архив ripgrep поврежден: некорректная ZIP file header запись.");
+    }
+    const flags = buffer.readUInt16LE(offset + 8);
+    const compressionMethod = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localHeaderOffset = buffer.readUInt32LE(offset + 42);
+    const nameStart = offset + 46;
+    const nameEnd = nameStart + nameLength;
+    if (nameEnd > buffer.length) {
+      throw new Error("Архив ripgrep поврежден: имя ZIP entry выходит за пределы файла.");
+    }
+    const nameBuffer = buffer.subarray(nameStart, nameEnd);
+    const name = decodeZipName(nameBuffer, flags).replace(/\\/g, "/");
+    entries.push({
+      name,
+      directory: name.endsWith("/"),
+      compressionMethod,
+      compressedSize,
+      localHeaderOffset
+    });
+    offset = nameEnd + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function findEndOfCentralDirectory(buffer: Buffer): number {
+  if (buffer.length < 22) {
+    return -1;
+  }
+  const minOffset = Math.max(0, buffer.length - 65_557);
+  for (let offset = buffer.length - 22; offset >= minOffset; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === 0x06054b50) {
+      return offset;
+    }
+  }
+  return -1;
+}
+
+function readZipEntryPayload(buffer: Buffer, entry: ZipEntry): Buffer {
+  const offset = entry.localHeaderOffset;
+  if (offset + 30 > buffer.length || buffer.readUInt32LE(offset) !== 0x04034b50) {
+    throw new Error(`Архив ripgrep поврежден: не найден local ZIP header для ${entry.name}.`);
+  }
+  const nameLength = buffer.readUInt16LE(offset + 26);
+  const extraLength = buffer.readUInt16LE(offset + 28);
+  const dataStart = offset + 30 + nameLength + extraLength;
+  const dataEnd = dataStart + entry.compressedSize;
+  if (dataEnd > buffer.length) {
+    throw new Error(`Архив ripgrep поврежден: данные ZIP entry ${entry.name} выходят за пределы файла.`);
+  }
+  return buffer.subarray(dataStart, dataEnd);
+}
+
+function inflateZipEntry(buffer: Buffer, compressionMethod: number, entryName: string): Buffer {
+  if (compressionMethod === 0) {
+    return buffer;
+  }
+  if (compressionMethod === 8) {
+    return zlib.inflateRawSync(buffer);
+  }
+  throw new Error(`Архив ripgrep содержит неподдерживаемый ZIP compression method ${compressionMethod} для ${entryName}.`);
+}
+
+function decodeZipName(buffer: Buffer, flags: number): string {
+  if (flags & 0x0800) {
+    return buffer.toString("utf8");
+  }
+  return buffer.toString("utf8");
+}
+
+function isEmptyTarBlock(header: Buffer): boolean {
+  for (const byte of header) {
+    if (byte !== 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function tarEntryName(header: Buffer): string {
+  const name = readNullTerminatedString(header.subarray(0, 100));
+  const prefix = readNullTerminatedString(header.subarray(345, 500));
+  return (prefix ? `${prefix}/${name}` : name).replace(/\\/g, "/");
+}
+
+function parseTarOctal(buffer: Buffer): number {
+  const raw = readNullTerminatedString(buffer).trim();
+  return raw ? Number.parseInt(raw, 8) || 0 : 0;
+}
+
+function readNullTerminatedString(buffer: Buffer): string {
+  const zero = buffer.indexOf(0);
+  const end = zero >= 0 ? zero : buffer.length;
+  return buffer.subarray(0, end).toString("utf8");
+}
+
+function safeExtractPath(root: string, entryName: string): string {
+  const normalizedName = entryName.replace(/^\/+/, "");
+  if (!normalizedName || normalizedName.includes("\0")) {
+    return "";
+  }
+  const resolvedRoot = path.resolve(root);
+  const target = path.resolve(resolvedRoot, normalizedName);
+  if (target !== resolvedRoot && !target.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error(`Архив ripgrep содержит небезопасный путь: ${entryName}.`);
+  }
+  return target;
 }
 
 function validateArchivePayload(buffer: Buffer, assetName: string): void {
@@ -225,40 +401,6 @@ function payloadPreview(buffer: Buffer): string {
     .replace(/[^\x20-\x7eа-яА-ЯёЁ]+/g, " ")
     .trim();
   return preview ? ` Начало ответа: ${preview}` : "";
-}
-
-function runProcess(command: string, args: string[], timeoutMs = 120_000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let output = "";
-    const child = spawn(command, args, {
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error(`${command} превысил таймаут.`));
-    }, timeoutMs);
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      output = `${output}${chunk}`.slice(-4000);
-    });
-    child.stderr.on("data", (chunk: string) => {
-      output = `${output}${chunk}`.slice(-4000);
-    });
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`${command} завершился с кодом ${code ?? "-"}. ${output}`.trim()));
-    });
-  });
 }
 
 async function findRipgrepExecutable(root: string): Promise<string | undefined> {

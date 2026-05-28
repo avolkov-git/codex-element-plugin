@@ -69,3 +69,20 @@ chmod 755 bin/darwin-arm64/codex
 ```
 
 Плагин не меняет системный `PATH` и не требует `sudo`: все пользовательские данные пишутся в user-writable config root, а tool paths добавляются только в окружение дочернего процесса `codex app-server`.
+
+## Ripgrep
+
+`rg` является runtime tool, а не системной зависимостью плагина. Плагин поддерживает три сценария:
+
+- найти уже установленный `rg` в `PATH` или стандартных user-local каталогах;
+- принять ручной путь в `Codex: Настройки`;
+- установить managed `rg` в `<configRoot>/server/tools/ripgrep/...`.
+
+Managed install не пишет в `/usr`, `/opt`, `Program Files` или системный `PATH`. Каталог `rg` добавляется только в `PATH` дочернего процесса `codex app-server`, вместе с `RIPGREP_PATH`.
+
+Распаковка release-архивов выполняется внутри Node.js:
+
+- `.zip` без PowerShell/`Expand-Archive`;
+- `.tar.gz` без внешнего `tar`.
+
+Это важно для закрытых контуров, сервисных пользователей Linux и Windows-инсталляций без полноценного shell окружения. Если download с GitHub недоступен, пользовательский fallback - вручную указать путь к уже установленному `rg`.

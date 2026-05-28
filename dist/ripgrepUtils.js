@@ -216,6 +216,13 @@ function buildRipgrepEnvPatchResult(ripgrepPath) {
             warning: "Настроенный путь до rg пропущен при запуске runtime: файл не найден или путь не является файлом."
         };
     }
+    if (!canExecuteRipgrep(executable)) {
+        return {
+            env: {},
+            ripgrepPath: executable,
+            warning: "Настроенный путь до rg пропущен при запуске runtime: файл не имеет права на выполнение."
+        };
+    }
     const dir = path.dirname(executable);
     const currentPath = process.env.Path || process.env.PATH || "";
     const pathEntries = currentPath.split(path.delimiter).filter(Boolean);
@@ -256,6 +263,18 @@ function resolveRipgrepExecutablePathSync(input) {
     }
     catch {
         return "";
+    }
+}
+function canExecuteRipgrep(filePath) {
+    if (process.platform === "win32") {
+        return true;
+    }
+    try {
+        fs.accessSync(filePath, fs.constants.X_OK);
+        return true;
+    }
+    catch {
+        return false;
     }
 }
 function normalizePathForCompare(input) {
