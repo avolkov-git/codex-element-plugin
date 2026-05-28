@@ -51,6 +51,14 @@ npm run preflight:runtime:release
 node scripts/verify-runtime-binaries.js --platform linux-x64 --root /path/to/staged/plugin
 ```
 
+Для dry-run проверки окружения без запуска `codex`:
+
+```bash
+node scripts/simulate-runtime-env.js --platform linux-x64 --service-user --empty-env --plugin-root /path/to/staged/plugin --config-root /var/lib/codex-element
+```
+
+Dry-run проверяет выбор runtime, config root, `CODEX_HOME`, `HOME/XDG_*`, `PATH`, `rg` patch и базовые права на каталоги. Script ничего не создает и не меняет.
+
 Unix-поставка должна сохранять executable bit:
 
 ```bash

@@ -33,7 +33,8 @@
     "check": "tsc -p ./ --noEmit",
     "eval:context": "node scripts/context-acceptance-check.js",
     "preflight:runtime": "node scripts/verify-runtime-binaries.js --require-current",
-    "preflight:runtime:release": "node scripts/verify-runtime-binaries.js --require-all"
+    "preflight:runtime:release": "node scripts/verify-runtime-binaries.js --require-all",
+    "preflight:runtime:dry-run": "node scripts/simulate-runtime-env.js --platform win32-x64 --allow-lfs-pointer"
   },
   "contributes": {
     "commands": [
