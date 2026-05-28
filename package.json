@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.63",
+  "version": "0.1.64",
   "publisher": "element-ai",
   "license": "UNLICENSED",
   "private": true,
@@ -34,7 +34,9 @@
     "eval:context": "node scripts/context-acceptance-check.js",
     "preflight:runtime": "node scripts/verify-runtime-binaries.js --require-current",
     "preflight:runtime:release": "node scripts/verify-runtime-binaries.js --require-all",
-    "preflight:runtime:dry-run": "node scripts/simulate-runtime-env.js --platform win32-x64 --allow-lfs-pointer"
+    "preflight:runtime:dry-run": "node scripts/simulate-runtime-env.js --platform win32-x64 --allow-lfs-pointer",
+    "preflight:deploy": "node scripts/verify-deploy-payload.js --platform win32-x64 --allow-lfs-pointer",
+    "preflight:deploy:release": "node scripts/verify-deploy-payload.js --require-all --strict"
   },
   "contributes": {
     "commands": [

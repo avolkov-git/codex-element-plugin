@@ -59,6 +59,35 @@ node scripts/simulate-runtime-env.js --platform linux-x64 --service-user --empty
 
 Dry-run проверяет выбор runtime, config root, `CODEX_HOME`, `HOME/XDG_*`, `PATH`, `rg` patch и базовые права на каталоги. Script ничего не создает и не меняет.
 
+## Deploy Payload Preflight
+
+Перед копированием каталога плагина в `/plugins` нужно проверять не только runtime-бинарник, но и сам deploy payload:
+
+```bash
+npm run preflight:deploy
+```
+
+Для проверки staging-каталога под конкретную платформу:
+
+```bash
+node scripts/verify-deploy-payload.js --root /path/to/staged/plugin --platform linux-x64 --strict
+```
+
+Для release-пакета со всей платформенной матрицей:
+
+```bash
+npm run preflight:deploy:release
+```
+
+Deploy preflight проверяет:
+
+- обязательные файлы плагина: `package.json`, `dist/extension.js`, `media/*`, базовый context и icon;
+- `package.json.main` и согласованность версий `package.json` / `package-lock.json`;
+- runtime-бинарники для выбранной платформы или всей матрицы;
+- отсутствие deploy-мусора: `node_modules`, `.git`, `.tmp`, `coverage`, `.DS_Store`, `Thumbs.db`, `*.log`, `*.tmp`, `*.vsix`.
+
+В dev-режиме `--allow-lfs-pointer` допускает Git LFS pointer как warning, чтобы можно было проверять текущую рабочую копию. В `--strict` pointer считается ошибкой: в реальной поставке в `/plugins` должны лежать настоящие executable-файлы.
+
 Unix-поставка должна сохранять executable bit:
 
 ```bash
