@@ -1072,13 +1072,14 @@
         : "Документация не используется";
     const corpora = Array.isArray(details.corpora) ? details.corpora : [];
     const roots = Array.isArray(details.allowedRoots) ? details.allowedRoots : [];
+    const showRetrievalStats = details.lastRetrievalMode && details.lastRetrievalMode !== "metadata";
     return `
 	      <div class="context-details-title">Документация</div>
 	      <div class="context-details-row"><span>Источник</span><strong>${escapeHtml(sourceLabel)}</strong></div>
 	      <div class="context-details-row"><span>Retrieval</span><strong>${escapeHtml(docsRetrievalModeLabel(details.lastRetrievalMode))}</strong></div>
-	      ${details.lastRetrievalAt ? `<div class="context-details-row"><span>Последний поиск</span><span>${escapeHtml(formatDetailsDate(details.lastRetrievalAt))}</span></div>` : ""}
-	      ${details.lastQueryCount !== undefined ? `<div class="context-details-row"><span>Запросов</span><span>${Number(details.lastQueryCount)}</span></div>` : ""}
-	      ${details.lastSelectedFragments !== undefined ? `<div class="context-details-row"><span>Фрагментов выбрано</span><span>${Number(details.lastSelectedFragments)}</span></div>` : ""}
+	      ${showRetrievalStats && details.lastRetrievalAt ? `<div class="context-details-row"><span>Последний поиск</span><span>${escapeHtml(formatDetailsDate(details.lastRetrievalAt))}</span></div>` : ""}
+	      ${showRetrievalStats && details.lastQueryCount !== undefined ? `<div class="context-details-row"><span>Запросов</span><span>${Number(details.lastQueryCount)}</span></div>` : ""}
+	      ${showRetrievalStats && details.lastSelectedFragments !== undefined ? `<div class="context-details-row"><span>Фрагментов выбрано</span><span>${Number(details.lastSelectedFragments)}</span></div>` : ""}
 	      ${details.normalizedPath ? `<div class="context-details-row"><span>Каталог</span><code>${escapeHtml(details.normalizedPath)}</code></div>` : ""}
       ${details.sourcePath ? `<div class="context-details-row"><span>Исходный каталог</span><code>${escapeHtml(details.sourcePath)}</code></div>` : ""}
       ${details.indexPath ? `<div class="context-details-row"><span>Индекс</span><code>${escapeHtml(details.indexPath)}</code></div>` : ""}
@@ -1125,6 +1126,7 @@
 	  }
 
 	  function docsRetrievalModeLabel(mode) {
+	    if (mode === "metadata") return "настройки источников";
 	    if (mode === "model-assisted") return "model-assisted";
 	    if (mode === "deterministic") return "deterministic";
 	    if (mode === "fallback") return "fallback";

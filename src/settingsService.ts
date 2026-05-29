@@ -145,14 +145,17 @@ export class SettingsService {
   }
 
   getSidebarDocsStatus(): { status: "notConfigured" | "configured" | "error"; label: string } {
-    const details = this.getDocsContextDetails();
-    if (details.status === "notConfigured") {
+    const docs = this.readSettings().docs;
+    const normalizedPath = docs?.normalizedPath?.trim() ?? "";
+    const sourcePath = docs?.sourcePath?.trim() ?? "";
+    const configuredPath = normalizedPath || sourcePath;
+    if (!configuredPath) {
       return { status: "notConfigured", label: "Документация не настроена" };
     }
-    if (details.status === "error") {
+    if (!fs.existsSync(configuredPath)) {
       return { status: "error", label: "Документация недоступна" };
     }
-    return { status: "configured", label: "Документация активна" };
+    return { status: "configured", label: "Документация настроена" };
   }
 
   getDocsContextDetails(): DocsContextDetails {

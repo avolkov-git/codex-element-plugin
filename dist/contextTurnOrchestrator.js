@@ -16,8 +16,26 @@ class ContextTurnOrchestrator {
         let diagnosticsRoute = "skip";
         let rulesRoute = "skip";
         let toolWorklog = [];
-        const explicitDocs = await this.options.docsContext.buildExplicitPathContext(request.prompt, request.cwd);
-        if (explicitDocs?.text) {
+        const docsMetadataRoute = routing.docsMode === "metadata";
+        const explicitDocs = docsMetadataRoute
+            ? undefined
+            : await this.options.docsContext.buildExplicitPathContext(request.prompt, request.cwd);
+        if (docsMetadataRoute) {
+            const metadataDocs = await this.options.docsContext.buildMetadataContext();
+            docsRoute = "metadata";
+            contextBlocks.push({
+                source: "docs",
+                text: metadataDocs.text,
+                matchCount: metadataDocs.matchCount,
+                mode: "metadata",
+                priority: 140,
+                metadata: {
+                    route: "docsMetadata",
+                    sourcePath: metadataDocs.sourcePath
+                }
+            });
+        }
+        else if (explicitDocs?.text) {
             docsRoute = explicitDocs.mode === "overview" ? "explicit-overview" : "explicit";
             contextBlocks.push({
                 source: "docs",
@@ -39,7 +57,8 @@ class ContextTurnOrchestrator {
                 || this.options.diagnosticsContext.isDiagnosticsRelevantPrompt(request.prompt));
         const diagnosticsPriority = request.diagnosticsPriority
             ?? (request.forceDiagnosticsContext || this.options.diagnosticsContext.isHighPriorityPrompt(request.prompt) ? 115 : 90);
-        const shouldUseContextTools = routing.shouldUseDocsContext
+        const shouldUseDocsToolContext = routing.shouldUseDocsContext && !docsMetadataRoute;
+        const shouldUseContextTools = shouldUseDocsToolContext
             || routing.shouldUseProjectContext
             || shouldUseDiagnostics;
         const mode = this.selectMode(shouldUseContextTools);
@@ -71,9 +90,10 @@ class ContextTurnOrchestrator {
         }
         await this.updateProjectState(request.chatId, request.chatKind, routing.shouldUseProjectContext);
         contextBlocks.push(...explicitContextBlocks);
+        const shouldUseSupportDocsContext = routing.shouldUseDocsContext && !docsMetadataRoute;
         const shouldUseSupportContext = request.chatKind === "project"
             && !routing.isSmallTalk
-            && (routing.shouldUseDocsContext
+            && (shouldUseSupportDocsContext
                 || routing.shouldUseProjectContext
                 || diagnosticsRoute === "added"
                 || Boolean(explicitDocs?.text)

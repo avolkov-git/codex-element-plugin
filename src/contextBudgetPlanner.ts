@@ -3,6 +3,7 @@ import type { ContextBlock } from "./contextRouterService";
 export type ContextBudgetRoute =
   | "smallTalk"
   | "generalChat"
+  | "docsMetadata"
   | "docsOverview"
   | "docsLookup"
   | "technicalProject"
@@ -72,6 +73,15 @@ const ROUTE_SOURCE_PRIORITIES: Record<ContextBudgetRoute, Partial<Record<Context
     project: 55,
     diagnostics: 45,
     baseRules: 10,
+    rules: 0
+  },
+  docsMetadata: {
+    docs: 140,
+    editorSelection: 20,
+    editorFile: 20,
+    diagnostics: 10,
+    project: 10,
+    baseRules: 0,
     rules: 0
   },
   docsOverview: {
@@ -263,6 +273,7 @@ function normalizeRoute(route: ContextBudgetOptions["route"]): ContextBudgetRout
   if (
     route === "smallTalk"
     || route === "generalChat"
+    || route === "docsMetadata"
     || route === "docsOverview"
     || route === "docsLookup"
     || route === "technicalProject"

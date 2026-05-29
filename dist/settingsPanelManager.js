@@ -59,6 +59,7 @@ class SettingsPanelManager {
             stage: "idle",
             message: ""
         };
+        this.ripgrepDiscoveryAttempted = false;
     }
     registerSerializer() {
         return vscode.window.registerWebviewPanelSerializer(exports.SETTINGS_PANEL_VIEW_TYPE, {
@@ -119,6 +120,7 @@ class SettingsPanelManager {
         if (message.type === "ready") {
             this.logger.info("Settings panel webview ready.");
             this.logger.info(`Settings panel webview assets: ${message.assetMode ?? "unknown"}.`);
+            await this.discoverRipgrepIfNeeded();
             await this.postSnapshot(panel);
             return;
         }
@@ -236,6 +238,21 @@ class SettingsPanelManager {
                 ripgrepInstaller: this.ripgrepProgress
             }
         });
+    }
+    async discoverRipgrepIfNeeded() {
+        if (this.ripgrepDiscoveryAttempted) {
+            return;
+        }
+        this.ripgrepDiscoveryAttempted = true;
+        try {
+            const discovered = await this.settings.discoverRipgrepPath();
+            if (discovered?.ripgrepPath) {
+                this.logger.info(`ripgrep discovered from settings panel: version=${discovered.ripgrepVersion || "-"}; path=${discovered.ripgrepPath}.`);
+            }
+        }
+        catch (error) {
+            this.logger.warn(`ripgrep discovery from settings panel skipped: ${error instanceof Error ? error.message : "unknown error"}`);
+        }
     }
     async installRipgrep(panel) {
         try {

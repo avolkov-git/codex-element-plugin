@@ -15,7 +15,7 @@ export interface DocsPlannerRuntimeRequest {
 
 export type DocsPlannerRunner = (request: DocsPlannerRuntimeRequest) => Promise<string>;
 
-type DocsRetrievalMode = "none" | "deterministic" | "model-assisted" | "fallback";
+type DocsRetrievalMode = "none" | "metadata" | "deterministic" | "model-assisted" | "fallback";
 
 interface LastRetrievalState {
   mode: DocsRetrievalMode;
@@ -71,6 +71,12 @@ export class DocsRetrievalLoopService {
       this.logger.warn(`Docs retrieval planner fallback: ${error instanceof Error ? error.message : String(error)}.`);
       return this.buildDeterministicContext(prompt, "planner-failed", "fallback");
     }
+  }
+
+  async buildMetadataContext(): Promise<DocsContextResult> {
+    const result = await this.docsContext.buildMetadataContext();
+    this.record("metadata", 0, result.matchCount);
+    return result;
   }
 
   invalidate(root?: string): void {

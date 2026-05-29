@@ -43,6 +43,11 @@ class DocsRetrievalLoopService {
             return this.buildDeterministicContext(prompt, "planner-failed", "fallback");
         }
     }
+    async buildMetadataContext() {
+        const result = await this.docsContext.buildMetadataContext();
+        this.record("metadata", 0, result.matchCount);
+        return result;
+    }
     invalidate(root) {
         this.docsContext.invalidate(root);
         this.record("none", 0, 0);

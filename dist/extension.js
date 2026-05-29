@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
+const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const approvalAttentionService_1 = require("./approvalAttentionService");
 const baseContextService_1 = require("./baseContextService");
@@ -72,15 +73,8 @@ async function activate(context) {
     logger.info("Codex Element V1 activating.");
     perf.mark("logger");
     const settings = new settingsService_1.SettingsService(context);
-    try {
-        const discoveredRipgrep = await settings.discoverRipgrepPath();
-        if (discoveredRipgrep?.ripgrepPath) {
-            logger.info(`ripgrep discovered: version=${discoveredRipgrep.ripgrepVersion || "-"}; path=${discoveredRipgrep.ripgrepPath}.`);
-        }
-    }
-    catch (error) {
-        logger.warn(`ripgrep discovery skipped: ${error instanceof Error ? error.message : "unknown error"}`);
-    }
+    logger.enableFileLogging(path.join(settings.getConfigRoot(), "logs"));
+    logger.info("ripgrep discovery deferred until settings/runtime usage.");
     const contextRouter = new contextRouterService_1.ContextRouterService();
     const baseContext = new baseContextService_1.BaseContextService(context, logger);
     const diagnosticsContext = new diagnosticsContextService_1.DiagnosticsContextService(logger);
@@ -224,6 +218,12 @@ async function activate(context) {
         if (!resolvedProfileId || historyProfileId === resolvedProfileId) {
             return;
         }
+        if (state.getSidebarSnapshot().auth.profileLabel !== resolvedProfileId) {
+            state.setAuth({
+                profileLabel: resolvedProfileId,
+                message: "Сохраненная авторизация будет проверена при отправке или входе."
+            });
+        }
         if (state.hasChats()) {
             historyProfileId = resolvedProfileId;
             await history.saveNow(historyProfileId, state.exportChatHistory());
@@ -337,6 +337,15 @@ async function activate(context) {
         settingsPanels.open();
     }), vscode.commands.registerCommand("codexElement.openLogs", () => {
         logger.show();
+    }), vscode.commands.registerCommand("codexElement.openLogFolder", async () => {
+        await logger.openLogFolder();
+    }), vscode.commands.registerCommand("codexElement.exportLogsToWorkspace", async () => {
+        const targetDirectory = await logger.exportLogsToWorkspace();
+        if (!targetDirectory) {
+            vscode.window.showWarningMessage("Не удалось экспортировать логи: workspace или файловые логи недоступны.");
+            return;
+        }
+        vscode.window.showInformationMessage(`Логи Codex экспортированы: ${targetDirectory}.`);
     }), vscode.commands.registerCommand("codexElement.probeCapabilities", async () => {
         await runtime.probeCapabilities();
         logger.show();

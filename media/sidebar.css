@@ -222,6 +222,40 @@ input {
   text-align: center;
 }
 
+.auth-strip {
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--codex-hover);
+  color: var(--codex-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.auth-strip.error {
+  color: var(--vscode-errorForeground, #c72e0f);
+}
+
+.auth-strip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.link-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--vscode-textLink-foreground, var(--accent));
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.link-button:hover {
+  color: var(--vscode-textLink-activeForeground, var(--accent-hover));
+}
+
 .new-session {
   display: flex;
   align-items: center;

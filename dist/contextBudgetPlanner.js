@@ -31,6 +31,15 @@ const ROUTE_SOURCE_PRIORITIES = {
         baseRules: 10,
         rules: 0
     },
+    docsMetadata: {
+        docs: 140,
+        editorSelection: 20,
+        editorFile: 20,
+        diagnostics: 10,
+        project: 10,
+        baseRules: 0,
+        rules: 0
+    },
     docsOverview: {
         docs: 135,
         editorSelection: 70,
@@ -187,6 +196,7 @@ function getEffectivePriority(block, route) {
 function normalizeRoute(route) {
     if (route === "smallTalk"
         || route === "generalChat"
+        || route === "docsMetadata"
         || route === "docsOverview"
         || route === "docsLookup"
         || route === "technicalProject"

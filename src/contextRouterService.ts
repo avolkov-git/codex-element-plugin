@@ -4,8 +4,8 @@ export interface ContextRoutingDecision {
   readonly isSmallTalk: boolean;
   readonly isProjectLike: boolean;
   readonly isDocsLike: boolean;
-  readonly route: "smallTalk" | "generalChat" | "docsOverview" | "docsLookup" | "technicalProject" | "explicitProject" | "projectNoContext";
-  readonly docsMode: "skip" | "overview" | "lookup";
+  readonly route: "smallTalk" | "generalChat" | "docsMetadata" | "docsOverview" | "docsLookup" | "technicalProject" | "explicitProject" | "projectNoContext";
+  readonly docsMode: "skip" | "metadata" | "overview" | "lookup";
   readonly projectMode: "skip" | "technical" | "explicit";
   readonly shouldUseProjectContext: boolean;
   readonly shouldUseDocsContext: boolean;
@@ -16,7 +16,7 @@ export interface ContextBlock {
   readonly source: "baseRules" | "project" | "docs" | "diagnostics" | "rules" | "editorFile" | "editorSelection";
   readonly text: string;
   readonly matchCount: number;
-  readonly mode?: "matched" | "fallback" | "overview" | "skipped";
+  readonly mode?: "matched" | "fallback" | "metadata" | "overview" | "skipped";
   readonly score?: number;
   readonly priority?: number;
   readonly tokensEstimate?: number;
@@ -137,12 +137,27 @@ const TECHNICAL_PROJECT_TERMS = [
 export class ContextRouterService {
   public decide(prompt: string, chatKind: ChatKind): ContextRoutingDecision {
     const normalized = normalizePrompt(prompt);
+    const docsMetadata = isDocsMetadataPrompt(normalized);
     const docsOverview = isDocsOverviewPrompt(normalized);
-    const docsLike = isDocsPrompt(prompt, normalized);
+    const docsLike = docsMetadata || isDocsPrompt(prompt, normalized);
     const explicitProject = isExplicitProjectPrompt(normalized);
     const technicalProject = isTechnicalProjectPrompt(normalized);
     const projectLike = explicitProject || technicalProject;
     const smallTalk = !docsLike && !projectLike && isSmallTalk(normalized);
+
+    if (docsMetadata) {
+      return {
+        isSmallTalk: false,
+        isProjectLike: false,
+        isDocsLike: true,
+        route: "docsMetadata",
+        docsMode: "metadata",
+        projectMode: "skip",
+        shouldUseProjectContext: false,
+        shouldUseDocsContext: true,
+        reason: "docs-metadata"
+      };
+    }
 
     if (chatKind === "general") {
       return {
@@ -340,6 +355,10 @@ function isSmallTalk(prompt: string): boolean {
 }
 
 function isDocsPrompt(originalPrompt: string, normalizedPrompt: string): boolean {
+  if (isDocsMetadataPrompt(normalizedPrompt)) {
+    return true;
+  }
+
   if (isDocsOverviewPrompt(normalizedPrompt)) {
     return true;
   }
@@ -362,6 +381,15 @@ function isDocsPrompt(originalPrompt: string, normalizedPrompt: string): boolean
 
   const originalTerms = originalPrompt.match(/[\p{L}\p{N}_-]+/gu) ?? [];
   return originalTerms.some((term) => term.length >= 12 && /[\p{Lu}][\p{Ll}]+[\p{Lu}]/u.test(term));
+}
+
+function isDocsMetadataPrompt(prompt: string): boolean {
+  const hasDocs = /(?:документац|справк|корпус|docs?|normalized|нормализован|источник|source|index|индекс)/u.test(prompt);
+  if (!hasDocs) {
+    return false;
+  }
+
+  return /(?:покажи|скажи|выведи|какой|какая|какие|где|куда|откуда|что за|используется|настроен|настройк|путь|каталог|папк|root|roots|source|источник|index|индекс|fingerprint)/u.test(prompt);
 }
 
 function isDocsOverviewPrompt(prompt: string): boolean {

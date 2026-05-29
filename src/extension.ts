@@ -1,3 +1,4 @@
+import * as path from "path";
 import * as vscode from "vscode";
 import { ApprovalAttentionService } from "./approvalAttentionService";
 import { BaseContextService } from "./baseContextService";
@@ -39,16 +40,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   perf.mark("logger");
 
   const settings = new SettingsService(context);
-  try {
-    const discoveredRipgrep = await settings.discoverRipgrepPath();
-    if (discoveredRipgrep?.ripgrepPath) {
-      logger.info(
-        `ripgrep discovered: version=${discoveredRipgrep.ripgrepVersion || "-"}; path=${discoveredRipgrep.ripgrepPath}.`
-      );
-    }
-  } catch (error) {
-    logger.warn(`ripgrep discovery skipped: ${error instanceof Error ? error.message : "unknown error"}`);
-  }
+  logger.enableFileLogging(path.join(settings.getConfigRoot(), "logs"));
+  logger.info("ripgrep discovery deferred until settings/runtime usage.");
   const contextRouter = new ContextRouterService();
   const baseContext = new BaseContextService(context, logger);
   const diagnosticsContext = new DiagnosticsContextService(logger);
@@ -197,6 +190,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
+    if (state.getSidebarSnapshot().auth.profileLabel !== resolvedProfileId) {
+      state.setAuth({
+        profileLabel: resolvedProfileId,
+        message: "Сохраненная авторизация будет проверена при отправке или входе."
+      });
+    }
+
     if (state.hasChats()) {
       historyProfileId = resolvedProfileId;
       await history.saveNow(historyProfileId, state.exportChatHistory());
@@ -321,6 +321,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("codexElement.openLogs", () => {
       logger.show();
+    }),
+    vscode.commands.registerCommand("codexElement.openLogFolder", async () => {
+      await logger.openLogFolder();
+    }),
+    vscode.commands.registerCommand("codexElement.exportLogsToWorkspace", async () => {
+      const targetDirectory = await logger.exportLogsToWorkspace();
+      if (!targetDirectory) {
+        vscode.window.showWarningMessage("Не удалось экспортировать логи: workspace или файловые логи недоступны.");
+        return;
+      }
+      vscode.window.showInformationMessage(`Логи Codex экспортированы: ${targetDirectory}.`);
     }),
     vscode.commands.registerCommand("codexElement.probeCapabilities", async () => {
       await runtime.probeCapabilities();

@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.67",
+  "version": "0.1.68",
   "publisher": "element-ai",
   "license": "UNLICENSED",
   "private": true,
@@ -23,6 +23,8 @@
     "onCommand:codexElement.openProjectRules",
     "onCommand:codexElement.openSettings",
     "onCommand:codexElement.openLogs",
+    "onCommand:codexElement.openLogFolder",
+    "onCommand:codexElement.exportLogsToWorkspace",
     "onCommand:codexElement.probeCapabilities",
     "onCommand:codexElement.explainFile",
     "onCommand:codexElement.explainSelection"
@@ -67,6 +69,16 @@
         "command": "codexElement.openLogs",
         "title": "Codex: Логи",
         "icon": "$(output)"
+      },
+      {
+        "command": "codexElement.openLogFolder",
+        "title": "Codex: Открыть папку логов",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "codexElement.exportLogsToWorkspace",
+        "title": "Codex: Экспортировать логи в workspace",
+        "icon": "$(export)"
       },
       {
         "command": "codexElement.probeCapabilities",
@@ -136,6 +148,11 @@
           "command": "codexElement.openLogs",
           "when": "view == codexElement.sidebar",
           "group": "navigation@2"
+        },
+        {
+          "command": "codexElement.openLogFolder",
+          "when": "view == codexElement.sidebar",
+          "group": "navigation@3"
         }
       ],
       "editor/context": [
@@ -171,6 +188,12 @@
         },
         {
           "command": "codexElement.openLogs"
+        },
+        {
+          "command": "codexElement.openLogFolder"
+        },
+        {
+          "command": "codexElement.exportLogsToWorkspace"
         },
         {
           "command": "codexElement.probeCapabilities"

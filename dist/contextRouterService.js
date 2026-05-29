@@ -101,12 +101,26 @@ const TECHNICAL_PROJECT_TERMS = [
 class ContextRouterService {
     decide(prompt, chatKind) {
         const normalized = normalizePrompt(prompt);
+        const docsMetadata = isDocsMetadataPrompt(normalized);
         const docsOverview = isDocsOverviewPrompt(normalized);
-        const docsLike = isDocsPrompt(prompt, normalized);
+        const docsLike = docsMetadata || isDocsPrompt(prompt, normalized);
         const explicitProject = isExplicitProjectPrompt(normalized);
         const technicalProject = isTechnicalProjectPrompt(normalized);
         const projectLike = explicitProject || technicalProject;
         const smallTalk = !docsLike && !projectLike && isSmallTalk(normalized);
+        if (docsMetadata) {
+            return {
+                isSmallTalk: false,
+                isProjectLike: false,
+                isDocsLike: true,
+                route: "docsMetadata",
+                docsMode: "metadata",
+                projectMode: "skip",
+                shouldUseProjectContext: false,
+                shouldUseDocsContext: true,
+                reason: "docs-metadata"
+            };
+        }
         if (chatKind === "general") {
             return {
                 isSmallTalk: smallTalk,
@@ -285,6 +299,9 @@ function isSmallTalk(prompt) {
     return /^(привет|здравствуй|здравствуйте|добрый день|доброе утро|добрый вечер|ок|окей|спасибо|благодарю|пока|hello|hi|hey|thanks|bye)\b/u.test(prompt);
 }
 function isDocsPrompt(originalPrompt, normalizedPrompt) {
+    if (isDocsMetadataPrompt(normalizedPrompt)) {
+        return true;
+    }
     if (isDocsOverviewPrompt(normalizedPrompt)) {
         return true;
     }
@@ -302,6 +319,13 @@ function isDocsPrompt(originalPrompt, normalizedPrompt) {
     }
     const originalTerms = originalPrompt.match(/[\p{L}\p{N}_-]+/gu) ?? [];
     return originalTerms.some((term) => term.length >= 12 && /[\p{Lu}][\p{Ll}]+[\p{Lu}]/u.test(term));
+}
+function isDocsMetadataPrompt(prompt) {
+    const hasDocs = /(?:документац|справк|корпус|docs?|normalized|нормализован|источник|source|index|индекс)/u.test(prompt);
+    if (!hasDocs) {
+        return false;
+    }
+    return /(?:покажи|скажи|выведи|какой|какая|какие|где|куда|откуда|что за|используется|настроен|настройк|путь|каталог|папк|root|roots|source|источник|index|индекс|fingerprint)/u.test(prompt);
 }
 function isDocsOverviewPrompt(prompt) {
     return /(?:ознаком|изучи|прочитай|посмотри|разбери|проанализируй).{0,80}(?:документац|справк|корпус|каталог|папк|источник)/u.test(prompt)

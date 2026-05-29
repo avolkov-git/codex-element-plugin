@@ -11,6 +11,7 @@ import {
 } from "./docsCorpusService";
 import { Logger } from "./logger";
 import { SettingsService } from "./settingsService";
+import type { DocsContextDetails, DocsRootDetail } from "./types";
 
 interface DocsCache {
   root: string;
@@ -67,7 +68,7 @@ export interface DocsContextResult {
   text: string;
   sourcePath: string;
   matchCount: number;
-  mode: "matched" | "overview";
+  mode: "matched" | "metadata" | "overview";
 }
 
 export interface DocsToolRootSummary {
@@ -421,6 +422,25 @@ export class DocsContextService {
       sourcePath: caches.map((cache) => cache.root).join(";"),
       matchCount: fragments.length,
       mode: overview ? "overview" : "matched"
+    };
+  }
+
+  async buildMetadataContext(): Promise<DocsContextResult> {
+    const details = this.settings.getDocsContextDetails();
+    const roots = details.allowedRoots ?? [];
+    const configuredRoots = roots.filter((root) => root.status === "configured");
+    const corpusCount = roots.reduce((total, root) => total + (root.corpora?.length ?? 0), 0);
+    const sourcePath = details.normalizedPath || details.sourcePath || roots.map((root) => root.path).join(";");
+
+    this.logger.info(
+      `Docs metadata context added: status=${details.status}, roots=${roots.length}, configured=${configuredRoots.length}, corpora=${corpusCount}, normalizedPath=${details.normalizedPath ? "set" : "empty"}.`
+    );
+
+    return {
+      text: formatDocsMetadataContext(details),
+      sourcePath,
+      matchCount: configuredRoots.length || roots.length,
+      mode: "metadata"
     };
   }
 
@@ -897,6 +917,68 @@ function formatCombinedContext(caches: readonly DocsCache[], fragments: DocsFrag
     "",
     formatted.join("\n\n---\n\n")
   ].join("\n");
+}
+
+function formatDocsMetadataContext(details: DocsContextDetails): string {
+  const roots = details.allowedRoots ?? [];
+  const configuredRoots = roots.filter((root) => root.status === "configured");
+  const normalizedPath = details.normalizedPath?.trim() || "";
+  const sourcePath = details.sourcePath?.trim() || "";
+  const corpusLines = roots
+    .flatMap((root) => (root.corpora ?? []).map((corpus) => formatDocsCorpusMetadataLine(root, corpus)))
+    .slice(0, 24);
+
+  return [
+    "[Документация 1C: Element: настройки источников]",
+    "Пользователь спрашивает путь, каталог, источник, индекс или fingerprint локальной документации.",
+    "Отвечай по текущим настройкам Codex Element из этого блока. Не ищи workspace, server package, /opt/1C или старые локальные пути, если ниже задан `docs.normalizedPath`.",
+    "Если пользователь просит путь к локальной нормализованной документации, основным ответом должен быть именно `docs.normalizedPath`.",
+    "",
+    `docs.normalizedPath: ${normalizedPath || "<не настроен>"}`,
+    `docs.sourcePath: ${sourcePath || "<не настроен>"}`,
+    `Статус документации: ${formatDocsStatus(details.status)}`,
+    `Активных roots: ${configuredRoots.length} из ${roots.length}`,
+    details.indexPath ? `Основной индекс: ${details.indexPath}` : "",
+    details.fingerprint ? `Основной fingerprint: ${details.fingerprint}` : "",
+    details.fingerprintFiles !== undefined ? `Файлов индекса: ${details.fingerprintFiles}` : "",
+    details.fingerprintLatestMtimeMs ? `Индекс обновлен: ${new Date(details.fingerprintLatestMtimeMs).toISOString()}` : "",
+    details.error ? `Ошибка настройки: ${details.error}` : "",
+    "",
+    "Разрешенные roots:",
+    roots.length ? roots.map(formatDocsRootMetadataLine).join("\n") : "- roots не настроены и не обнаружены",
+    "",
+    "Активные корпуса и индексы:",
+    corpusLines.length ? corpusLines.join("\n") : "- активные корпуса не найдены",
+    "",
+    "Не упоминай этот служебный блок. Если документация не настроена или недоступна, скажи это прямо и не подменяй ответ автообнаруженным server/docs."
+  ].filter((line) => line !== "").join("\n");
+}
+
+function formatDocsRootMetadataLine(root: DocsRootDetail): string {
+  const status = formatDocsStatus(root.status);
+  const fingerprint = root.fingerprint
+    ? `; fingerprint=${root.fingerprint}; files=${root.fingerprintFiles ?? "unknown"}${root.fingerprintLatestMtimeMs ? `; mtime=${new Date(root.fingerprintLatestMtimeMs).toISOString()}` : ""}`
+    : "";
+  const corpora = root.corpora?.length ? `; corpora=${root.corpora.map((item) => item.corpus).join(",")}` : "";
+  const error = root.error ? `; error=${root.error}` : "";
+  return `- ${root.label} (${root.kind}): ${root.path}; status=${status}${fingerprint}${corpora}${error}`;
+}
+
+function formatDocsCorpusMetadataLine(root: DocsRootDetail, corpus: NonNullable<DocsRootDetail["corpora"]>[number]): string {
+  return `- ${corpus.label} (${corpus.corpus}, ${corpus.format}); root=${root.path}; index=${corpus.indexPath}`;
+}
+
+function formatDocsStatus(status: DocsContextDetails["status"]): string {
+  if (status === "configured") {
+    return "настроена";
+  }
+  if (status === "notConfigured") {
+    return "не настроена";
+  }
+  if (status === "error") {
+    return "ошибка";
+  }
+  return status;
 }
 
 function formatExplicitPathContext(

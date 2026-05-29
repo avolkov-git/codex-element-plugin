@@ -31,7 +31,7 @@
 
   vscode.postMessage({ type: "ready", assetMode });
   window.setInterval(() => {
-    if (state.snapshot && state.snapshot.auth.status === "authenticated") {
+    if (state.snapshot && shouldShowWorkspace(state.snapshot)) {
       render();
     }
   }, 30000);
@@ -40,13 +40,20 @@
   function render() {
     const root = document.getElementById("root");
     const snapshot = state.snapshot;
+    const showAuthFlow = snapshot && snapshot.auth.status !== "authenticated" && state.authMode !== "choose";
     root.innerHTML = `
       <main class="app">
         ${brand()}
-        ${snapshot ? (snapshot.auth.status === "authenticated" ? chatSections(snapshot) : authCard(snapshot)) : loading()}
+        ${snapshot ? (showAuthFlow ? authCard(snapshot) : shouldShowWorkspace(snapshot) ? chatSections(snapshot) : authCard(snapshot)) : loading()}
       </main>
     `;
     bind(root);
+  }
+
+  function shouldShowWorkspace(snapshot) {
+    return snapshot.auth.status === "authenticated"
+      || Boolean(snapshot.chats && snapshot.chats.length)
+      || Boolean(snapshot.auth.profileLabel && snapshot.auth.profileLabel !== "-");
   }
 
   function brand() {
@@ -176,6 +183,7 @@
 
   function chatSections(snapshot) {
     return `
+      ${authStatusStrip(snapshot)}
       <button class="new-session" data-command="chat.createProject">
         <span class="new-session-plus">+</span>
         <span>Новый диалог</span>
@@ -185,6 +193,34 @@
       ${archiveSection(snapshot)}
       ${notice()}
       ${rateLimits(snapshot)}
+    `;
+  }
+
+  function authStatusStrip(snapshot) {
+    if (snapshot.auth.status === "authenticated") {
+      return "";
+    }
+    const hasKnownProfile = Boolean(snapshot.auth.profileLabel && snapshot.auth.profileLabel !== "-");
+    const waitingForLazyCheck = hasKnownProfile
+      && snapshot.runtime.status === "notStarted"
+      && snapshot.auth.status === "notAuthenticated";
+    if (waitingForLazyCheck) {
+      return "";
+    }
+
+    const message = snapshot.auth.message || "Codex не авторизован.";
+    const canStartLogin = snapshot.auth.status === "error"
+      || (snapshot.runtime.status === "running" && snapshot.auth.status === "notAuthenticated");
+    return `
+      <section class="auth-strip${snapshot.auth.status === "error" ? " error" : ""}">
+        <div>${escapeHtml(message)}</div>
+        ${canStartLogin ? `
+          <div class="auth-strip-actions">
+            <button class="link-button" data-mode="device">DEVICE CODE</button>
+            <button class="link-button" data-mode="apiKey">API KEY</button>
+          </div>
+        ` : ""}
+      </section>
     `;
   }
 

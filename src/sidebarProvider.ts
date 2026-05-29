@@ -58,7 +58,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       this.logger.info("Sidebar webview ready.");
       this.logger.info(`Sidebar webview assets: ${message.assetMode ?? "unknown"}.`);
       this.postSnapshot();
-      void this.handlers.restoreAuth();
+      this.logger.info("Auth restore deferred: runtime will start on explicit auth or send.");
       return;
     }
 

@@ -1377,11 +1377,11 @@ class CodexRuntimeController {
             onStdout: (line) => {
                 const handled = rpcClient.handleLine(line);
                 if (!handled) {
-                    this.options.logger.info(`stdout: ${line}`);
+                    this.options.logger.runtime("info", `stdout: ${line}`);
                 }
             },
             onStderr: (line) => {
-                this.options.logger.warn(`stderr: ${line}`);
+                this.options.logger.runtime("warn", `stderr: ${line}`);
             },
             onError: (error) => {
                 resolveSpawnError(error);

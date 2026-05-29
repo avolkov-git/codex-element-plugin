@@ -204,7 +204,7 @@ export interface DocsContextDetails {
   fingerprint?: string;
   fingerprintFiles?: number;
   fingerprintLatestMtimeMs?: number;
-  lastRetrievalMode?: "none" | "deterministic" | "model-assisted" | "fallback";
+  lastRetrievalMode?: "none" | "metadata" | "deterministic" | "model-assisted" | "fallback";
   lastQueryCount?: number;
   lastSelectedFragments?: number;
   lastRetrievalAt?: string;
