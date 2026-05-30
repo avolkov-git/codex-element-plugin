@@ -80,7 +80,8 @@ class SidebarProvider {
             this.logger.info("Sidebar webview ready.");
             this.logger.info(`Sidebar webview assets: ${message.assetMode ?? "unknown"}.`);
             this.postSnapshot();
-            this.logger.info("Auth restore deferred: runtime will start on explicit auth or send.");
+            this.logger.info("Auth restore requested from sidebar ready.");
+            void this.handlers.restoreAuth();
             return;
         }
         if (message.type !== "command") {

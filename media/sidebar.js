@@ -40,11 +40,12 @@
   function render() {
     const root = document.getElementById("root");
     const snapshot = state.snapshot;
+    const workspaceVisible = snapshot && shouldShowWorkspace(snapshot);
     const showAuthFlow = snapshot && snapshot.auth.status !== "authenticated" && state.authMode !== "choose";
     root.innerHTML = `
       <main class="app">
         ${brand()}
-        ${snapshot ? (showAuthFlow ? authCard(snapshot) : shouldShowWorkspace(snapshot) ? chatSections(snapshot) : authCard(snapshot)) : loading()}
+        ${snapshot ? (workspaceVisible ? `${showAuthFlow ? authCard(snapshot) : ""}${chatSections(snapshot)}` : authCard(snapshot)) : loading()}
       </main>
     `;
     bind(root);
