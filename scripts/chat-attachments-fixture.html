@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Chat Attachments Fixture</title>
+    <link rel="stylesheet" href="../media/chat.css" />
+    <style>
+      :root {
+        --vscode-font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --vscode-font-size: 14px;
+        --vscode-editor-background: #fff;
+        --vscode-editor-foreground: #202124;
+        --vscode-input-background: #f8f8f8;
+        --vscode-input-foreground: #202124;
+        --vscode-input-border: #d1d1d1;
+        --vscode-descriptionForeground: #727272;
+        --vscode-panel-border: #dedede;
+        --vscode-focusBorder: #0e7fd2;
+        --vscode-list-hoverBackground: #ededed;
+        --vscode-toolbar-hoverBackground: #e8e8e8;
+        --vscode-button-background: #0e7fd2;
+        --vscode-button-foreground: #fff;
+      }
+      html, body { height: 100%; margin: 0; }
+      body.vscode-dark {
+        --vscode-editor-background: #181818;
+        --vscode-editor-foreground: #ececec;
+        --vscode-input-background: #242424;
+        --vscode-input-foreground: #ececec;
+        --vscode-input-border: #444;
+        --vscode-descriptionForeground: #a5a5a5;
+        --vscode-panel-border: #373737;
+        --vscode-focusBorder: #3794ff;
+        --vscode-list-hoverBackground: #303030;
+        --vscode-toolbar-hoverBackground: #353535;
+        --vscode-button-background: #0e7fd2;
+      }
+    </style>
+  </head>
+  <body class="vscode-light">
+    <div id="root"></div>
+    <script>
+      if (new URLSearchParams(location.search).get("theme") === "dark") {
+        document.body.className = "vscode-dark";
+      }
+      window.__codexElementWebviewAssetMode = "fixture";
+      window.acquireVsCodeApi = () => ({ postMessage(message) { document.documentElement.dataset.lastFixtureMessage = JSON.stringify(message); }, setState() {} });
+    </script>
+    <script src="../media/chat.js"></script>
+    <script>
+      const attachments = [
+        { id: "attachment-form", kind: "file", name: "Форма.yaml", path: "/workspace/Основное/Форма.yaml", displayPath: "Основное/Форма.yaml", sizeBytes: 4280 },
+        { id: "attachment-module", kind: "file", name: "Модуль.xbsl", path: "/workspace/Основное/Модуль.xbsl", displayPath: "Основное/Модуль.xbsl", sizeBytes: 9860 },
+        { id: "attachment-image", kind: "image", name: "layout.png", path: "/workspace/design/layout.png", displayPath: "design/layout.png", sizeBytes: 128400 }
+      ];
+      const now = new Date().toISOString();
+      const chat = {
+        id: "fixture-chat", kind: "project", title: "Вложения", status: "idle", hasUnread: false,
+        createdAt: now, updatedAt: now, archivedAt: null, accessMode: "workspace-write",
+        modelId: null, modelLabel: "Авто", effort: "medium", speed: "standard", queuedMessages: [],
+        rulesEnabled: true, pendingApproval: null, backendThreadAccessMode: null, backendThreadId: null,
+        activeTurnId: null, activeRunMode: null
+      };
+      const items = [
+        { kind: "message", id: "user-1", role: "user", text: "Проверь форму и модуль по макету.", createdAt: now, status: "complete", attachments },
+        { kind: "message", id: "assistant-1", role: "assistant", text: "Открою прикрепленные файлы и сверю структуру формы с макетом.", createdAt: now, status: "complete" }
+      ];
+      window.dispatchEvent(new MessageEvent("message", { data: { type: "chat.snapshot", snapshot: {
+        kind: "chat", version: 1, chatHeaderMode: "collapsed", chat,
+        runtime: { status: "stopped", label: "Backend остановлен", pid: null },
+        auth: { status: "authorized", accountType: "chatgpt", label: "ChatGPT", message: "" },
+        docs: { status: "ready", label: "Документация активна", normalizedPath: "/docs" },
+        projectContext: { status: "active", label: "Контекст проекта активен", indexedFiles: 12 },
+        rulesContext: { status: "active", label: "Правила включены" },
+        contextWindow: { status: "unknown" }, modelOptions: [{ id: null, label: "Авто" }], modelOptionsStatus: "ready",
+        transcriptWindow: { items, offset: 0, totalCount: items.length, hasBefore: false, hasAfter: false, firstItemId: items[0].id, lastItemId: items[1].id }
+      } } }));
+      window.dispatchEvent(new MessageEvent("message", { data: { type: "event", event: "chat.attachments.selected", payload: attachments } }));
+    </script>
+  </body>
+</html>

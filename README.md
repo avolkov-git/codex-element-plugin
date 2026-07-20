@@ -19,6 +19,8 @@
 
 Поставочный каталог должен содержать реальный `codex` runtime под целевую платформу. Git LFS pointer вместо бинарника считается ошибкой поставки.
 
+Текущая protocol baseline плагина: **Codex CLI/app-server 0.144.5**. Все platform runtime в одном release должны иметь эту же версию. Смешивать runtime разных версий нельзя: методы авторизации, sandbox payload, model metadata и lifecycle notifications меняются вместе с app-server.
+
 Целевой layout:
 
 ```text
@@ -152,6 +154,26 @@ chmod 755 bin/darwin-arm64/codex
 ```
 
 Плагин не меняет системный `PATH` и не требует `sudo`: все пользовательские данные пишутся в user-writable config root, а tool paths добавляются только в окружение дочернего процесса `codex app-server`.
+
+## App-server 0.144.5
+
+- `model/list` является единственным источником доступных моделей для selector-а. Встроенный fallback содержит только `Авто` и не обещает наличие конкретной модели.
+- Плагин принимает runtime metadata: default model, поддерживаемые reasoning efforts и service tiers. Поэтому новые модели и уровни reasoning появляются без обновления жесткого списка в UI.
+- Значение `Быстрый` передается как выбранный runtime `serviceTier`; устаревшее поле `speed` в `turn/start` не используется.
+- Остановка выполняется методом `turn/interrupt` с `threadId` и `turnId`.
+- Сообщение во время активного turn можно поставить в локальную очередь или передать текущему turn методом `turn/steer`. Desktop-like composer использует очередь как действие по умолчанию: `Enter` ставит draft в очередь, `Ctrl/Cmd+Shift+Enter` отправляет его как рекомендацию. Способ отправки также выбирается из меню рядом с кнопкой, а queued messages можно редактировать, переставлять и удалять.
+- Rate limits читаются динамически из `account/rateLimits/read` и `account/rateLimits/updated`. UI не предполагает, что существует ровно пятичасовое и недельное окно, и показывает имена/длительности, возвращенные runtime.
+- `thread/start` использует строковый `sandbox`, а `turn/start` использует объект `sandboxPolicy`; эти формы нельзя взаимозаменять.
+
+### MCP и навыки
+
+- MCP-серверы настраиваются глобально для текущего профиля через `Codex: Настройки`. Плагин использует штатные `codex mcp` и `mcpServerStatus/*`, а сами tools исполняет app-server.
+- Поддерживаются локальные STDIO и удаленные HTTP MCP-серверы, reload без перезапуска IDE, включение/выключение и OAuth.
+- Секрет bearer token не хранится в webview/settings: указывается только имя переменной окружения процесса Element.
+- Навыки загружаются через `skills/list`. В composer они прикрепляются к следующему сообщению как типизированные `skill` inputs и сохраняются вместе с локальной очередью.
+- Загрузка интеграций ленивая и не запускает runtime на activation.
+
+Подробная матрица протокола и smoke-проверки: `docs/app-server-0.144.5.md`.
 
 ## Ripgrep
 

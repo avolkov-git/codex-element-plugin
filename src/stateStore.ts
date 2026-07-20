@@ -1,4 +1,4 @@
-import { ChatActivityDetail, ChatActivityKind, ChatActivityTranscriptItem, ChatClarificationOption, ChatClarificationTranscriptItem, ChatDiffFileSummary, ChatDiffTranscriptItem, ChatEffort, ChatHeaderMode, ChatKind, ChatMessageTranscriptItem, ChatPanelSnapshot, ChatSpeed, ChatSummary, ChatTranscriptItem, ChatTranscriptWindow, ChatTurnRunCounterKind, ChatTurnRunTranscriptItem, ChatWorklogTranscriptItem, ContextWindowUsage, ModelOption, PersistedChatHistory, SidebarSnapshot, WorklogChild } from "./types";
+import { ChatActivityDetail, ChatActivityKind, ChatActivityTranscriptItem, ChatAttachment, ChatClarificationOption, ChatClarificationTranscriptItem, ChatDiffFileSummary, ChatDiffTranscriptItem, ChatEffort, ChatHeaderMode, ChatKind, ChatMessageTranscriptItem, ChatPanelSnapshot, ChatQueuedMessage, ChatRunMode, ChatSpeed, ChatSummary, ChatTranscriptItem, ChatTranscriptWindow, ChatTurnRunCounterKind, ChatTurnRunTranscriptItem, ChatWorklogTranscriptItem, ContextWindowUsage, ModelOption, PersistedChatHistory, SidebarSnapshot, WorklogChild } from "./types";
 
 type AuthPatch = Omit<Partial<SidebarSnapshot["auth"]>, "deviceCode" | "apiKey"> & {
   deviceCode?: Partial<SidebarSnapshot["auth"]["deviceCode"]>;
@@ -11,13 +11,7 @@ export const TRANSCRIPT_INITIAL_WINDOW_SIZE = 40;
 export const TRANSCRIPT_PAGE_SIZE = 20;
 
 const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
-  { id: null, label: "5.5" },
-  { id: "gpt-5.5", label: "GPT-5.5" },
-  { id: "gpt-5.4", label: "GPT-5.4" },
-  { id: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
-  { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
-  { id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
-  { id: "gpt-5.2", label: "GPT-5.2" }
+  { id: null, label: "Авто", description: "Модель по умолчанию Codex" }
 ];
 
 const EMPTY_CONTEXT_WINDOW: ContextWindowUsage = {
@@ -289,9 +283,10 @@ export class StateStore {
       status: "idle",
       accessMode: kind === "project" ? "workspace-write" : "read-only",
       modelId: null,
-      modelLabel: "5.5",
+      modelLabel: "Авто",
       effort: "medium",
       speed: "standard",
+      queuedMessages: [],
       rulesEnabled: kind === "project",
       pendingApproval: null,
       backendThreadAccessMode: null,
@@ -457,15 +452,24 @@ export class StateStore {
 
   setChatModel(chatId: string, modelId: string | null, modelLabel: string): ChatSummary | undefined {
     const chat = this.getChat(chatId);
-    const label = modelLabel.trim() || "5.5";
-    if (!chat || (chat.modelId === modelId && chat.modelLabel === label)) {
+    const label = modelLabel.trim() || "Авто";
+    if (!chat) {
+      return chat;
+    }
+
+    const option = this.resolveModelOption(modelId);
+    const effort = reconcileEffort(chat.effort, option);
+    const speed = chat.speed === "fast" && !option?.serviceTiers?.length ? "standard" : chat.speed;
+    if (chat.modelId === modelId && chat.modelLabel === label && chat.effort === effort && chat.speed === speed) {
       return chat;
     }
 
     const updated: ChatSummary = {
       ...chat,
       modelId,
-      modelLabel: label
+      modelLabel: label,
+      effort,
+      speed
     };
     this.chats = this.chats.map((candidate) => candidate.id === chatId ? updated : candidate);
     this.version += 1;
@@ -505,11 +509,79 @@ export class StateStore {
     return updated;
   }
 
+  enqueueChatMessage(chatId: string, text: string, mode: ChatRunMode, skills: ChatQueuedMessage["skills"] = [], attachments: ChatAttachment[] = []): ChatQueuedMessage | undefined {
+    const chat = this.getChat(chatId);
+    const normalized = text.trim();
+    if (!chat || (!normalized && !attachments.length)) {
+      return undefined;
+    }
+    const queued: ChatQueuedMessage = {
+      id: `queued-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      text: normalized,
+      mode,
+      skills: skills.map((skill) => ({ name: skill.name, path: skill.path })),
+      attachments: attachments.map((attachment) => ({ ...attachment })),
+      createdAt: new Date().toISOString()
+    };
+    this.updateChat(chatId, { queuedMessages: [...chat.queuedMessages, queued] }, "immediate");
+    return queued;
+  }
+
+  removeQueuedChatMessage(chatId: string, messageId: string): boolean {
+    const chat = this.getChat(chatId);
+    if (!chat || !chat.queuedMessages.some((message) => message.id === messageId)) {
+      return false;
+    }
+    this.updateChat(chatId, {
+      queuedMessages: chat.queuedMessages.filter((message) => message.id !== messageId)
+    }, "immediate");
+    return true;
+  }
+
+  moveQueuedChatMessage(chatId: string, messageId: string, direction: "up" | "down"): boolean {
+    const chat = this.getChat(chatId);
+    if (!chat) {
+      return false;
+    }
+    const currentIndex = chat.queuedMessages.findIndex((message) => message.id === messageId);
+    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= chat.queuedMessages.length) {
+      return false;
+    }
+    const queuedMessages = [...chat.queuedMessages];
+    [queuedMessages[currentIndex], queuedMessages[targetIndex]] = [queuedMessages[targetIndex], queuedMessages[currentIndex]];
+    this.updateChat(chatId, { queuedMessages }, "immediate");
+    return true;
+  }
+
+  shiftQueuedChatMessage(chatId: string): ChatQueuedMessage | undefined {
+    const chat = this.getChat(chatId);
+    const queued = chat?.queuedMessages[0];
+    if (!chat || !queued) {
+      return undefined;
+    }
+    this.updateChat(chatId, { queuedMessages: chat.queuedMessages.slice(1) }, "immediate");
+    return queued;
+  }
+
   setModelOptions(options: ModelOption[], status: ChatPanelSnapshot["modelOptionsStatus"]): void {
     const normalized = normalizeModelOptions(options);
     this.modelOptions = normalized.length ? normalized : FALLBACK_MODEL_OPTIONS;
+    this.chats = this.chats.map((chat) => {
+      const option = this.resolveModelOption(chat.modelId);
+      return {
+        ...chat,
+        effort: reconcileEffort(chat.effort, option),
+        speed: chat.speed === "fast" && !option?.serviceTiers?.length ? "standard" : chat.speed
+      };
+    });
     this.modelOptionsStatus = status;
     this.version += 1;
+  }
+
+  getModelOptionForChat(chatId: string): ModelOption | undefined {
+    const chat = this.getChat(chatId);
+    return chat ? this.resolveModelOption(chat.modelId) : undefined;
   }
 
   setModelOptionsStatus(status: ChatPanelSnapshot["modelOptionsStatus"]): void {
@@ -568,7 +640,9 @@ export class StateStore {
     chatId: string,
     role: ChatMessageTranscriptItem["role"],
     text: string,
-    mode: StateMutationMode = "immediate"
+    mode: StateMutationMode = "immediate",
+    turnId?: string,
+    attachments: readonly ChatAttachment[] = []
   ): ChatMessageTranscriptItem | undefined {
     const chat = this.getChat(chatId);
     if (!chat) {
@@ -581,7 +655,9 @@ export class StateStore {
       role,
       text,
       createdAt: new Date().toISOString(),
-      status: "complete"
+      status: "complete",
+      turnId,
+      attachments: attachments.length ? attachments.map((attachment) => ({ ...attachment })) : undefined
     };
     this.transcripts.set(chatId, [...(this.transcripts.get(chatId) ?? []), item]);
     this.updateChat(chatId, role === "user" ? {} : { hasUnread: true }, mode);
@@ -1035,9 +1111,10 @@ export class StateStore {
       hasUnread: Boolean(chat.hasUnread),
       accessMode: chat.accessMode ?? (chat.kind === "project" ? "workspace-write" : "read-only"),
       modelId: typeof chat.modelId === "string" ? chat.modelId : null,
-      modelLabel: chat.modelLabel || "5.5",
+      modelLabel: typeof chat.modelId === "string" ? chat.modelLabel || chat.modelId : "Авто",
       effort: chat.effort ?? "medium",
       speed: chat.speed ?? "standard",
+      queuedMessages: Array.isArray(chat.queuedMessages) ? chat.queuedMessages : [],
       rulesEnabled: chat.kind === "project" ? chat.rulesEnabled !== false : false,
       pendingApproval: null,
       backendThreadAccessMode: chat.backendThreadAccessMode ?? null,
@@ -1130,6 +1207,14 @@ export class StateStore {
     }
   }
 
+  private resolveModelOption(modelId: string | null): ModelOption | undefined {
+    if (modelId) {
+      return this.modelOptions.find((option) => option.id === modelId);
+    }
+    return this.modelOptions.find((option) => option.id === null)
+      ?? this.modelOptions.find((option) => option.isDefault);
+  }
+
   private emitMutation(mode: StateMutationMode): void {
     this.onDidMutate?.(mode);
   }
@@ -1149,9 +1234,32 @@ function normalizeModelOptions(options: ModelOption[]): ModelOption[] {
       continue;
     }
     seen.add(key);
-    normalized.push({ id, label });
+    normalized.push({
+      ...option,
+      id,
+      label,
+      supportedEfforts: option.supportedEfforts?.filter((effort) => isChatEffort(effort.value)),
+      defaultEffort: isChatEffort(option.defaultEffort) ? option.defaultEffort : undefined,
+      serviceTiers: option.serviceTiers?.filter((tier) => tier.id.trim()).map((tier) => ({
+        id: tier.id.trim(),
+        label: tier.label.trim() || tier.id.trim(),
+        description: tier.description.trim()
+      }))
+    });
   }
   return normalized;
+}
+
+function reconcileEffort(current: ChatEffort, option: ModelOption | undefined): ChatEffort {
+  const supported = option?.supportedEfforts;
+  if (!supported?.length || supported.some((candidate) => candidate.value === current)) {
+    return current;
+  }
+  return option?.defaultEffort ?? supported[0]?.value ?? "medium";
+}
+
+function isChatEffort(value: unknown): value is ChatEffort {
+  return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra";
 }
 
 function normalizeTranscriptWindowCount(count: number, fallback: number): number {

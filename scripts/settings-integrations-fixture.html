@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Settings Integrations Fixture</title>
+    <link rel="stylesheet" href="../media/settings.css" />
+    <style>
+      :root {
+        --vscode-font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --vscode-font-size: 14px;
+        --vscode-editor-background: #ffffff;
+        --vscode-editor-foreground: #202124;
+        --vscode-foreground: #202124;
+        --vscode-descriptionForeground: #6d6f73;
+        --vscode-panel-border: #d7d7d7;
+        --vscode-input-background: #ffffff;
+        --vscode-input-foreground: #202124;
+        --vscode-input-border: #c9c9c9;
+        --vscode-button-background: #0e7fd2;
+        --vscode-button-hoverBackground: #0b70bd;
+        --vscode-button-foreground: #ffffff;
+        --vscode-list-hoverBackground: #eeeeee;
+        --vscode-textLink-foreground: #006ab1;
+        --vscode-errorForeground: #c42b1c;
+        --vscode-testing-iconPassed: #18864b;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      window.__codexElementWebviewAssetMode = "fixture";
+      let fixtureWebviewState = {};
+      window.acquireVsCodeApi = () => ({
+        postMessage(message) {
+          document.documentElement.dataset.lastFixtureMessage = JSON.stringify(message);
+        },
+        getState() {
+          return fixtureWebviewState;
+        },
+        setState(nextState) {
+          fixtureWebviewState = nextState || {};
+        }
+      });
+    </script>
+    <script src="../media/settings.js"></script>
+    <script>
+      const skills = Array.from({ length: 18 }, (_, index) => ({
+        name: index < 5 ? `artifact-template-${index + 1}` : `element-skill-${index + 1}`,
+        displayName: index < 5 ? ["Analytics Dashboard", "Business Review", "Design Report", "Financial Budget", "Legal Memorandum"][index] : `Element Skill ${index + 1}`,
+        path: `/fixture/skills/skill-${index + 1}/SKILL.md`,
+        shortDescription: index < 5 ? "Create a reusable artifact from the selected template" : "Рабочий процесс для разработки приложений 1C: Element",
+        enabled: index % 4 !== 0,
+        scope: ["marketplace", "system", "plugin", "repo", "user"][index % 5],
+        dependencyCount: index % 3
+      }));
+      window.dispatchEvent(new MessageEvent("message", {
+        data: {
+          type: "settings.snapshot",
+          snapshot: {
+            extensionVersion: "0.1.74",
+            proxy: { url: "", username: "", passwordSaved: false },
+            docs: { normalizedPath: "/srv/codex/docs", validationMessage: "" },
+            tools: { ripgrepPath: "/srv/codex/tools/rg", ripgrepManaged: true, ripgrepVersion: "14.1.1", ripgrepStatus: "ready", validationMessage: "" },
+            normalizer: { status: "idle", percent: 0, stage: "idle", message: "" },
+            ripgrepInstaller: { status: "idle", percent: 0, stage: "idle", message: "" },
+            integrations: {
+              status: "partial",
+              mcpStatus: "partial",
+              skillsStatus: "ready",
+              mcpMessage: "Один сервер требует повторной авторизации.",
+              skillsMessage: "",
+              updatedAt: new Date().toISOString(),
+              mcpServers: [
+                { name: "element-docs", enabled: true, transport: "http", url: "http://127.0.0.1:9900/mcp", authStatus: "unsupported", runtimeStatus: "ready", toolCount: 12, resourceCount: 4 },
+                { name: "workspace-tools", enabled: true, transport: "stdio", command: "node", args: ["server.js"], authStatus: "notLoggedIn", runtimeStatus: "failed", toolCount: 0, resourceCount: 0, error: "Fixture handshake failed: authorization required." }
+              ],
+              skills
+            }
+          }
+        }
+      }));
+    </script>
+  </body>
+</html>

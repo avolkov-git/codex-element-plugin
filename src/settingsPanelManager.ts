@@ -1,11 +1,12 @@
 import * as vscode from "vscode";
 import { BaseContextService } from "./baseContextService";
+import { CodexIntegrationsService, McpServerSaveInput } from "./codexIntegrationsService";
 import { DocsNormalizerProgress, DocsNormalizerService } from "./docsNormalizerService";
 import { Logger } from "./logger";
 import { getCodexPanelIconPath } from "./panelIcon";
 import { RipgrepInstallProgress, RipgrepInstallerService } from "./ripgrepInstallerService";
 import { ProxySaveInput, SettingsService } from "./settingsService";
-import { WebviewCommand } from "./types";
+import { SkillSelection, WebviewCommand } from "./types";
 import { renderWebviewHtml } from "./webviewHtml";
 
 export const SETTINGS_PANEL_VIEW_TYPE = "codexElement.settingsPanel";
@@ -32,9 +33,16 @@ export class SettingsPanelManager {
     private readonly normalizer: DocsNormalizerService,
     private readonly ripgrepInstaller: RipgrepInstallerService,
     private readonly baseContext: BaseContextService,
+    private readonly integrations: CodexIntegrationsService,
     private readonly logger: Logger,
     private readonly onSettingsChanged: (options?: { restartRuntime?: boolean; docsChanged?: boolean }) => Promise<void>
-  ) {}
+  ) {
+    this.context.subscriptions.push(this.integrations.onDidChange(() => {
+      if (this.panel) {
+        void this.postSnapshot(this.panel);
+      }
+    }));
+  }
 
   registerSerializer(): vscode.Disposable {
     return vscode.window.registerWebviewPanelSerializer(SETTINGS_PANEL_VIEW_TYPE, {
@@ -188,6 +196,116 @@ export class SettingsPanelManager {
       return;
     }
 
+    if (message.command === "settings.integrations.refresh") {
+      await this.runIntegrationAction(panel, () => this.integrations.refresh(true));
+      return;
+    }
+
+    if (message.command === "settings.mcp.save") {
+      const input = parseMcpServerInput(message.payload);
+      if (!input) {
+        await this.postMcpError(panel, "Проверьте параметры MCP-сервера.");
+        return;
+      }
+      try {
+        const savedName = await this.integrations.saveMcpServer(input);
+        await panel.webview.postMessage({
+          type: "event",
+          event: "settings.mcp.saved",
+          payload: `MCP-сервер ${savedName} сохранен.`
+        });
+        await this.postSnapshot(panel);
+      } catch (error) {
+        await this.postMcpError(panel, error instanceof Error ? error.message : "Не удалось сохранить MCP-сервер.");
+      }
+      return;
+    }
+
+    if (message.command === "settings.mcp.delete") {
+      const name = parseStringField(message.payload, "name");
+      if (!name) {
+        await this.postError(panel, "MCP-сервер не выбран.");
+        return;
+      }
+      const confirmation = await vscode.window.showWarningMessage(
+        `Удалить MCP-сервер ${name}?`,
+        { modal: true },
+        "Удалить"
+      );
+      if (confirmation === "Удалить") {
+        await this.runIntegrationAction(panel, async () => {
+          await this.integrations.removeMcpServer(name);
+          await this.postSaved(panel, `MCP-сервер ${name} удален.`);
+        });
+      }
+      return;
+    }
+
+    if (message.command === "settings.mcp.test") {
+      const name = parseStringField(message.payload, "name");
+      if (!name) {
+        await panel.webview.postMessage({
+          type: "event",
+          event: "settings.mcp.test.result",
+          payload: { name: "", status: "failed", message: "MCP-сервер не выбран." }
+        });
+        return;
+      }
+      try {
+        const result = await this.integrations.testMcpServer(name);
+        await panel.webview.postMessage({
+          type: "event",
+          event: "settings.mcp.test.result",
+          payload: result
+        });
+        await this.postSnapshot(panel);
+      } catch (error) {
+        await panel.webview.postMessage({
+          type: "event",
+          event: "settings.mcp.test.result",
+          payload: {
+            name,
+            status: "failed",
+            message: "Не удалось проверить MCP-сервер.",
+            details: error instanceof Error ? error.message : "Неизвестная ошибка проверки."
+          }
+        });
+      }
+      return;
+    }
+
+    if (message.command === "settings.mcp.toggle") {
+      const name = parseStringField(message.payload, "name");
+      const enabled = isRecord(message.payload) && typeof message.payload.enabled === "boolean" ? message.payload.enabled : undefined;
+      if (!name || enabled === undefined) {
+        await this.postError(panel, "Некорректное состояние MCP-сервера.");
+        return;
+      }
+      await this.runIntegrationAction(panel, () => this.integrations.setMcpEnabled(name, enabled));
+      return;
+    }
+
+    if (message.command === "settings.mcp.oauth") {
+      const name = parseStringField(message.payload, "name");
+      if (!name) {
+        await this.postError(panel, "MCP-сервер не выбран.");
+        return;
+      }
+      await this.runIntegrationAction(panel, () => this.integrations.startMcpOAuth(name));
+      return;
+    }
+
+    if (message.command === "settings.skill.toggle") {
+      const skill = parseSkillSelection(message.payload);
+      const enabled = isRecord(message.payload) && typeof message.payload.enabled === "boolean" ? message.payload.enabled : undefined;
+      if (!skill || enabled === undefined) {
+        await this.postError(panel, "Некорректное состояние навыка.");
+        return;
+      }
+      await this.runIntegrationAction(panel, () => this.integrations.setSkillEnabled(skill, enabled));
+      return;
+    }
+
     if (message.command !== "settings.proxy.save") {
       await panel.webview.postMessage({
         type: "event",
@@ -230,13 +348,36 @@ export class SettingsPanelManager {
     await panel.webview.postMessage({
       type: "settings.snapshot",
       snapshot: {
+        extensionVersion: String(this.context.extension.packageJSON.version ?? ""),
         proxy: await this.settings.getProxySettingsView(),
         docs: this.settings.getDocsSettingsView(),
         tools: await this.settings.getToolsSettingsView(),
+        integrations: this.integrations.getSnapshot(),
         normalizer: this.normalizerProgress,
         ripgrepInstaller: this.ripgrepProgress
       }
     });
+  }
+
+  private async runIntegrationAction(panel: vscode.WebviewPanel, action: () => Promise<unknown>): Promise<void> {
+    try {
+      await action();
+      await this.postSnapshot(panel);
+    } catch (error) {
+      await this.postError(panel, error instanceof Error ? error.message : "Не удалось обновить интеграции Codex.");
+    }
+  }
+
+  private async postSaved(panel: vscode.WebviewPanel, message: string): Promise<void> {
+    await panel.webview.postMessage({ type: "event", event: "settings.saved", payload: message });
+  }
+
+  private async postError(panel: vscode.WebviewPanel, message: string): Promise<void> {
+    await panel.webview.postMessage({ type: "event", event: "settings.error", payload: message });
+  }
+
+  private async postMcpError(panel: vscode.WebviewPanel, message: string): Promise<void> {
+    await panel.webview.postMessage({ type: "event", event: "settings.mcp.error", payload: message });
   }
 
   private async discoverRipgrepIfNeeded(): Promise<void> {
@@ -393,4 +534,39 @@ function parseRipgrepPath(payload: unknown): string | undefined {
   }
   const value = payload as Record<string, unknown>;
   return typeof value.ripgrepPath === "string" ? value.ripgrepPath : undefined;
+}
+
+function parseMcpServerInput(payload: unknown): McpServerSaveInput | undefined {
+  if (!isRecord(payload) || typeof payload.name !== "string") {
+    return undefined;
+  }
+  const transport = payload.transport === "stdio" || payload.transport === "http" ? payload.transport : undefined;
+  if (!transport) {
+    return undefined;
+  }
+  return {
+    originalName: typeof payload.originalName === "string" ? payload.originalName : undefined,
+    name: payload.name,
+    transport,
+    command: typeof payload.command === "string" ? payload.command : undefined,
+    args: Array.isArray(payload.args) ? payload.args.filter((arg): arg is string => typeof arg === "string") : undefined,
+    url: typeof payload.url === "string" ? payload.url : undefined,
+    bearerTokenEnvVar: typeof payload.bearerTokenEnvVar === "string" ? payload.bearerTokenEnvVar : undefined,
+    enabled: typeof payload.enabled === "boolean" ? payload.enabled : true
+  };
+}
+
+function parseSkillSelection(payload: unknown): SkillSelection | undefined {
+  if (!isRecord(payload) || typeof payload.name !== "string" || typeof payload.path !== "string") {
+    return undefined;
+  }
+  return { name: payload.name, path: payload.path };
+}
+
+function parseStringField(payload: unknown, field: string): string {
+  return isRecord(payload) && typeof payload[field] === "string" ? payload[field].trim() : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

@@ -3,9 +3,11 @@ import * as vscode from "vscode";
 import { ApprovalAttentionService } from "./approvalAttentionService";
 import { BaseContextService } from "./baseContextService";
 import { ChatPanelManager } from "./chatPanelManager";
+import { ChatAttachmentService } from "./chatAttachmentService";
 import { ChatHistoryService } from "./chatHistoryService";
 import { ContextRouterService } from "./contextRouterService";
 import { ContextTurnOrchestrator } from "./contextTurnOrchestrator";
+import { CodexIntegrationsService } from "./codexIntegrationsService";
 import { CodexRuntimeController } from "./codexRuntimeController";
 import { DiagnosticsContextService } from "./diagnosticsContextService";
 import { DiagnosticsToolsService } from "./diagnosticsToolsService";
@@ -15,6 +17,7 @@ import { DocsRetrievalLoopService } from "./docsRetrievalLoopService";
 import { DocsNormalizerService } from "./docsNormalizerService";
 import { DocsToolsService } from "./docsToolsService";
 import { EditorContextKind, EditorContextService } from "./editorContextService";
+import { ElementMcpIdeBridgeService } from "./elementMcpIdeBridgeService";
 import { Logger } from "./logger";
 import { ManagedContextToolLoopService } from "./managedContextToolLoopService";
 import { NativeContextToolLoopService } from "./nativeContextToolLoopService";
@@ -27,7 +30,7 @@ import { SettingsPanelManager } from "./settingsPanelManager";
 import { SettingsService } from "./settingsService";
 import { SidebarProvider } from "./sidebarProvider";
 import { StateMutationMode, StateStore } from "./stateStore";
-import { ChatAccessMode, ChatEffort, ChatHeaderMode, ChatKind, ChatRunMode, ChatSpeed } from "./types";
+import { ChatAccessMode, ChatAttachment, ChatEffort, ChatHeaderMode, ChatKind, ChatRunMode, ChatSpeed, SkillSelection } from "./types";
 import { UserProfileService } from "./userProfileService";
 
 const CHAT_HEADER_MODE_KEY = "codexElement.chatHeaderMode";
@@ -42,9 +45,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const settings = new SettingsService(context);
   logger.enableFileLogging(path.join(settings.getConfigRoot(), "logs"));
   logger.info("ripgrep discovery deferred until settings/runtime usage.");
+  const elementMcpIdeBridge = new ElementMcpIdeBridgeService(logger);
+  context.subscriptions.push(elementMcpIdeBridge);
   const contextRouter = new ContextRouterService();
   const baseContext = new BaseContextService(context, logger);
   const diagnosticsContext = new DiagnosticsContextService(logger);
+  const attachments = new ChatAttachmentService(logger);
   const diffArtifacts = new DiffArtifactService(logger);
   const docsCorpusContext = new DocsContextService(settings, logger);
   const nativeContextTools = new NativeContextToolLoopService(logger);
@@ -68,6 +74,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let historyProfileId: string | undefined;
   let sidebar: SidebarProvider | undefined;
   let runtime: CodexRuntimeController;
+  let integrations: CodexIntegrationsService;
   let chatPanels: ChatPanelManager;
   let approvalAttention: ApprovalAttentionService | undefined;
   const docsContext = new DocsRetrievalLoopService(
@@ -90,7 +97,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   state.setProxy(await settings.getSidebarProxyStatus());
   state.setDocs(settings.getSidebarDocsStatus());
   chatPanels = new ChatPanelManager(context, state, logger, {
-    sendPrompt: async (chatId: string, prompt: string, mode?: ChatRunMode, transcriptText?: string) => runtime.sendPrompt(chatId, prompt, mode, transcriptText),
+    sendPrompt: async (
+      chatId: string,
+      prompt: string,
+      mode?: ChatRunMode,
+      transcriptText?: string,
+      skills?: readonly SkillSelection[],
+      selectedAttachments?: readonly ChatAttachment[]
+    ) => runtime.sendPrompt(chatId, prompt, mode, transcriptText, [], skills, selectedAttachments),
+    queuePrompt: (chatId: string, prompt: string, mode?: ChatRunMode, skills?: readonly SkillSelection[], selectedAttachments?: readonly ChatAttachment[]) => runtime.queuePrompt(chatId, prompt, mode, skills, selectedAttachments),
+    steerTurn: async (chatId: string, prompt: string, selectedAttachments?: readonly ChatAttachment[]) => runtime.steerTurn(chatId, prompt, selectedAttachments),
+    pickAttachments: (existing: unknown) => attachments.pick(existing),
+    resolveAttachments: (value: unknown) => attachments.resolve(value),
+    openAttachment: (value: unknown) => attachments.open(value),
+    removeQueuedPrompt: (chatId: string, messageId: string) => runtime.removeQueuedPrompt(chatId, messageId),
+    moveQueuedPrompt: (chatId: string, messageId: string, direction: "up" | "down") => runtime.moveQueuedPrompt(chatId, messageId, direction),
     cancelTurn: async (chatId: string) => runtime.cancelTurn(chatId),
     markReadToBottom: (chatId: string) => {
       if (state.markChatRead(chatId)) {
@@ -146,6 +167,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       state.setModelOptions(result.options, result.status);
       chatPanels.postSnapshot();
     },
+    loadSkills: async (forceReload?: boolean) => integrations.listEnabledSkills(forceReload),
     getProjectContextDetails: async () => projectContext.getDetails(profiles.getCurrentProfileId()),
     getDocsContextDetails: async () => docsContext.decorateDetails(await settings.getDocsContextDetails()),
     toggleRules: async (chatId: string) => {
@@ -237,6 +259,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     contextOrchestrator,
     docsContext,
     diagnosticsContext,
+    attachments,
     nativeContextTools,
     profiles,
     state,
@@ -250,7 +273,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     onDidResolveProfile: ensureHistoryLoaded
   });
   context.subscriptions.push(runtime);
-  const settingsPanels = new SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, logger, async (options) => {
+  integrations = new CodexIntegrationsService(context, settings, profiles, runtime, logger);
+  context.subscriptions.push(integrations);
+  const settingsPanels = new SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, integrations, logger, async (options) => {
     if (options?.docsChanged) {
       docsContext.invalidate();
     }

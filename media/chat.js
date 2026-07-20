@@ -22,6 +22,12 @@
     suppressScrollEvents: false,
     openMenu: null,
     openModelSubmenu: null,
+    skillOptions: [],
+    skillsStatus: "idle",
+    skillsError: "",
+    selectedSkillsByChat: Object.create(null),
+    attachmentsByChat: Object.create(null),
+    attachmentsStatus: "idle",
     contextPopup: null,
     contextDetails: null,
     contextDetailsLoading: false,
@@ -83,13 +89,44 @@
       render();
     }
     if (message.type === "event" && message.event === "chat.error") {
-      state.notice = String(message.payload || "");
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : null;
+      state.notice = payload ? String(payload.message || "") : String(message.payload || "");
+      if (payload && typeof payload.restorePrompt === "string" && state.snapshot && state.snapshot.chat) {
+        setDraft(state.snapshot.chat.id, payload.restorePrompt);
+      }
+      if (payload && Array.isArray(payload.restoreAttachments) && state.snapshot && state.snapshot.chat) {
+        setAttachments(state.snapshot.chat.id, payload.restoreAttachments);
+      }
+      render();
+    }
+    if (message.type === "event" && message.event === "chat.attachments.selected") {
+      if (state.snapshot && state.snapshot.chat) {
+        setAttachments(state.snapshot.chat.id, Array.isArray(message.payload) ? message.payload : []);
+      }
+      state.attachmentsStatus = "idle";
+      render();
+    }
+    if (message.type === "event" && message.event === "chat.attachments.error") {
+      state.attachmentsStatus = "idle";
+      state.notice = String(message.payload || "Не удалось прикрепить файл.");
       render();
     }
     if (message.type === "event" && message.event === "chat.context.details") {
       state.contextDetails = message.payload || null;
       state.contextPopup = state.contextDetails && state.contextDetails.kind ? state.contextDetails.kind : state.contextPopup;
       state.contextDetailsLoading = false;
+      render();
+    }
+    if (message.type === "event" && message.event === "chat.skills.options") {
+      state.skillOptions = Array.isArray(message.payload) ? message.payload : [];
+      state.skillsStatus = "ready";
+      state.skillsError = "";
+      reconcileSelectedSkills();
+      render();
+    }
+    if (message.type === "event" && message.event === "chat.skills.error") {
+      state.skillsStatus = "error";
+      state.skillsError = String(message.payload || "Не удалось загрузить навыки.");
       render();
     }
     if (message.type === "event" && message.event === "chat.transcript.window") {
@@ -419,11 +456,34 @@
           }
           return;
         }
-        if (command === "chat.send") {
+        if (command === "chat.attachments.pick") {
+          state.attachmentsStatus = "picking";
+          vscode.postMessage({
+            type: "command",
+            command,
+            payload: { attachments: getAttachments(snapshot.chat.id) }
+          });
+          render();
+          return;
+        }
+        if (command === "chat.attachment.remove") {
+          removeAttachment(snapshot.chat.id, button.dataset.attachmentId || "");
+          render();
+          return;
+        }
+        if (command === "chat.attachment.open") {
+          const attachment = findAttachment(snapshot, button.dataset.attachmentId || "", button.dataset.itemId || "");
+          if (attachment) {
+            vscode.postMessage({ type: "command", command, payload: { attachment } });
+          }
+          return;
+        }
+        if (command === "chat.send" || command === "chat.queue.add" || command === "chat.steer") {
           const input = root.querySelector("[data-role='prompt-input']");
           const prompt = input ? input.value : "";
-          if (!prompt.trim()) {
-            state.notice = "Введите сообщение для Codex.";
+          const attachments = getAttachments(snapshot.chat.id);
+          if (!prompt.trim() && !attachments.length) {
+            state.notice = "Введите сообщение или прикрепите файл.";
             render();
             return;
           }
@@ -431,11 +491,67 @@
             input.value = "";
           }
           setDraft(snapshot.chat.id, "");
+          clearAttachments(snapshot.chat.id);
           const sendMode = isPlanningArmed(snapshot.chat.id) || getActiveClarification(snapshot) ? "planning" : "normal";
+          const skills = command === "chat.steer" ? [] : getSelectedSkills(snapshot.chat.id);
           setPlanningArmed(snapshot.chat.id, false);
+          if (command !== "chat.steer") {
+            clearSelectedSkills(snapshot.chat.id);
+          }
           state.notice = "";
           state.stickToBottom = true;
-          vscode.postMessage({ type: "command", command, payload: { prompt, mode: sendMode } });
+          vscode.postMessage({ type: "command", command, payload: { prompt, mode: sendMode, skills, attachments } });
+          return;
+        }
+        if (command === "chat.queue.remove") {
+          vscode.postMessage({
+            type: "command",
+            command,
+            payload: { messageId: button.dataset.messageId || "" }
+          });
+          return;
+        }
+        if (command === "chat.queue.move") {
+          vscode.postMessage({
+            type: "command",
+            command,
+            payload: {
+              messageId: button.dataset.messageId || "",
+              direction: button.dataset.direction === "up" ? "up" : "down"
+            }
+          });
+          return;
+        }
+        if (command === "chat.queue.edit") {
+          const messageId = button.dataset.messageId || "";
+          const queued = Array.isArray(snapshot.chat.queuedMessages) ? snapshot.chat.queuedMessages : [];
+          const message = queued.find((candidate) => candidate.id === messageId);
+          if (!message) {
+            return;
+          }
+          setDraft(snapshot.chat.id, message.text || "");
+          setAttachments(snapshot.chat.id, Array.isArray(message.attachments) ? message.attachments : []);
+          if (Array.isArray(message.skills) && message.skills.length) {
+            state.selectedSkillsByChat[snapshot.chat.id] = message.skills.map((skill) => ({ name: skill.name, path: skill.path }));
+          } else {
+            clearSelectedSkills(snapshot.chat.id);
+          }
+          setPlanningArmed(snapshot.chat.id, message.mode === "planning");
+          closeMenus();
+          vscode.postMessage({
+            type: "command",
+            command: "chat.queue.remove",
+            payload: { messageId }
+          });
+          snapshot.chat.queuedMessages = queued.filter((candidate) => candidate.id !== messageId);
+          render();
+          requestAnimationFrame(() => {
+            const prompt = root.querySelector("[data-role='prompt-input']");
+            if (prompt) {
+              prompt.focus();
+              prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+            }
+          });
           return;
         }
         if (command === "chat.clarification.answer") {
@@ -569,6 +685,27 @@
           toggleMenu("speed");
           return;
         }
+        if (command === "chat.skills.toggle") {
+          toggleMenu("skills");
+          loadSkillsIfNeeded(false);
+          return;
+        }
+        if (command === "chat.followup.toggle") {
+          toggleMenu("followup");
+          return;
+        }
+        if (command === "chat.skills.reload") {
+          state.skillsStatus = "loading";
+          state.skillsError = "";
+          render();
+          loadSkillsIfNeeded(true);
+          return;
+        }
+        if (command === "chat.skill.toggle") {
+          toggleSelectedSkill(snapshot.chat.id, button.dataset.skillName || "", button.dataset.skillPath || "");
+          render();
+          return;
+        }
         if (command === "chat.access.set") {
           closeMenus();
           vscode.postMessage({
@@ -614,13 +751,30 @@
 
     const textarea = root.querySelector("[data-role='prompt-input']");
     if (textarea) {
+      resizePromptInput(textarea);
       textarea.addEventListener("input", () => {
+        const wasEmpty = !getDraft(snapshot.chat.id).trim();
         setDraft(snapshot.chat.id, textarea.value);
+        resizePromptInput(textarea);
+        const isEmpty = !textarea.value.trim();
+        if (wasEmpty !== isEmpty) {
+          render();
+        } else {
+          syncComposerHeight();
+        }
       });
       textarea.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && event.shiftKey && (event.metaKey || event.ctrlKey) && snapshot.chat.status === "running") {
+          event.preventDefault();
+          const steer = root.querySelector("[data-command='chat.steer']");
+          if (steer && !steer.disabled) {
+            steer.click();
+          }
+          return;
+        }
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
-          const send = root.querySelector("[data-command='chat.send']");
+          const send = root.querySelector("[data-command='chat.queue.add']") || root.querySelector("[data-command='chat.send']");
           if (send && !send.disabled) {
             send.click();
           }
@@ -632,27 +786,96 @@
   function composerFooter(snapshot) {
     return `
       <footer class="composer">
-        ${clarificationDock(snapshot)}
-        <div class="composer-box">
-          <textarea data-role="prompt-input" placeholder="Напишите задачу для Codex">${escapeHtml(getDraft(snapshot.chat.id))}</textarea>
-          <div class="composer-actions${snapshot.chat.activeRunMode === "planning" ? " planning-active" : ""}">
-            <div class="composer-left">
-              ${accessSelector(snapshot.chat.accessMode)}
-              ${planningSelector(snapshot)}
-            </div>
-            <div class="composer-right">
-              ${contextWindowIndicator(snapshot.contextWindow)}
-              ${modelSelector(snapshot)}
-              ${effortSelector(snapshot.chat.effort)}
-              ${speedSelector(snapshot.chat.speed)}
-              <div class="chips">
-                ${snapshot.chat.kind === "project" ? projectChips(snapshot) : `<span class="context-note">Без проектного контекста</span>`}
+        <div class="composer-stack">
+          ${queueDock(snapshot)}
+          ${clarificationDock(snapshot)}
+          <div class="composer-box">
+            ${attachmentTray(snapshot.chat.id)}
+            <textarea data-role="prompt-input" rows="1" placeholder="${snapshot.chat.status === "running" ? "Добавьте рекомендацию или сообщение в очередь" : "Напишите задачу для Codex"}">${escapeHtml(getDraft(snapshot.chat.id))}</textarea>
+            <div class="composer-actions${snapshot.chat.activeRunMode === "planning" ? " planning-active" : ""}">
+              <div class="composer-left">
+                ${attachmentButton(snapshot)}
+                ${accessSelector(snapshot.chat.accessMode)}
+                ${planningSelector(snapshot)}
               </div>
-              ${sendOrStopButton(snapshot.chat)}
+              <div class="composer-right">
+                ${contextWindowIndicator(snapshot.contextWindow)}
+                ${modelSelector(snapshot)}
+                ${effortSelector(snapshot)}
+                ${speedSelector(snapshot)}
+                ${skillsSelector(snapshot)}
+                <div class="chips">
+                  ${snapshot.chat.kind === "project" ? projectChips(snapshot) : `<span class="context-note">Без проектного контекста</span>`}
+                </div>
+                ${sendOrStopButton(snapshot)}
+              </div>
             </div>
           </div>
         </div>
       </footer>
+    `;
+  }
+
+  function attachmentButton(snapshot) {
+    const count = getAttachments(snapshot.chat.id).length;
+    const disabled = state.attachmentsStatus === "picking" || count >= 10;
+    const title = count >= 10 ? "Достигнут лимит: 10 вложений" : "Прикрепить файл или папку из workspace";
+    return `
+      <button class="composer-icon-button attachment-trigger" type="button" data-command="chat.attachments.pick" title="${escapeAttribute(title)}" aria-label="${escapeAttribute(title)}" ${disabled ? "disabled" : ""}>
+        ${state.attachmentsStatus === "picking" ? spinnerIcon() : paperclipIcon()}
+      </button>
+    `;
+  }
+
+  function attachmentTray(chatId) {
+    const attachments = getAttachments(chatId);
+    if (!attachments.length) {
+      return "";
+    }
+    return `
+      <div class="attachment-tray" role="list" aria-label="Вложения сообщения">
+        ${attachments.map((attachment) => `
+          <div class="attachment-pill ${escapeAttribute(attachment.kind || "file")}" role="listitem">
+            <button class="attachment-open" type="button" data-command="chat.attachment.open" data-attachment-id="${escapeAttribute(attachment.id)}" title="Открыть ${escapeAttribute(attachment.displayPath || attachment.name)}">
+              ${attachmentTypeIcon(attachment.kind)}
+              <span class="attachment-copy">
+                <strong>${escapeHtml(attachment.name || "Файл")}</strong>
+                <span>${escapeHtml(attachment.displayPath || attachment.path || "")}</span>
+              </span>
+            </button>
+            <button class="attachment-remove" type="button" data-command="chat.attachment.remove" data-attachment-id="${escapeAttribute(attachment.id)}" title="Убрать вложение" aria-label="Убрать ${escapeAttribute(attachment.name || "вложение")}">${removeIcon()}</button>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function queueDock(snapshot) {
+    const queued = Array.isArray(snapshot.chat.queuedMessages) ? snapshot.chat.queuedMessages : [];
+    if (!queued.length) {
+      return "";
+    }
+    return `
+      <section class="queue-dock" aria-label="Очередь сообщений">
+        <div class="queue-dock-title">
+          ${queueIcon()}
+          <span>${queued.length} ${pluralize(queued.length, "сообщение в очереди", "сообщения в очереди", "сообщений в очереди")}</span>
+        </div>
+        ${queued.map((message, index) => `
+          <div class="queue-message">
+            <span class="queue-message-index">${index + 1}</span>
+            <span class="queue-message-text">${escapeHtml(message.text || "Только вложения")}</span>
+            ${Array.isArray(message.attachments) && message.attachments.length ? `<span class="queue-message-attachments">${paperclipIcon()} ${message.attachments.length}</span>` : ""}
+            ${Array.isArray(message.skills) && message.skills.length ? `<span class="queue-message-skills">${message.skills.length} ${pluralize(message.skills.length, "навык", "навыка", "навыков")}</span>` : ""}
+            <div class="queue-message-actions">
+              <button class="queue-action" type="button" data-command="chat.queue.move" data-message-id="${escapeAttribute(message.id)}" data-direction="up" title="Переместить выше" aria-label="Переместить сообщение выше" ${index === 0 ? "disabled" : ""}>${moveUpIcon()}</button>
+              <button class="queue-action" type="button" data-command="chat.queue.move" data-message-id="${escapeAttribute(message.id)}" data-direction="down" title="Переместить ниже" aria-label="Переместить сообщение ниже" ${index === queued.length - 1 ? "disabled" : ""}>${moveDownIcon()}</button>
+              <button class="queue-action" type="button" data-command="chat.queue.edit" data-message-id="${escapeAttribute(message.id)}" title="Редактировать" aria-label="Редактировать сообщение">${editIcon()}</button>
+              <button class="queue-action queue-remove" type="button" data-command="chat.queue.remove" data-message-id="${escapeAttribute(message.id)}" title="Убрать из очереди" aria-label="Убрать сообщение из очереди">${removeIcon()}</button>
+            </div>
+          </div>
+        `).join("")}
+      </section>
     `;
   }
 
@@ -901,6 +1124,49 @@
     }
   }
 
+  function getAttachments(chatId) {
+    const attachments = chatId ? state.attachmentsByChat[chatId] : undefined;
+    return Array.isArray(attachments) ? attachments.map((attachment) => ({ ...attachment })) : [];
+  }
+
+  function setAttachments(chatId, attachments) {
+    if (!chatId) {
+      return;
+    }
+    const normalized = Array.isArray(attachments)
+      ? attachments.filter((attachment) => attachment && typeof attachment.path === "string").slice(0, 10)
+      : [];
+    if (normalized.length) {
+      state.attachmentsByChat[chatId] = normalized.map((attachment) => ({ ...attachment }));
+    } else {
+      delete state.attachmentsByChat[chatId];
+    }
+  }
+
+  function clearAttachments(chatId) {
+    delete state.attachmentsByChat[chatId];
+  }
+
+  function removeAttachment(chatId, attachmentId) {
+    setAttachments(chatId, getAttachments(chatId).filter((attachment) => attachment.id !== attachmentId));
+  }
+
+  function findAttachment(snapshot, attachmentId, itemId) {
+    const composerAttachment = getAttachments(snapshot.chat.id).find((attachment) => attachment.id === attachmentId);
+    if (composerAttachment) {
+      return composerAttachment;
+    }
+    const items = state.transcriptWindow && Array.isArray(state.transcriptWindow.items)
+      ? state.transcriptWindow.items
+      : snapshot.transcriptWindow && Array.isArray(snapshot.transcriptWindow.items)
+        ? snapshot.transcriptWindow.items
+        : [];
+    const item = items.find((candidate) => candidate.id === itemId);
+    return item && Array.isArray(item.attachments)
+      ? item.attachments.find((attachment) => attachment.id === attachmentId)
+      : undefined;
+  }
+
   function isPlanningArmed(chatId) {
     return Boolean(chatId && state.planningArmedByChat[chatId]);
   }
@@ -951,6 +1217,59 @@
     ) {
       vscode.postMessage({ type: "command", command: "chat.models.load" });
     }
+  }
+
+  function loadSkillsIfNeeded(forceReload) {
+    if (!forceReload && (state.skillsStatus === "ready" || state.skillsStatus === "loading")) {
+      return;
+    }
+    state.skillsStatus = "loading";
+    state.skillsError = "";
+    render();
+    vscode.postMessage({
+      type: "command",
+      command: "chat.skills.load",
+      payload: { forceReload: Boolean(forceReload) }
+    });
+  }
+
+  function getSelectedSkills(chatId) {
+    const selected = state.selectedSkillsByChat[chatId];
+    return Array.isArray(selected) ? selected.map((skill) => ({ name: skill.name, path: skill.path })) : [];
+  }
+
+  function clearSelectedSkills(chatId) {
+    delete state.selectedSkillsByChat[chatId];
+  }
+
+  function toggleSelectedSkill(chatId, name, path) {
+    if (!name || !path) {
+      return;
+    }
+    const current = getSelectedSkills(chatId);
+    const existingIndex = current.findIndex((skill) => skill.name === name && skill.path === path);
+    if (existingIndex >= 0) {
+      current.splice(existingIndex, 1);
+    } else if (current.length < 8) {
+      current.push({ name, path });
+    }
+    if (current.length) {
+      state.selectedSkillsByChat[chatId] = current;
+    } else {
+      clearSelectedSkills(chatId);
+    }
+  }
+
+  function reconcileSelectedSkills() {
+    const allowed = new Set(state.skillOptions.map((skill) => `${skill.name}\0${skill.path}`));
+    Object.keys(state.selectedSkillsByChat).forEach((chatId) => {
+      const filtered = getSelectedSkills(chatId).filter((skill) => allowed.has(`${skill.name}\0${skill.path}`));
+      if (filtered.length) {
+        state.selectedSkillsByChat[chatId] = filtered;
+      } else {
+        clearSelectedSkills(chatId);
+      }
+    });
   }
 
   function projectChips(snapshot) {
@@ -1174,17 +1493,133 @@
     `;
   }
 
-  function sendOrStopButton(chat) {
+  function sendOrStopButton(snapshot) {
+    const chat = snapshot.chat;
+    const hasDraft = Boolean(getDraft(chat.id).trim() || getAttachments(chat.id).length);
     const cancellable = chat.status === "running" || chat.status === "waitingApproval" || chat.status === "cancelling";
     if (!cancellable) {
-      return `<button class="button" data-command="chat.send">Отправить</button>`;
+      return `
+        <button class="composer-submit" type="button" data-command="chat.send" title="Отправить" aria-label="Отправить сообщение" ${hasDraft ? "" : "disabled"}>
+          ${sendIcon()}
+        </button>
+      `;
     }
     const stopping = chat.status === "cancelling";
     return `
-      <button class="button stop-button" data-command="chat.cancel" ${stopping ? "disabled" : ""}>
-        ${stopping ? "Останавливаем..." : "Остановить"}
-      </button>
+      <div class="running-send-actions">
+        ${hasDraft && !stopping ? followUpSubmitControl(chat) : ""}
+        <button class="composer-stop${stopping ? " stopping" : ""}" type="button" data-command="chat.cancel" title="${stopping ? "Останавливается" : "Остановить"}" aria-label="${stopping ? "Запрос останавливается" : "Остановить текущий запрос"}" ${stopping ? "disabled" : ""}>
+          ${stopIcon()}
+        </button>
+      </div>
     `;
+  }
+
+  function followUpSubmitControl(chat) {
+    const canSteer = chat.status === "running";
+    return `
+      <div class="followup-selector composer-selector${state.openMenu === "followup" ? " open" : ""}">
+        <button class="composer-submit followup-primary" type="button" data-command="chat.queue.add" title="Добавить в очередь" aria-label="Добавить сообщение в очередь">
+          ${sendIcon()}
+        </button>
+        ${canSteer ? `
+          <button class="followup-menu-trigger" type="button" data-command="chat.followup.toggle" title="Выбрать способ отправки" aria-label="Выбрать способ отправки" aria-haspopup="menu" aria-expanded="${state.openMenu === "followup" ? "true" : "false"}">
+            ${compactChevronIcon()}
+          </button>
+          <div class="selector-menu followup-menu" role="menu">
+            <button class="selector-option followup-option selected" type="button" data-command="chat.queue.add" role="menuitem">
+              ${queueIcon()}
+              <span class="followup-option-copy">
+                <span class="followup-option-title">В очередь</span>
+                <span class="followup-option-description">Выполнить после текущего запроса</span>
+              </span>
+              <span class="followup-check">✓</span>
+            </button>
+            <button class="selector-option followup-option" type="button" data-command="chat.steer" role="menuitem">
+              ${steerIcon()}
+              <span class="followup-option-copy">
+                <span class="followup-option-title">Как рекомендацию</span>
+                <span class="followup-option-description">Уточнить текущий запрос</span>
+              </span>
+            </button>
+          </div>
+        ` : ""}
+      </div>
+    `;
+  }
+
+  function sendIcon() {
+    return `
+      <svg class="composer-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M12 3.5c.38 0 .76.15 1.05.44l6 6a1.5 1.5 0 0 1-2.1 2.12l-3.45-3.44v8.88a1.5 1.5 0 0 1-3 0V8.62l-3.45 3.44a1.5 1.5 0 1 1-2.1-2.12l6-6c.29-.29.67-.44 1.05-.44Z"/>
+      </svg>
+    `;
+  }
+
+  function paperclipIcon() {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.6 12 21a6 6 0 0 1-8.5-8.5l10-10a4 4 0 0 1 5.7 5.7l-10 10a2 2 0 0 1-2.8-2.8l9.3-9.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+
+  function attachmentTypeIcon(kind) {
+    if (kind === "folder") {
+      return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>`;
+    }
+    if (kind === "image") {
+      return `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="8.5" cy="9" r="1.5" fill="currentColor"/><path d="m5 17 4.5-4 3 2.5 2.5-2 4 3.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    }
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 3v5h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>`;
+  }
+
+  function spinnerIcon() {
+    return `<svg class="attachment-spinner" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2" opacity=".24"/><path d="M12 4a8 8 0 0 1 8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+  }
+
+  function stopIcon() {
+    return `
+      <svg class="composer-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/>
+      </svg>
+    `;
+  }
+
+  function compactChevronIcon() {
+    return `
+      <svg class="compact-chevron-icon" viewBox="0 0 16 16" aria-hidden="true">
+        <path fill="currentColor" d="M4.3 6.1a1 1 0 0 1 1.4 0L8 8.4l2.3-2.3a1 1 0 1 1 1.4 1.4l-3 3a1 1 0 0 1-1.4 0l-3-3a1 1 0 0 1 0-1.4Z"/>
+      </svg>
+    `;
+  }
+
+  function queueIcon() {
+    return `
+      <svg class="queue-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M5 6.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm4-2h10a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2ZM5 13.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm4-2h10a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2ZM5 20.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm4-2h10a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2Z"/>
+      </svg>
+    `;
+  }
+
+  function steerIcon() {
+    return `
+      <svg class="queue-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M18.7 4.3a1 1 0 0 1 0 1.4L8.4 16H14a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1V9a1 1 0 1 1 2 0v5.6L17.3 4.3a1 1 0 0 1 1.4 0Z"/>
+      </svg>
+    `;
+  }
+
+  function moveUpIcon() {
+    return `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 3.2 3.7 7.5a1 1 0 1 0 1.4 1.4L7 7v5.8a1 1 0 1 0 2 0V7l1.9 1.9a1 1 0 0 0 1.4-1.4L8 3.2Z"/></svg>`;
+  }
+
+  function moveDownIcon() {
+    return `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="m8 12.8 4.3-4.3a1 1 0 0 0-1.4-1.4L9 9V3.2a1 1 0 1 0-2 0V9L5.1 7.1a1 1 0 0 0-1.4 1.4L8 12.8Z"/></svg>`;
+  }
+
+  function editIcon() {
+    return `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M11.9 1.6a1.7 1.7 0 0 1 2.5 2.5l-8.7 8.7-3.4.9.9-3.4 8.7-8.7Zm-7 9.7-.3 1.1 1.1-.3 7.8-7.8-1.1-1.1-7.5 8.1Z"/></svg>`;
+  }
+
+  function removeIcon() {
+    return `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M4.3 4.3a1 1 0 0 1 1.4 0L8 6.6l2.3-2.3a1 1 0 1 1 1.4 1.4L9.4 8l2.3 2.3a1 1 0 0 1-1.4 1.4L8 9.4l-2.3 2.3a1 1 0 0 1-1.4-1.4L6.6 8 4.3 5.7a1 1 0 0 1 0-1.4Z"/></svg>`;
   }
 
   function accessSelector(accessMode) {
@@ -1228,12 +1663,12 @@
 
   function modelSelector(snapshot) {
     const options = modelOptions(snapshot);
-    const topModels = [
-      { id: null, label: "5.5", displayLabel: "GPT-5.5", icon: true },
-      { id: "gpt-5.4", label: "GPT-5.4", displayLabel: "GPT-5.4", icon: true }
-    ];
-    const otherModels = otherModelOptions(options);
-    const activeLabel = snapshot.chat.modelLabel || "5.5";
+    const automatic = options.find((option) => option.id === null) || { id: null, label: "Авто" };
+    const runtimeModels = options.filter((option) => option.id !== null);
+    const topModels = runtimeModels.slice(0, 3);
+    const otherModels = runtimeModels.slice(topModels.length);
+    const activeLabel = snapshot.chat.modelLabel || "Авто";
+    const visibleModels = [automatic, ...topModels];
     return `
       <div class="model-selector composer-selector${state.openMenu === "model" ? " open" : ""}">
         <button class="selector-trigger model-trigger" type="button" data-command="chat.model.toggle" aria-label="Модель" aria-haspopup="menu">
@@ -1241,28 +1676,30 @@
         </button>
         <div class="selector-menu model-menu" role="menu">
           <div class="selector-menu-title">Модель</div>
-          ${topModels.map((option) => {
+          ${visibleModels.map((option) => {
             const selected = isModelSelected(snapshot.chat, option);
             return `
-              <button class="selector-option model-option${selected ? " selected" : ""}" type="button" data-command="chat.model.set" data-model-id="${escapeAttribute(option.id || "")}" data-model-label="${escapeAttribute(option.label)}" role="menuitem">
-                ${boltIcon()}
-                <span>${escapeHtml(option.displayLabel)}</span>
+              <button class="selector-option model-option${selected ? " selected" : ""}" type="button" data-command="chat.model.set" data-model-id="${escapeAttribute(option.id || "")}" data-model-label="${escapeAttribute(option.label)}" role="menuitem" title="${escapeAttribute(option.description || option.label)}">
+                ${option.id !== null && option.isDefault ? boltIcon() : ""}
+                <span>${escapeHtml(option.label)}</span>
                 ${selected ? `<span class="access-check">✓</span>` : ""}
               </button>
             `;
           }).join("")}
-          <button class="selector-option model-option submenu-option${state.openModelSubmenu === "other" ? " selected" : ""}" type="button" data-command="chat.model.submenu.toggle" role="menuitem" aria-haspopup="menu">
-            <span>Другие модели</span>
-            <span class="submenu-chevron">›</span>
-          </button>
+          ${otherModels.length ? `
+            <button class="selector-option model-option submenu-option${state.openModelSubmenu === "other" ? " selected" : ""}" type="button" data-command="chat.model.submenu.toggle" role="menuitem" aria-haspopup="menu">
+              <span>Другие модели</span>
+              <span class="submenu-chevron">›</span>
+            </button>
+          ` : ""}
           ${snapshot.modelOptionsStatus === "loading" ? `<div class="selector-hint">Загружаем список моделей...</div>` : ""}
           ${state.openModelSubmenu === "other" ? `
             <div class="selector-submenu model-submenu" role="menu">
               ${otherModels.map((option) => {
                 const selected = isModelSelected(snapshot.chat, option);
                 return `
-                  <button class="selector-option model-option${selected ? " selected" : ""}" type="button" data-command="chat.model.set" data-model-id="${escapeAttribute(option.id || "")}" data-model-label="${escapeAttribute(option.label)}" role="menuitem">
-                    <span>${escapeHtml(option.displayLabel || option.label)}</span>
+                  <button class="selector-option model-option${selected ? " selected" : ""}" type="button" data-command="chat.model.set" data-model-id="${escapeAttribute(option.id || "")}" data-model-label="${escapeAttribute(option.label)}" role="menuitem" title="${escapeAttribute(option.description || option.label)}">
+                    <span>${escapeHtml(option.label)}</span>
                     ${selected ? `<span class="access-check">✓</span>` : ""}
                   </button>
                 `;
@@ -1274,14 +1711,21 @@
     `;
   }
 
-  function effortSelector(effort) {
-    const options = [
-      { value: "low", label: "Низкий" },
-      { value: "medium", label: "Средний" },
-      { value: "high", label: "Высокий" },
-      { value: "xhigh", label: "Очень высокий" }
-    ];
-    const active = options.find((option) => option.value === effort) || options[1];
+  function effortSelector(snapshot) {
+    const model = selectedModelOption(snapshot);
+    const fallbackValues = ["low", "medium", "high", "xhigh"];
+    const supported = Array.isArray(model && model.supportedEfforts) && model.supportedEfforts.length
+      ? model.supportedEfforts
+      : fallbackValues.map((value) => ({ value, description: "" }));
+    const options = supported.map((option) => ({
+      value: option.value,
+      label: effortLabel(option.value),
+      description: option.description || ""
+    }));
+    const active = options.find((option) => option.value === snapshot.chat.effort)
+      || options.find((option) => option.value === (model && model.defaultEffort))
+      || options[0]
+      || { value: "medium", label: "Средний", description: "" };
     return `
       <div class="effort-selector composer-selector${state.openMenu === "effort" ? " open" : ""}">
         <button class="selector-trigger effort-trigger" type="button" data-command="chat.effort.toggle" aria-label="Интеллект" aria-haspopup="menu">
@@ -1290,7 +1734,7 @@
         <div class="selector-menu effort-menu" role="menu">
           <div class="selector-menu-title">Интеллект</div>
           ${options.map((option) => `
-            <button class="selector-option effort-option${option.value === active.value ? " selected" : ""}" type="button" data-command="chat.effort.set" data-effort="${escapeAttribute(option.value)}" role="menuitem">
+            <button class="selector-option effort-option${option.value === active.value ? " selected" : ""}" type="button" data-command="chat.effort.set" data-effort="${escapeAttribute(option.value)}" role="menuitem" title="${escapeAttribute(option.description)}">
               <span>${escapeHtml(option.label)}</span>
               ${option.value === active.value ? `<span class="access-check">✓</span>` : ""}
             </button>
@@ -1300,12 +1744,14 @@
     `;
   }
 
-  function speedSelector(speed) {
+  function speedSelector(snapshot) {
+    const model = selectedModelOption(snapshot);
+    const tier = Array.isArray(model && model.serviceTiers) ? model.serviceTiers[0] : null;
     const options = [
-      { value: "standard", label: "Стандартный", displayLabel: "Стандартный", description: "Стандартная скорость, обычный расход" },
-      { value: "fast", label: "Быстрый", displayLabel: "x1.5", description: "Скорость 1,5x, повышенный расход" }
+      { value: "standard", label: "Стандартный", displayLabel: "Стандартный", description: "Стандартная скорость и расход" },
+      ...(tier ? [{ value: "fast", label: tier.label || "Быстрый", displayLabel: "x1.5", description: tier.description || "Повышенная скорость и расход" }] : [])
     ];
-    const active = options.find((option) => option.value === speed) || options[0];
+    const active = options.find((option) => option.value === snapshot.chat.speed) || options[0];
     return `
       <div class="speed-selector composer-selector${state.openMenu === "speed" ? " open" : ""}">
         <button class="selector-trigger speed-trigger" type="button" data-command="chat.speed.toggle" aria-label="Скорость" aria-haspopup="menu">
@@ -1327,47 +1773,72 @@
     `;
   }
 
+  function skillsSelector(snapshot) {
+    const selected = getSelectedSkills(snapshot.chat.id);
+    const selectedKeys = new Set(selected.map((skill) => `${skill.name}\0${skill.path}`));
+    const options = Array.isArray(state.skillOptions) ? state.skillOptions : [];
+    const loading = state.skillsStatus === "loading";
+    return `
+      <div class="skills-selector composer-selector${state.openMenu === "skills" ? " open" : ""}">
+        <button class="selector-trigger skills-trigger${selected.length ? " selected" : ""}" type="button" data-command="chat.skills.toggle" aria-label="Навыки для следующего сообщения${selected.length ? `: выбрано ${selected.length}` : ""}" aria-haspopup="menu">
+          <span class="skills-trigger-icon" aria-hidden="true">✦</span>
+          <span>${selected.length ? `Навыки · ${selected.length}` : "Навыки"}</span>
+        </button>
+        <div class="selector-menu skills-menu" role="menu">
+          <div class="skills-menu-header">
+            <div>
+              <div class="selector-menu-title">Навыки</div>
+              <div class="selector-menu-subtitle">Для следующего сообщения</div>
+            </div>
+            <button class="skills-reload" type="button" data-command="chat.skills.reload" title="Обновить навыки" aria-label="Обновить навыки" ${loading ? "disabled" : ""}>↻</button>
+          </div>
+          ${loading ? `<div class="selector-hint">Загружаем навыки...</div>` : ""}
+          ${state.skillsStatus === "error" ? `<div class="selector-hint error">${escapeHtml(state.skillsError || "Не удалось загрузить навыки.")}</div>` : ""}
+          ${state.skillsStatus === "ready" && !options.length ? `<div class="selector-hint">Доступных навыков нет. Добавьте их в профиль Codex или workspace.</div>` : ""}
+          ${options.map((skill) => {
+            const key = `${skill.name}\0${skill.path}`;
+            const checked = selectedKeys.has(key);
+            const disabled = !checked && selected.length >= 8;
+            return `
+              <button class="selector-option skill-option${checked ? " selected" : ""}" type="button" data-command="chat.skill.toggle" data-skill-name="${escapeAttribute(skill.name)}" data-skill-path="${escapeAttribute(skill.path)}" role="menuitemcheckbox" aria-checked="${checked ? "true" : "false"}" ${disabled ? "disabled" : ""}>
+                <span class="skill-option-check" aria-hidden="true">${checked ? "✓" : ""}</span>
+                <span class="skill-option-text">
+                  <span class="skill-option-title">${escapeHtml(skill.displayName || skill.name)}</span>
+                  <span class="skill-option-description">${escapeHtml(skill.shortDescription || skill.description || skill.name)}</span>
+                </span>
+              </button>
+            `;
+          }).join("")}
+          ${selected.length >= 8 ? `<div class="selector-hint">Можно выбрать до 8 навыков.</div>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
   function modelOptions(snapshot) {
     return Array.isArray(snapshot.modelOptions) && snapshot.modelOptions.length
       ? snapshot.modelOptions
-      : [
-        { id: null, label: "5.5" },
-        { id: "gpt-5.4", label: "GPT-5.4" },
-        { id: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
-        { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
-        { id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
-        { id: "gpt-5.2", label: "GPT-5.2" }
-      ];
+      : [{ id: null, label: "Авто", description: "Модель по умолчанию Codex" }];
   }
 
-  function otherModelOptions(options) {
-    const known = [
-      { id: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
-      { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
-      { id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
-      { id: "gpt-5.2", label: "GPT-5.2" }
-    ];
-    const merged = [...options, ...known];
-    const seen = new Set();
-    return merged
-      .filter((option) => {
-        const label = option.label || "";
-        const id = option.id || "";
-        const short = shortModelLabel(label).toLowerCase();
-        if (!id && (short === "5.5" || label.toLowerCase() === "авто")) {
-          return false;
-        }
-        if (id.toLowerCase() === "gpt-5.5" || id.toLowerCase() === "gpt-5.4" || short === "5.5" || short === "5.4") {
-          return false;
-        }
-        const key = id || label;
-        if (!key || seen.has(key.toLowerCase())) {
-          return false;
-        }
-        seen.add(key.toLowerCase());
-        return true;
-      })
-      .map((option) => ({ ...option, displayLabel: option.label }));
+  function selectedModelOption(snapshot) {
+    const options = modelOptions(snapshot);
+    if (snapshot.chat.modelId) {
+      return options.find((option) => option.id === snapshot.chat.modelId) || options.find((option) => option.id === null);
+    }
+    return options.find((option) => option.id === null) || options.find((option) => option.isDefault) || options[0];
+  }
+
+  function effortLabel(value) {
+    return ({
+      minimal: "Минимальный",
+      low: "Низкий",
+      medium: "Средний",
+      high: "Высокий",
+      xhigh: "Очень высокий",
+      max: "Максимальный",
+      ultra: "Ультра"
+    })[value] || value;
   }
 
   function isModelSelected(chat, option) {
@@ -1375,12 +1846,6 @@
     const optionId = option.id || "";
     const chatShort = shortModelLabel(chat.modelLabel || "").toLowerCase();
     const optionShort = shortModelLabel(option.label || "").toLowerCase();
-    if (optionShort === "5.5" && (chatShort === "5.5" || chatId.toLowerCase() === "gpt-5.5")) {
-      return true;
-    }
-    if (optionShort === "5.4" && (chatShort === "5.4" || chatId.toLowerCase() === "gpt-5.4")) {
-      return true;
-    }
     if (chatId || optionId) {
       return chatId === optionId;
     }
@@ -1850,9 +2315,13 @@
       return "";
     }
     if (roleValue === "user") {
+      const attachments = userMessageAttachments(item);
       return `
         <article class="transcript-item user-message" data-item-id="${escapeAttribute(item.id)}">
-          <div class="user-bubble">${markdownInline(text)}</div>
+          <div class="user-bubble">
+            ${text ? `<div class="user-message-text">${markdownInline(text)}</div>` : ""}
+            ${attachments}
+          </div>
         </article>
       `;
     }
@@ -1873,6 +2342,26 @@
         ${meta.length ? `<div class="assistant-meta">${meta.join("")}</div>` : ""}
         <div class="markdown-body">${markdown(text || (item.status === "streaming" ? "Думаю" : ""))}</div>
       </article>
+    `;
+  }
+
+  function userMessageAttachments(item) {
+    const attachments = Array.isArray(item.attachments) ? item.attachments : [];
+    if (!attachments.length) {
+      return "";
+    }
+    return `
+      <div class="message-attachments" role="list" aria-label="Вложения сообщения">
+        ${attachments.map((attachment) => `
+          <button class="message-attachment" type="button" role="listitem" data-command="chat.attachment.open" data-item-id="${escapeAttribute(item.id)}" data-attachment-id="${escapeAttribute(attachment.id)}" title="Открыть ${escapeAttribute(attachment.displayPath || attachment.name)}">
+            ${attachmentTypeIcon(attachment.kind)}
+            <span>
+              <strong>${escapeHtml(attachment.name || "Файл")}</strong>
+              <small>${escapeHtml(attachment.displayPath || attachment.path || "")}</small>
+            </span>
+          </button>
+        `).join("")}
+      </div>
     `;
   }
 
@@ -1984,8 +2473,11 @@
     const rows = [
       child.query ? ["Запрос", child.query] : null,
       child.path ? ["Область", child.path] : null,
+      child.server ? ["MCP-сервер", child.server] : null,
+      child.tool ? ["Инструмент", child.tool] : null,
       child.source ? ["Источник", worklogSourceLabel(child.source)] : null,
-      typeof child.resultCount === "number" ? ["Результатов", String(child.resultCount)] : null
+      typeof child.resultCount === "number" ? ["Результатов", String(child.resultCount)] : null,
+      child.argumentsPreview ? ["Аргументы", child.argumentsPreview] : null
     ].filter(Boolean);
     return `
       <div class="worklog-child-details">
@@ -2681,6 +3173,17 @@
       return;
     }
     app.style.setProperty("--composer-height", `${Math.ceil(footer.getBoundingClientRect().height)}px`);
+  }
+
+  function resizePromptInput(textarea) {
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    const minHeight = 62;
+    const maxHeight = Math.min(220, Math.max(120, Math.floor(window.innerHeight * 0.32)));
+    textarea.style.height = `${Math.max(minHeight, Math.min(textarea.scrollHeight, maxHeight))}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
   }
 
   function syncLiveDurationTimer() {
@@ -3411,6 +3914,12 @@
     if (count % 10 === 1 && count % 100 !== 11) return `${count} файл`;
     if ([2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)) return `${count} файла`;
     return `${count} файлов`;
+  }
+
+  function pluralize(count, one, few, many) {
+    if (count % 10 === 1 && count % 100 !== 11) return one;
+    if ([2, 3, 4].includes(count % 10) && ![12, 13, 14].includes(count % 100)) return few;
+    return many;
   }
 
   function connectionStatusLabel(item) {

@@ -1,4 +1,6 @@
 bin/windows-x86_64/codex.exe filter=lfs diff=lfs merge=lfs -text
 bin/win32-*/codex.exe filter=lfs diff=lfs merge=lfs -text
+bin/win32-*/codex-command-runner.exe filter=lfs diff=lfs merge=lfs -text
+bin/win32-*/codex-windows-sandbox-setup.exe filter=lfs diff=lfs merge=lfs -text
 bin/linux-*/codex filter=lfs diff=lfs merge=lfs -text
 bin/darwin-*/codex filter=lfs diff=lfs merge=lfs -text

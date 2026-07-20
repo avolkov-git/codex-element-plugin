@@ -51,20 +51,24 @@ class WorklogOperationNormalizer {
         const existingBinding = itemId ? this.itemBindings.get(itemId) : undefined;
         const parentId = existingBinding?.worklogId ?? this.resolveParentId(turnId, itemId, descriptor.kind);
         const createdAt = new Date().toISOString();
+        const effectiveStatus = descriptor.status ?? status;
         const child = shouldCreateChild(descriptor)
             ? {
                 id: existingBinding?.childId ?? childWorklogId(parentId, itemId, descriptor),
                 kind: descriptor.kind,
-                status,
+                status: effectiveStatus,
                 title: descriptor.title,
                 source: descriptor.source,
                 query: descriptor.query,
                 path: descriptor.path,
                 command: descriptor.command,
+                server: descriptor.server,
+                tool: descriptor.tool,
+                argumentsPreview: descriptor.argumentsPreview,
                 resultCount: descriptor.resultCount,
                 outputPreview: descriptor.outputPreview,
                 createdAt,
-                completedAt: status === "completed" || status === "error" ? createdAt : undefined
+                completedAt: effectiveStatus === "completed" || effectiveStatus === "error" ? createdAt : undefined
             }
             : undefined;
         if (itemId) {
@@ -79,10 +83,10 @@ class WorklogOperationNormalizer {
             const previous = this.childCountsByParent.get(parentId) ?? 0;
             this.childCountsByParent.set(parentId, Math.max(previous, previous + (existingBinding?.childId === child.id ? 0 : 1), 1));
             const statuses = this.childStatusesByParent.get(parentId) ?? new Map();
-            statuses.set(child.id, status);
+            statuses.set(child.id, effectiveStatus);
             this.childStatusesByParent.set(parentId, statuses);
         }
-        const parentStatus = parentStatusFor(parentId, this.childStatusesByParent, status);
+        const parentStatus = parentStatusFor(parentId, this.childStatusesByParent, effectiveStatus);
         return {
             id: parentId,
             operationKind: descriptor.kind,
@@ -145,6 +149,24 @@ function normalizeItem(params) {
     }
     const filePath = extractFirstString(item, ["path", "filePath", "absolutePath", "targetPath"]);
     const summary = extractFirstString(item, ["summary", "message", "description", "title"]);
+    if (type === "mcpToolCall") {
+        const server = getString(item.server);
+        const tool = getString(item.tool);
+        const appContext = isRecord(item.appContext) ? item.appContext : {};
+        const appName = getString(appContext.appName);
+        const statusValue = getString(item.status);
+        const error = isRecord(item.error) ? getString(item.error.message) : "";
+        return {
+            kind: "tool",
+            source: "runtime",
+            title: mcpToolTitle(server, tool, appName),
+            server: server || undefined,
+            tool: tool || undefined,
+            argumentsPreview: safeJsonPreview(item.arguments, 900),
+            outputPreview: limitText(error || mcpResultPreview(item.result), 1200),
+            status: statusValue === "failed" || error ? "error" : statusValue === "completed" ? "completed" : "running"
+        };
+    }
     if (type === "fileChange"
         || (normalizedType.includes("file") && /change|patch|edit|write|create|delete|rename/.test(normalizedType))) {
         return {
@@ -188,7 +210,7 @@ function normalizeItem(params) {
     return undefined;
 }
 function shouldCreateChild(descriptor) {
-    if (descriptor.command || descriptor.query || descriptor.path || descriptor.outputPreview || typeof descriptor.resultCount === "number") {
+    if (descriptor.command || descriptor.query || descriptor.path || descriptor.server || descriptor.tool || descriptor.argumentsPreview || descriptor.outputPreview || typeof descriptor.resultCount === "number") {
         return true;
     }
     return false;
@@ -240,7 +262,70 @@ function parentTitle(kind, status, count) {
     if (kind === "context") {
         return status === "completed" ? "Контекст подготовлен" : "Готовится контекст";
     }
-    return status === "completed" ? "Инструмент выполнен" : "Выполняется инструмент";
+    if (status === "error")
+        return safeCount > 1 ? "Инструменты завершились с ошибкой" : "Инструмент завершился с ошибкой";
+    if (status === "completed")
+        return safeCount > 1 ? `Выполнено ${safeCount} ${plural(safeCount, "инструмент", "инструмента", "инструментов")}` : "Инструмент выполнен";
+    return safeCount > 1 ? `Выполняется ${safeCount} ${plural(safeCount, "инструмент", "инструмента", "инструментов")}` : "Выполняется инструмент";
+}
+function mcpToolTitle(server, tool, appName) {
+    const source = appName || server || "MCP";
+    return tool ? `${source}: ${tool}` : source;
+}
+function mcpResultPreview(value) {
+    if (!isRecord(value)) {
+        return safeJsonPreview(value, 1200) ?? "";
+    }
+    const content = Array.isArray(value.content) ? value.content : [];
+    const text = content
+        .map((entry) => isRecord(entry) && typeof entry.text === "string" ? entry.text : "")
+        .filter(Boolean)
+        .join("\n");
+    if (text) {
+        return redactText(text);
+    }
+    return safeJsonPreview(value.structuredContent ?? value, 1200) ?? "";
+}
+function safeJsonPreview(value, maxLength) {
+    if (value === undefined || value === null) {
+        return undefined;
+    }
+    try {
+        const sanitized = sanitizeStructuredValue(value, new WeakSet());
+        const text = typeof sanitized === "string" ? sanitized : JSON.stringify(sanitized, null, 2);
+        return limitText(redactText(text), maxLength);
+    }
+    catch {
+        return undefined;
+    }
+}
+function sanitizeStructuredValue(value, seen) {
+    if (typeof value === "string") {
+        return redactText(value);
+    }
+    if (!value || typeof value !== "object") {
+        return value;
+    }
+    if (seen.has(value)) {
+        return "[циклическая ссылка]";
+    }
+    seen.add(value);
+    if (Array.isArray(value)) {
+        return value.slice(0, 30).map((entry) => sanitizeStructuredValue(entry, seen));
+    }
+    const output = {};
+    for (const [key, nested] of Object.entries(value).slice(0, 40)) {
+        output[key] = isSensitiveKey(key) ? "[скрыто]" : sanitizeStructuredValue(nested, seen);
+    }
+    return output;
+}
+function isSensitiveKey(key) {
+    return /token|secret|password|authorization|api[-_]?key|cookie|credential/i.test(key);
+}
+function redactText(value) {
+    return value
+        .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [скрыто]")
+        .replace(/([?&](?:token|key|secret|password)=)[^&\s]+/gi, "$1[скрыто]");
 }
 function searchTitle(query, searchPath, source, summary) {
     const terms = humanSearchTerms(query || summary);

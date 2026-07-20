@@ -253,6 +253,67 @@ body.vscode-light .user-bubble {
   box-shadow: none;
 }
 
+.user-message-text + .message-attachments {
+  margin-top: 10px;
+}
+
+.message-attachments {
+  display: grid;
+  gap: 6px;
+}
+
+.message-attachment {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 9px;
+  color: inherit;
+  background: var(--vscode-editor-background, transparent);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+}
+
+.message-attachment:hover,
+.message-attachment:focus-visible {
+  border-color: var(--vscode-focusBorder, var(--accent));
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.1));
+  outline: none;
+}
+
+.message-attachment > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  color: var(--muted);
+}
+
+.message-attachment > span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.message-attachment strong,
+.message-attachment small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-attachment strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.message-attachment small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .assistant-message {
   color: var(--vscode-editor-foreground);
   font-size: 15px;
@@ -1288,13 +1349,120 @@ button.worklog-line {
 
 .composer {
   border-top: 1px solid var(--border);
-  padding: 14px 22px 18px;
-  background: var(--vscode-editorWidget-background, #f3f4f6);
+  padding: 12px 22px 16px;
+  background: var(--vscode-editor-background);
+}
+
+.composer-stack {
+  width: min(1040px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 8px;
 }
 
 .clarification-dock {
-  max-width: 1040px;
-  margin: 0 auto 12px;
+  width: 100%;
+}
+
+.queue-dock {
+  border: 1px solid var(--border);
+  border-radius: 8px 8px 5px 5px;
+  padding: 7px 8px 5px;
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+}
+
+.queue-dock-title {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  min-height: 24px;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.queue-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.queue-message {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 3px 4px;
+  border-radius: 6px;
+}
+
+.queue-message:hover,
+.queue-message:focus-within {
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.11));
+}
+
+.queue-message-index {
+  color: var(--muted);
+  text-align: center;
+  font-size: 12px;
+}
+
+.queue-message-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-message-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.queue-message:hover .queue-message-actions,
+.queue-message:focus-within .queue-message-actions {
+  opacity: 1;
+}
+
+.queue-action {
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.queue-action svg {
+  width: 14px;
+  height: 14px;
+}
+
+.queue-action:hover:not(:disabled),
+.queue-action:focus-visible {
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.14));
+  outline: none;
+}
+
+.queue-action:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.queue-remove:hover,
+.queue-remove:focus {
+  color: var(--vscode-errorForeground, #d93025);
 }
 
 .clarification-card {
@@ -1370,8 +1538,146 @@ button.worklog-line {
 }
 
 .composer-box {
-  max-width: 1040px;
-  margin: 0 auto;
+  width: 100%;
+  border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 10px;
+  padding: 8px 9px 7px;
+  background: var(--vscode-input-background, var(--vscode-editorWidget-background));
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.07);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer-box:focus-within {
+  border-color: var(--vscode-focusBorder, var(--accent));
+  box-shadow: 0 7px 24px rgba(0, 0, 0, 0.1);
+}
+
+.attachment-tray {
+  padding: 2px 4px 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.attachment-pill {
+  min-width: 0;
+  max-width: min(320px, 100%);
+  height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--vscode-editor-background, var(--vscode-input-background));
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.attachment-open {
+  min-width: 0;
+  border: 0;
+  padding: 5px 5px 5px 8px;
+  color: var(--vscode-editor-foreground);
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  text-align: left;
+}
+
+.attachment-open:hover,
+.attachment-open:focus-visible,
+.attachment-remove:hover,
+.attachment-remove:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.12));
+  outline: none;
+}
+
+.attachment-open > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  color: var(--muted);
+}
+
+.attachment-copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.attachment-copy strong,
+.attachment-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.attachment-copy span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.attachment-remove {
+  width: 30px;
+  flex: 0 0 30px;
+  border: 0;
+  border-radius: 0 6px 6px 0;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.attachment-remove svg {
+  width: 13px;
+  height: 13px;
+}
+
+.composer-icon-button {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.composer-icon-button:hover:not(:disabled),
+.composer-icon-button:focus-visible {
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.14));
+  outline: none;
+}
+
+.composer-icon-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.composer-icon-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.attachment-spinner {
+  animation: attachment-spin 0.75s linear infinite;
+}
+
+@keyframes attachment-spin {
+  to { transform: rotate(360deg); }
 }
 
 .archived-composer-note {
@@ -1392,23 +1698,26 @@ button.worklog-line {
   color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground, var(--accent)));
 }
 
-textarea {
+.composer textarea {
   width: 100%;
-  min-height: 92px;
-  resize: vertical;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
+  min-height: 62px;
+  max-height: min(220px, 32vh);
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  padding: 7px 8px 8px;
   color: var(--vscode-input-foreground);
-  background: var(--vscode-input-background);
+  background: transparent;
+  line-height: 1.45;
+  outline: none;
 }
 
 .composer-actions {
-  margin-top: 10px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  min-height: 36px;
 }
 
 .composer-actions.planning-active {
@@ -1419,7 +1728,7 @@ textarea {
 .composer-right {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
+  gap: 5px;
 }
 
 .composer-left {
@@ -1428,6 +1737,161 @@ textarea {
 
 .composer-right {
   margin-left: auto;
+  min-width: 0;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.running-send-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.composer-submit,
+.composer-stop {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.12s ease, opacity 0.12s ease, background 0.12s ease;
+}
+
+.composer-submit {
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, var(--accent));
+}
+
+.composer-submit:hover:not(:disabled),
+.composer-submit:focus-visible {
+  background: var(--vscode-button-hoverBackground, var(--accent));
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.composer-submit:disabled {
+  color: var(--muted);
+  background: var(--vscode-disabledForeground, rgba(127, 127, 127, 0.16));
+  opacity: 0.58;
+  cursor: default;
+}
+
+.composer-stop {
+  color: var(--vscode-editor-background);
+  background: var(--vscode-editor-foreground);
+}
+
+.composer-stop:hover:not(:disabled),
+.composer-stop:focus-visible {
+  transform: translateY(-1px);
+  outline: 1px solid var(--vscode-focusBorder, var(--accent));
+  outline-offset: 2px;
+}
+
+.composer-stop.stopping {
+  opacity: 0.56;
+  cursor: wait;
+}
+
+.composer-action-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.followup-selector {
+  display: inline-flex;
+  align-items: center;
+  width: 54px;
+  height: 36px;
+  padding: 0;
+  border-radius: 18px;
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, var(--accent));
+  transition: background 0.12s ease;
+}
+
+.followup-selector:hover,
+.followup-selector:focus-within {
+  background: var(--vscode-button-hoverBackground, var(--accent));
+}
+
+.followup-primary {
+  width: 34px;
+  height: 36px;
+  flex-basis: 34px;
+  border-radius: 18px 0 0 18px;
+  color: inherit;
+  background: transparent;
+}
+
+.followup-primary:hover:not(:disabled),
+.followup-primary:focus-visible {
+  color: inherit;
+  background: transparent;
+  transform: none;
+}
+
+.followup-menu-trigger {
+  position: static;
+  width: 20px;
+  height: 36px;
+  padding: 0 4px 0 0;
+  border: 0;
+  border-radius: 0 18px 18px 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.followup-menu-trigger:hover,
+.followup-menu-trigger:focus-visible {
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  outline: none;
+}
+
+.compact-chevron-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.followup-menu {
+  right: 0;
+  min-width: 272px;
+}
+
+.followup-option {
+  gap: 9px;
+}
+
+.followup-option-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.followup-option-title {
+  color: var(--vscode-editor-foreground);
+  font-weight: 650;
+}
+
+.followup-option-description {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.followup-check {
+  margin-left: auto;
+  color: var(--vscode-textLink-foreground, var(--accent));
 }
 
 .context-window-control {
@@ -1517,7 +1981,7 @@ textarea {
 .chips {
   position: relative;
   display: flex;
-  gap: 12px;
+  gap: 3px;
   flex-wrap: wrap;
   align-items: center;
 }
@@ -1761,7 +2225,8 @@ textarea {
 
 .model-menu,
 .effort-menu,
-.speed-menu {
+.speed-menu,
+.skills-menu {
   right: 0;
   min-width: 190px;
 }
@@ -1772,6 +2237,120 @@ textarea {
 
 .speed-menu {
   min-width: 280px;
+}
+
+.skills-trigger.selected {
+  color: var(--vscode-textLink-foreground, var(--accent));
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.12));
+}
+
+.skills-trigger-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.skills-menu {
+  width: min(360px, calc(100vw - 36px));
+  max-height: min(480px, calc(100vh - 180px));
+  overflow: auto;
+}
+
+.skills-menu-header {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 4px 7px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border-bottom: 1px solid var(--border);
+}
+
+.selector-menu-subtitle,
+.skill-option-description {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.skills-reload {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.skills-reload:hover:not(:disabled),
+.skills-reload:focus-visible {
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.14));
+  outline: none;
+}
+
+.skill-option {
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.skill-option:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.skill-option-check {
+  width: 16px;
+  flex: 0 0 16px;
+  color: var(--vscode-textLink-foreground, var(--accent));
+  line-height: 20px;
+}
+
+.skill-option-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.skill-option-title,
+.skill-option-description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-option-title {
+  color: var(--vscode-editor-foreground);
+  font-weight: 600;
+}
+
+.selector-hint.error {
+  color: var(--vscode-errorForeground, #ec5766);
+}
+
+.queue-message-skills {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.queue-message-attachments {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.queue-message-attachments svg {
+  width: 13px;
+  height: 13px;
 }
 
 .selector-option {
@@ -1876,6 +2455,76 @@ textarea {
 .button:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+@media (max-width: 900px) {
+  .composer {
+    padding-inline: 14px;
+  }
+
+  .composer-actions {
+    align-items: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .composer-left,
+  .composer-right {
+    max-width: 100%;
+  }
+
+  .composer-right {
+    flex: 1 1 100%;
+  }
+
+  .queue-message-skills,
+  .queue-message-attachments {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .composer {
+    padding: 9px 8px 11px;
+  }
+
+  .composer-box {
+    padding-inline: 6px;
+  }
+
+  .composer-actions {
+    gap: 4px;
+  }
+
+  .composer-left,
+  .composer-right {
+    gap: 2px;
+  }
+
+  .context-note {
+    display: none;
+  }
+
+  .queue-message-actions {
+    opacity: 1;
+  }
+
+  .queue-message {
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-box,
+  .composer-submit,
+  .composer-stop,
+  .attachment-spinner,
+  .queue-message-actions {
+    transition: none;
+  }
+
+  .attachment-spinner {
+    animation: none;
+  }
 }
 
 .event {

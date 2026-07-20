@@ -50,19 +50,16 @@ class UserCancelledTurnError extends Error {
     }
 }
 const FALLBACK_MODEL_OPTIONS = [
-    { id: null, label: "5.5" },
-    { id: "gpt-5.5", label: "GPT-5.5" },
-    { id: "gpt-5.4", label: "GPT-5.4" },
-    { id: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
-    { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
-    { id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
-    { id: "gpt-5.2", label: "GPT-5.2" }
+    { id: null, label: "Авто", description: "Модель по умолчанию Codex" }
 ];
 class CodexRuntimeController {
     constructor(options) {
         this.options = options;
         this.processManager = new runtimeProcessManager_1.RuntimeProcessManager();
         this.worklogNormalizer = new worklogNormalizer_1.WorklogOperationNormalizer();
+        this.integrationsChangedEmitter = new vscode.EventEmitter();
+        this.onDidChangeIntegrations = this.integrationsChangedEmitter.event;
+        this.mcpStartupStatuses = new Map();
         this.activeTurnChatId = new Map();
         this.activeThreadChatId = new Map();
         this.activeItemChatId = new Map();
@@ -242,17 +239,21 @@ class CodexRuntimeController {
         ].join("\n"));
         this.updateAuth({ message: "Ссылка и Device Code скопированы." });
     }
-    async sendPrompt(chatId, prompt, mode = "normal", transcriptText, explicitContextBlocks = []) {
+    async sendPrompt(chatId, prompt, mode = "normal", transcriptText, explicitContextBlocks = [], selectedSkills = [], attachments = []) {
         return this.sendPromptCore(chatId, prompt, mode, transcriptText, explicitContextBlocks, {
-            addUserMessage: true
+            addUserMessage: true,
+            selectedSkills,
+            attachments
         });
     }
     async sendPromptCore(chatId, prompt, mode, transcriptText, explicitContextBlocks, options) {
         const trimmed = prompt.trim();
-        if (!trimmed) {
+        const attachments = await this.options.attachments.resolve(options.attachments ?? []);
+        if (!trimmed && !attachments.length) {
             return;
         }
-        const visiblePrompt = (transcriptText ?? trimmed).trim() || trimmed;
+        const runtimePrompt = trimmed || "Изучи прикрепленные файлы.";
+        const visiblePrompt = (transcriptText ?? trimmed).trim();
         const chat = this.options.state.getChat(chatId);
         if (!chat) {
             throw new Error("Чат не найден.");
@@ -264,7 +265,7 @@ class CodexRuntimeController {
         this.latestChatId = chatId;
         const cancelEpoch = this.cancelEpoch(chatId);
         if (options.addUserMessage) {
-            this.options.state.addTranscriptItem(chatId, "user", visiblePrompt);
+            this.options.state.addTranscriptItem(chatId, "user", visiblePrompt, "immediate", undefined, attachments);
         }
         this.options.state.updateChat(chatId, { status: "running", activeRunMode: mode });
         this.options.onDidChange();
@@ -279,8 +280,10 @@ class CodexRuntimeController {
             this.throwIfCancelled(chatId, cancelEpoch);
             let turnResult;
             try {
-                turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
-                    skipAutoDiagnostics: options.isDiagnosticsRetry
+                turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
+                    skipAutoDiagnostics: options.isDiagnosticsRetry,
+                    selectedSkills: options.selectedSkills,
+                    attachments
                 });
             }
             catch (error) {
@@ -288,8 +291,10 @@ class CodexRuntimeController {
                     this.options.logger.warn(`Context window exhausted, requesting app-server compaction before retry: ${normalizeErrorMessage(error)}`);
                     await this.compactBackendThread(chatId);
                     this.throwIfCancelled(chatId, cancelEpoch);
-                    turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
-                        skipAutoDiagnostics: options.isDiagnosticsRetry
+                    turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
+                        skipAutoDiagnostics: options.isDiagnosticsRetry,
+                        selectedSkills: options.selectedSkills,
+                        attachments
                     });
                 }
                 else if (isThreadNotFoundError(error) && this.options.state.getChat(chatId)?.backendThreadId) {
@@ -298,8 +303,10 @@ class CodexRuntimeController {
                     const resumed = await this.tryResumeBackendThread(chatId, requestedAccessMode);
                     this.throwIfCancelled(chatId, cancelEpoch);
                     if (resumed) {
-                        turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
-                            skipAutoDiagnostics: options.isDiagnosticsRetry
+                        turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
+                            skipAutoDiagnostics: options.isDiagnosticsRetry,
+                            selectedSkills: options.selectedSkills,
+                            attachments
                         });
                     }
                     else {
@@ -315,8 +322,10 @@ class CodexRuntimeController {
                         });
                         await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
                         this.throwIfCancelled(chatId, cancelEpoch);
-                        turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
-                            skipAutoDiagnostics: options.isDiagnosticsRetry
+                        turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
+                            skipAutoDiagnostics: options.isDiagnosticsRetry,
+                            selectedSkills: options.selectedSkills,
+                            attachments
                         });
                     }
                 }
@@ -373,19 +382,95 @@ class CodexRuntimeController {
     async loadModelOptions() {
         try {
             await this.ensureBackendProcess();
-            const result = await this.requireRpcClient().request("model/list", undefined, 10000);
-            const options = normalizeModelOptions(result);
+            const collected = [];
+            let cursor = null;
+            for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
+                const result = await this.requireRpcClient().request("model/list", {
+                    cursor,
+                    limit: 100,
+                    includeHidden: false
+                }, 10000);
+                const page = normalizeModelOptionsPage(result);
+                collected.push(...page.options);
+                cursor = page.nextCursor;
+                if (!cursor) {
+                    break;
+                }
+            }
+            const options = withAutomaticModelOption(collected);
             if (!options.length) {
                 this.options.logger.warn("model/list returned no usable models; using fallback model list.");
                 return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
             }
-            this.options.logger.info(`model/list completed: ${options.length} model options.`);
+            this.options.logger.info(`model/list completed: ${Math.max(0, options.length - 1)} runtime models; default=${options.find((option) => option.id === null)?.description ?? "runtime default"}.`);
             return { options, status: "ready" };
         }
         catch (error) {
             this.options.logger.warn(`model/list failed; using fallback model list: ${normalizeErrorMessage(error)}`);
             return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
         }
+    }
+    isBackendRunning() {
+        return this.processManager.isRunning;
+    }
+    async loadMcpRuntimeStatuses() {
+        await this.ensureBackendProcess();
+        const statuses = [];
+        let cursor = null;
+        for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+            const result = await this.requireRpcClient().request("mcpServerStatus/list", {
+                cursor,
+                limit: 100,
+                detail: "toolsAndAuthOnly"
+            }, 15000);
+            const page = normalizeMcpStatusPage(result);
+            statuses.push(...page.data.map((status) => ({
+                ...status,
+                ...(this.mcpStartupStatuses.get(status.name) ?? {})
+            })));
+            cursor = page.nextCursor;
+            if (!cursor) {
+                break;
+            }
+        }
+        return statuses;
+    }
+    async reloadMcpServers() {
+        if (!this.processManager.isRunning) {
+            return;
+        }
+        await this.requireRpcClient().request("config/mcpServer/reload", null, 15000);
+        this.integrationsChangedEmitter.fire();
+    }
+    async startMcpOAuth(name) {
+        await this.ensureBackendProcess();
+        const result = await this.requireRpcClient().request("mcpServer/oauth/login", {
+            name,
+            timeoutSecs: 300
+        }, 15000);
+        const authorizationUrl = getString(isRecord(result) ? result.authorizationUrl : undefined);
+        if (!authorizationUrl) {
+            throw new Error("MCP OAuth не вернул ссылку авторизации.");
+        }
+        await vscode.env.openExternal(vscode.Uri.parse(authorizationUrl));
+    }
+    async loadSkills(forceReload = false) {
+        await this.ensureBackendProcess();
+        const cwd = resolveWorkspaceCwd(this.options.context);
+        const result = await this.requireRpcClient().request("skills/list", {
+            cwds: [cwd],
+            forceReload
+        }, 15000);
+        return normalizeSkillsList(result);
+    }
+    async setSkillEnabled(skill, enabled) {
+        await this.ensureBackendProcess();
+        await this.requireRpcClient().request("skills/config/write", {
+            path: skill.path,
+            name: skill.name,
+            enabled
+        }, 15000);
+        this.integrationsChangedEmitter.fire();
     }
     async probeCapabilities() {
         const rows = [];
@@ -444,7 +529,11 @@ class CodexRuntimeController {
             const account = normalizeAccountReadResult(result);
             return `account=${account.accountType}; label=${account.label ? "set" : "-"}`;
         });
-        await probe("model/list", () => rpcClient.request("model/list", undefined, 10000), (result) => {
+        await probe("model/list", () => rpcClient.request("model/list", {
+            cursor: null,
+            limit: 100,
+            includeHidden: false
+        }, 10000), (result) => {
             const models = normalizeModelOptions(result);
             return `models=${models.length}`;
         });
@@ -512,9 +601,9 @@ class CodexRuntimeController {
             evidence: "static code path"
         });
         record({
-            capability: "turn/cancel",
+            capability: "turn/interrupt",
             status: "unknown",
-            observation: "implemented with {threadId, turnId} and turnId-only retry; live probe is intentionally skipped because it requires a running turn",
+            observation: "implemented with the current {threadId, turnId} contract; live probe is intentionally skipped because it requires a running turn",
             evidence: "static code path"
         });
         record({
@@ -591,7 +680,7 @@ class CodexRuntimeController {
                 try {
                     const turnResult = await rpcClient.request("turn/start", {
                         threadId,
-                        input: [{ type: "text", text: plannerPrompt }],
+                        input: [{ type: "text", text: plannerPrompt, text_elements: [] }],
                         cwd,
                         approvalPolicy: "never",
                         approvalsReviewer: "user",
@@ -652,13 +741,13 @@ class CodexRuntimeController {
         this.options.onDidChangeChat(chatId);
         try {
             if (!this.rpcClient || !threadId || !turnId) {
-                throw new Error("turn/cancel недоступен: нет активного backend thread/turn.");
+                throw new Error("turn/interrupt недоступен: нет активного backend thread/turn.");
             }
-            await this.requestTurnCancel(threadId, turnId);
-            this.options.logger.info(`turn/cancel accepted: chat=${chatId}; turn=${turnId}.`);
+            await this.requestTurnInterrupt(threadId, turnId);
+            this.options.logger.info(`turn/interrupt accepted: chat=${chatId}; turn=${turnId}.`);
         }
         catch (error) {
-            this.options.logger.warn(`turn/cancel failed, stopping backend fallback: ${normalizeErrorMessage(error)}`);
+            this.options.logger.warn(`turn/interrupt failed, stopping backend fallback: ${normalizeErrorMessage(error)}`);
             await this.stopBackendAfterCancel();
         }
         finally {
@@ -675,6 +764,63 @@ class CodexRuntimeController {
                 this.options.onDidChangeChat(chatId);
             }
         }
+    }
+    queuePrompt(chatId, prompt, mode = "normal", selectedSkills = [], attachments = []) {
+        const chat = this.options.state.getChat(chatId);
+        if (!chat || (chat.status !== "running" && chat.status !== "waitingApproval")) {
+            return Promise.resolve(false);
+        }
+        return this.options.attachments.resolve(attachments).then((validatedAttachments) => {
+            const queued = this.options.state.enqueueChatMessage(chatId, prompt, mode, [...selectedSkills], validatedAttachments);
+            if (!queued) {
+                return false;
+            }
+            this.options.logger.info(`Prompt queued: chat=${chatId}; queue=${this.options.state.getChat(chatId)?.queuedMessages.length ?? 0}; attachments=${validatedAttachments.length}.`);
+            this.options.onDidChange();
+            this.options.onDidChangeChat(chatId);
+            return true;
+        });
+    }
+    removeQueuedPrompt(chatId, messageId) {
+        const removed = this.options.state.removeQueuedChatMessage(chatId, messageId);
+        if (removed) {
+            this.options.onDidChange();
+            this.options.onDidChangeChat(chatId);
+        }
+        return removed;
+    }
+    moveQueuedPrompt(chatId, messageId, direction) {
+        const moved = this.options.state.moveQueuedChatMessage(chatId, messageId, direction);
+        if (moved) {
+            this.options.onDidChange();
+            this.options.onDidChangeChat(chatId);
+        }
+        return moved;
+    }
+    async steerTurn(chatId, prompt, attachments = []) {
+        const normalized = prompt.trim();
+        const validatedAttachments = await this.options.attachments.resolve(attachments);
+        const chat = this.options.state.getChat(chatId);
+        if ((!normalized && !validatedAttachments.length) || !chat?.backendThreadId || !chat.activeTurnId || chat.status !== "running") {
+            throw new Error("Рекомендацию можно отправить только во время активного запроса.");
+        }
+        const input = [
+            ...(normalized ? [{ type: "text", text: normalized, text_elements: [] }] : []),
+            ...validatedAttachments.map((attachment) => attachment.kind === "image"
+                ? { type: "localImage", detail: "auto", path: attachment.path }
+                : { type: "mention", name: attachment.displayPath || attachment.name, path: attachment.path })
+        ];
+        const clientUserMessageId = `steer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        await this.requireRpcClient().request("turn/steer", {
+            threadId: chat.backendThreadId,
+            expectedTurnId: chat.activeTurnId,
+            clientUserMessageId,
+            input
+        }, 15000);
+        this.options.state.addTranscriptItem(chatId, "user", normalized, "immediate", chat.activeTurnId, validatedAttachments);
+        this.options.logger.info(`turn/steer accepted: chat=${chatId}; turn=${chat.activeTurnId}.`);
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
     }
     async readAccount() {
         if (!this.processManager.isRunning) {
@@ -758,6 +904,13 @@ class CodexRuntimeController {
             await this.tryResumeBackendThread(chatId, requestedAccessMode);
         }
     }
+    resolveServiceTier(chatId) {
+        const chat = this.options.state.getChat(chatId);
+        if (!chat || chat.speed !== "fast") {
+            return null;
+        }
+        return this.options.state.getModelOptionForChat(chatId)?.serviceTiers?.[0]?.id ?? "priority";
+    }
     async tryResumeBackendThread(chatId, accessOverride) {
         try {
             await this.resumeBackendThread(chatId, accessOverride);
@@ -777,13 +930,15 @@ class CodexRuntimeController {
         const cwd = resolveWorkspaceCwd(this.options.context);
         const accessMode = accessOverride ?? chat.accessMode;
         const model = chat.modelId ?? null;
+        const serviceTier = this.resolveServiceTier(chatId);
         const fullPayload = {
             threadId: chat.backendThreadId,
             cwd,
             approvalPolicy: getApprovalPolicy(accessMode),
             approvalsReviewer: "user",
             sandbox: getThreadSandbox(accessMode),
-            model
+            model,
+            serviceTier
         };
         let result;
         try {
@@ -810,6 +965,7 @@ class CodexRuntimeController {
         const chat = this.options.state.getChat(chatId);
         const accessMode = accessOverride ?? chat?.accessMode ?? (chat?.kind === "project" ? "workspace-write" : "read-only");
         const model = chat?.modelId ?? null;
+        const serviceTier = this.resolveServiceTier(chatId);
         const result = await rpcClient.request("thread/start", {
             cwd,
             approvalPolicy: getApprovalPolicy(accessMode),
@@ -817,7 +973,8 @@ class CodexRuntimeController {
             sandbox: getThreadSandbox(accessMode),
             sessionStartSource: "startup",
             serviceName: "codex_element_v1",
-            model
+            model,
+            serviceTier
         });
         const threadId = extractThreadId(result);
         if (!threadId) {
@@ -839,7 +996,7 @@ class CodexRuntimeController {
                 throw error;
             }
             this.options.logger.warn(`thread/start model rejected; retrying with default model: ${normalizeErrorMessage(error)}`);
-            this.options.state.setChatModel(chatId, null, "5.5");
+            this.options.state.setChatModel(chatId, null, "Авто");
             await this.startBackendThread(chatId, accessOverride);
         }
     }
@@ -859,10 +1016,13 @@ class CodexRuntimeController {
             explicitContextBlocks,
             skipAutoDiagnostics: options.skipAutoDiagnostics,
             forceDiagnosticsContext: options.forceDiagnosticsContext,
-            diagnosticsPriority: options.diagnosticsPriority
+            diagnosticsPriority: options.diagnosticsPriority,
+            selectedSkills: options.selectedSkills,
+            attachments: options.attachments
         });
         const turnAccessMode = getRunAccessMode(chat.accessMode, mode);
-        this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}; mode=${mode}; model=${chat.modelId || "<default>"}; effort=${chat.effort}; speed=${options.omitSpeed ? "<omitted>" : chat.speed}.`);
+        const serviceTier = this.resolveServiceTier(chatId);
+        this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}; mode=${mode}; model=${chat.modelId || "<default>"}; effort=${chat.effort}; serviceTier=${options.omitServiceTier ? "<omitted>" : serviceTier ?? "<standard>"}.`);
         const result = await this.requireRpcClient().request("turn/start", {
             threadId: chat.backendThreadId,
             input: turnContext.input,
@@ -872,7 +1032,7 @@ class CodexRuntimeController {
             sandboxPolicy: getTurnSandboxPolicy(turnAccessMode, cwd),
             model: chat.modelId ?? null,
             effort: chat.effort,
-            ...(!options.omitSpeed ? { speed: chat.speed } : {})
+            ...(!options.omitServiceTier ? { serviceTier } : {})
         }, 30000);
         this.addContextWorklogActivity(chatId, turnContext);
         return result;
@@ -897,26 +1057,27 @@ class CodexRuntimeController {
             return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, options);
         }
         catch (error) {
-            if (isSpeedError(error)) {
-                this.options.logger.warn(`turn/start speed unsupported by runtime; retrying without speed: ${normalizeErrorMessage(error)}`);
+            if (isServiceTierError(error)) {
+                this.options.logger.warn(`turn/start serviceTier unsupported by runtime; retrying without serviceTier: ${normalizeErrorMessage(error)}`);
+                this.options.state.setChatSpeed(chatId, "standard");
                 try {
-                    return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, { ...options, omitSpeed: true });
+                    return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, { ...options, omitServiceTier: true });
                 }
                 catch (retryError) {
                     if (!isModelOrEffortError(retryError)) {
                         throw retryError;
                     }
-                    this.options.logger.warn(`turn/start model/effort rejected after speed fallback; retrying with defaults: ${normalizeErrorMessage(retryError)}`);
-                    this.options.state.setChatModel(chatId, null, "5.5");
+                    this.options.logger.warn(`turn/start model/effort rejected after serviceTier fallback; retrying with defaults: ${normalizeErrorMessage(retryError)}`);
+                    this.options.state.setChatModel(chatId, null, "Авто");
                     this.options.state.setChatEffort(chatId, "medium");
-                    return this.startTurn(chatId, prompt, mode, explicitContextBlocks, { ...options, omitSpeed: true });
+                    return this.startTurn(chatId, prompt, mode, explicitContextBlocks, { ...options, omitServiceTier: true });
                 }
             }
             if (!isModelOrEffortError(error)) {
                 throw error;
             }
             this.options.logger.warn(`turn/start model/effort rejected; retrying with defaults: ${normalizeErrorMessage(error)}`);
-            this.options.state.setChatModel(chatId, null, "5.5");
+            this.options.state.setChatModel(chatId, null, "Авто");
             this.options.state.setChatEffort(chatId, "medium");
             return this.startTurn(chatId, prompt, mode, explicitContextBlocks, options);
         }
@@ -1224,16 +1385,8 @@ class CodexRuntimeController {
         }
         this.options.state.setPendingApproval(chatId, null);
     }
-    async requestTurnCancel(threadId, turnId) {
-        const rpcClient = this.requireRpcClient();
-        try {
-            await rpcClient.request("turn/cancel", { threadId, turnId }, 5000);
-            return;
-        }
-        catch (error) {
-            this.options.logger.warn(`turn/cancel with threadId failed, retrying turn-only payload: ${normalizeErrorMessage(error)}`);
-        }
-        await rpcClient.request("turn/cancel", { turnId }, 5000);
+    async requestTurnInterrupt(threadId, turnId) {
+        await this.requireRpcClient().request("turn/interrupt", { threadId, turnId }, 5000);
     }
     async stopBackendAfterCancel() {
         this.suppressNextExitAsCancel = true;
@@ -1251,6 +1404,7 @@ class CodexRuntimeController {
         this.rejectAllHiddenPlannerRuns(new Error("Codex runtime disposed before docs planner completed."));
         this.cleanupThinking();
         this.rpcClient?.dispose();
+        this.integrationsChangedEmitter.dispose();
         this.processManager.dispose();
     }
     async ensureBackendProcess() {
@@ -1412,6 +1566,12 @@ class CodexRuntimeController {
                 name: "codex_element_v1",
                 title: "Codex for 1C: Element",
                 version: String(this.options.context.extension.packageJSON.version ?? "0.0.0")
+            },
+            capabilities: {
+                experimentalApi: true,
+                requestAttestation: false,
+                mcpServerOpenaiFormElicitation: false,
+                optOutNotificationMethods: null
             }
         });
         rpcClient.notify("initialized");
@@ -1512,6 +1672,24 @@ class CodexRuntimeController {
             this.options.logger.info(`Ignored notification for cancelled turn ${notificationTurnId}: ${notification.method}.`);
             return;
         }
+        if (notification.method === "skills/changed"
+            || notification.method === "mcpServer/startupStatus/updated"
+            || notification.method === "mcpServerStatus/updated"
+            || notification.method === "mcpServer/oauthLogin/completed") {
+            if (notification.method === "mcpServer/startupStatus/updated" || notification.method === "mcpServerStatus/updated") {
+                const payload = isRecord(notification.params) ? notification.params : {};
+                const name = getString(payload.name).trim();
+                const status = normalizeMcpRuntimeStatus(payload.status);
+                if (name && status) {
+                    this.mcpStartupStatuses.set(name, {
+                        runtimeStatus: status,
+                        error: getString(payload.error) || undefined
+                    });
+                }
+            }
+            this.integrationsChangedEmitter.fire();
+            return;
+        }
         if (notification.method === "account/login/completed") {
             const completed = normalizeLoginCompletedNotification(notification.params);
             this.updateAuth({
@@ -1532,7 +1710,7 @@ class CodexRuntimeController {
         }
         if (notification.method === "account/rateLimits/updated") {
             try {
-                const rateLimits = normalizeRateLimitsNotification(notification.params);
+                const rateLimits = mergeRateLimits(this.options.state.getSidebarSnapshot().rateLimits, normalizeRateLimitsNotification(notification.params));
                 this.updateRateLimits(rateLimits);
                 this.options.logger.info(`Rate limits updated: rows=${rateLimits.rows.length}${rateLimits.rateLimitReachedType ? `, reached=${rateLimits.rateLimitReachedType}` : ""}.`);
             }
@@ -1673,12 +1851,19 @@ class CodexRuntimeController {
             }
             return;
         }
-        if (notification.method === "item/commandExecution/outputDelta" || notification.method === "item/fileChange/outputDelta" || notification.method === "item/reasoning/summaryTextDelta" || notification.method === "item/reasoning/textDelta") {
+        if (notification.method === "item/commandExecution/outputDelta"
+            || notification.method === "item/fileChange/outputDelta"
+            || notification.method === "item/reasoning/summaryTextDelta"
+            || notification.method === "item/reasoning/textDelta"
+            || notification.method === "item/mcpToolCall/progress") {
             const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
-            const delta = extractDelta(notification.params);
+            const delta = notification.method === "item/mcpToolCall/progress"
+                ? extractMcpProgressMessage(notification.params)
+                : extractDelta(notification.params);
             const outputPatch = this.worklogNormalizer.outputPatch(notification.params);
             if (chatId && outputPatch && delta) {
-                this.options.state.appendWorklogChildOutput(chatId, outputPatch.worklogId, outputPatch.childId, delta);
+                const output = notification.method === "item/mcpToolCall/progress" ? `${delta}\n` : delta;
+                this.options.state.appendWorklogChildOutput(chatId, outputPatch.worklogId, outputPatch.childId, output);
                 this.options.onDidChangeChat(chatId);
             }
             return;
@@ -1806,11 +1991,12 @@ class CodexRuntimeController {
             if (turnId) {
                 this.fileChangingTurnIds.delete(turnId);
             }
+            const queuedStarted = Boolean(chatId && (status === "completed" || !errorMessage) && this.startNextQueuedPrompt(chatId));
             if (chatId && turnId && isDiagnosticsRetryTurn) {
                 this.diagnosticsRetryTurnIds.delete(turnId);
                 void this.logDiagnosticsRetryResult(chatId, turnId);
             }
-            else if (chatId && turnId && (status === "completed" || !errorMessage)) {
+            else if (!queuedStarted && chatId && turnId && (status === "completed" || !errorMessage)) {
                 void this.maybeStartDiagnosticsAutoFix(chatId, turnId, completedAccessMode, completedRunMode, mayHaveChangedFiles);
             }
             return;
@@ -1856,6 +2042,49 @@ class CodexRuntimeController {
             this.options.logger.error(`App-server error: ${message}`);
         }
     }
+    startNextQueuedPrompt(chatId) {
+        const queued = this.options.state.shiftQueuedChatMessage(chatId);
+        if (!queued) {
+            return false;
+        }
+        this.options.onDidChange();
+        this.options.onDidChangeChat(chatId);
+        setTimeout(() => {
+            void (async () => {
+                const skills = await this.validateQueuedSkills(queued.skills ?? []);
+                await this.sendPrompt(chatId, queued.text, queued.mode, undefined, [], skills, queued.attachments ?? []);
+            })().catch((error) => {
+                this.options.logger.error(`Queued prompt failed: chat=${chatId}; ${normalizeErrorMessage(error)}`);
+            });
+        }, 0);
+        return true;
+    }
+    async validateQueuedSkills(selected) {
+        if (!selected.length) {
+            return [];
+        }
+        try {
+            const enabled = await this.loadSkills(false);
+            const allowed = new Map(enabled
+                .filter((skill) => skill.enabled)
+                .map((skill) => [`${skill.name}\0${skill.path}`, skill]));
+            const validated = new Map();
+            for (const candidate of selected.slice(0, 8)) {
+                const skill = allowed.get(`${candidate.name}\0${candidate.path}`);
+                if (skill) {
+                    validated.set(skill.path, { name: skill.name, path: skill.path });
+                }
+            }
+            if (validated.size !== selected.length) {
+                this.options.logger.warn(`Queued skills revalidated: requested=${selected.length}; allowed=${validated.size}.`);
+            }
+            return [...validated.values()];
+        }
+        catch (error) {
+            this.options.logger.warn(`Queued skills validation failed; continuing without skills: ${normalizeErrorMessage(error)}`);
+            return [];
+        }
+    }
     async handleServerRequest(request) {
         const normalized = normalizeApprovalRequest(request, this.itemPayloads);
         if (!normalized) {
@@ -1892,6 +2121,7 @@ class CodexRuntimeController {
         this.pendingApprovals.clear();
         this.rejectAllHiddenPlannerRuns(new Error("Codex app-server exited before docs planner completed."));
         this.loadedThreadIds.clear();
+        this.mcpStartupStatuses.clear();
         this.activeItemChatId.clear();
         this.contextCompactionItemThreads.clear();
         this.contextCompactionActivityIds.clear();
@@ -2036,7 +2266,9 @@ function getTurnSandboxPolicy(accessMode, cwd) {
         return {
             type: "workspaceWrite",
             writableRoots: [cwd],
-            networkAccess: true
+            networkAccess: true,
+            excludeTmpdirEnvVar: false,
+            excludeSlashTmp: false
         };
     }
     if (accessMode === "danger-full-access") {
@@ -2426,26 +2658,68 @@ function normalizeAccountReadResult(result) {
 }
 function normalizeRateLimitsResult(result) {
     const root = isRecord(result) ? result : {};
-    return normalizeRateLimits(root.rateLimits ?? root);
+    const snapshots = [root.rateLimits ?? root];
+    if (isRecord(root.rateLimitsByLimitId)) {
+        snapshots.push(...Object.values(root.rateLimitsByLimitId));
+    }
+    return normalizeRateLimitSnapshots(snapshots);
 }
 function normalizeRateLimitsNotification(params) {
     const root = isRecord(params) ? params : {};
     return normalizeRateLimits(root.rateLimits ?? root);
 }
+function mergeRateLimits(current, update) {
+    const rows = new Map();
+    for (const row of current.rows) {
+        rows.set(rateLimitRowKey(row), row);
+    }
+    for (const row of update.rows) {
+        rows.set(rateLimitRowKey(row), row);
+    }
+    return {
+        status: "ready",
+        rows: [...rows.values()],
+        updatedAt: update.updatedAt ?? new Date().toISOString(),
+        rateLimitReachedType: update.rateLimitReachedType ?? current.rateLimitReachedType
+    };
+}
+function rateLimitRowKey(row) {
+    return `${row.limitId ?? row.label ?? "legacy"}:${row.kind}`;
+}
 function normalizeRateLimits(value) {
-    const root = isRecord(value) ? value : {};
-    const rows = [
-        normalizeRateLimitRow("primary", root.primary),
-        normalizeRateLimitRow("secondary", root.secondary)
-    ].filter((row) => Boolean(row));
+    return normalizeRateLimitSnapshots([value]);
+}
+function normalizeRateLimitSnapshots(values) {
+    const rows = [];
+    const seen = new Set();
+    let rateLimitReachedType;
+    for (const value of values) {
+        const root = isRecord(value) ? value : {};
+        const limitId = getString(root.limitId) || undefined;
+        const limitName = getString(root.limitName) || undefined;
+        rateLimitReachedType ?? (rateLimitReachedType = getString(root.rateLimitReachedType) || undefined);
+        for (const row of [
+            normalizeRateLimitRow("primary", root.primary, limitId, limitName),
+            normalizeRateLimitRow("secondary", root.secondary, limitId, limitName)
+        ]) {
+            if (!row) {
+                continue;
+            }
+            const key = `${row.limitId ?? ""}:${row.label ?? ""}:${row.kind}:${row.windowDurationMins ?? "-"}:${row.resetsAt ?? "-"}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                rows.push(row);
+            }
+        }
+    }
     return {
         status: "ready",
         rows,
         updatedAt: new Date().toISOString(),
-        rateLimitReachedType: getString(root.rateLimitReachedType) || undefined
+        rateLimitReachedType
     };
 }
-function normalizeRateLimitRow(kind, value) {
+function normalizeRateLimitRow(kind, value, limitId, label) {
     if (!isRecord(value)) {
         return undefined;
     }
@@ -2454,6 +2728,8 @@ function normalizeRateLimitRow(kind, value) {
     const resetsAt = getOptionalNumber(value.resetsAt);
     return {
         kind,
+        limitId,
+        label,
         usedPercent,
         remainingPercent: clampPercent(100 - usedPercent),
         windowDurationMins,
@@ -2658,6 +2934,10 @@ function extractDelta(value) {
     const root = isRecord(value) ? value : {};
     return getString(root.delta);
 }
+function extractMcpProgressMessage(value) {
+    const root = isRecord(value) ? value : {};
+    return limitText(getString(root.message), 500);
+}
 function extractErrorNotificationMessage(value) {
     const root = isRecord(value) ? value : {};
     const error = isRecord(root.error) ? root.error : root;
@@ -2782,12 +3062,12 @@ function isModelOrEffortError(error) {
         message.includes("unknown variant") && message.includes("effort") ||
         message.includes("invalid effort"));
 }
-function isSpeedError(error) {
+function isServiceTierError(error) {
     const message = normalizeErrorMessage(error).toLowerCase();
-    return (message.includes("speed") && message.includes("invalid request") ||
-        message.includes("unknown field") && message.includes("speed") ||
-        message.includes("unknown variant") && message.includes("speed") ||
-        message.includes("invalid speed"));
+    return (message.includes("servicetier") && message.includes("invalid request") ||
+        message.includes("service_tier") && message.includes("invalid request") ||
+        message.includes("unknown field") && (message.includes("servicetier") || message.includes("service_tier")) ||
+        message.includes("invalid service tier"));
 }
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -2796,30 +3076,105 @@ function normalizeErrorMessage(error) {
     return (0, logger_1.redact)(error instanceof Error ? error.message : "Неизвестная ошибка Codex runtime.");
 }
 function normalizeModelOptions(value) {
+    return withAutomaticModelOption(normalizeModelOptionsPage(value).options);
+}
+function normalizeModelOptionsPage(value) {
     const items = Array.isArray(value)
         ? value
-        : isRecord(value) && Array.isArray(value.models)
-            ? value.models
-            : isRecord(value) && Array.isArray(value.items)
-                ? value.items
-                : [];
+        : isRecord(value) && Array.isArray(value.data)
+            ? value.data
+            : isRecord(value) && Array.isArray(value.models)
+                ? value.models
+                : isRecord(value) && Array.isArray(value.items)
+                    ? value.items
+                    : [];
     const normalized = [];
     const seen = new Set();
     for (const item of items) {
         const record = isRecord(item) ? item : {};
+        if (record.hidden === true) {
+            continue;
+        }
         const id = getString(record.id) || getString(record.model) || getString(record.name);
         const label = getString(record.label) || getString(record.displayName) || getString(record.title) || prettifyModelLabel(id);
         if (!id && !label) {
             continue;
         }
-        const option = { id: id || null, label: label || id };
+        const supportedEfforts = Array.isArray(record.supportedReasoningEfforts)
+            ? record.supportedReasoningEfforts
+                .map((entry) => {
+                const effort = isRecord(entry) ? normalizeChatEffortValue(entry.reasoningEffort) : undefined;
+                return effort
+                    ? { value: effort, description: isRecord(entry) ? getString(entry.description) : "" }
+                    : undefined;
+            })
+                .filter((entry) => Boolean(entry))
+            : [];
+        const serviceTiers = Array.isArray(record.serviceTiers)
+            ? record.serviceTiers
+                .map((entry) => {
+                if (!isRecord(entry)) {
+                    return undefined;
+                }
+                const tierId = getString(entry.id);
+                if (!tierId) {
+                    return undefined;
+                }
+                return {
+                    id: tierId,
+                    label: getString(entry.name) || prettifyModelLabel(tierId),
+                    description: getString(entry.description)
+                };
+            })
+                .filter((entry) => Boolean(entry))
+            : [];
+        const option = {
+            id: id || null,
+            label: label || id,
+            description: getString(record.description) || undefined,
+            isDefault: record.isDefault === true,
+            supportedEfforts,
+            defaultEffort: normalizeChatEffortValue(record.defaultReasoningEffort),
+            serviceTiers
+        };
         const key = `${option.id ?? "<default>"}:${option.label}`;
         if (!seen.has(key)) {
             seen.add(key);
             normalized.push(option);
         }
     }
-    return normalized.length ? normalized : FALLBACK_MODEL_OPTIONS;
+    return {
+        options: normalized,
+        nextCursor: isRecord(value) ? getString(value.nextCursor) || null : null
+    };
+}
+function withAutomaticModelOption(options) {
+    const deduped = [];
+    const seen = new Set();
+    for (const option of options) {
+        const key = option.id ?? "<auto>";
+        if (!seen.has(key)) {
+            seen.add(key);
+            deduped.push(option);
+        }
+    }
+    const runtimeDefault = deduped.find((option) => option.isDefault) ?? deduped[0];
+    const automatic = {
+        id: null,
+        label: "Авто",
+        description: runtimeDefault ? `Модель Codex по умолчанию: ${runtimeDefault.label}` : "Модель по умолчанию Codex",
+        isDefault: true,
+        supportedEfforts: runtimeDefault?.supportedEfforts,
+        defaultEffort: runtimeDefault?.defaultEffort,
+        serviceTiers: runtimeDefault?.serviceTiers
+    };
+    return [automatic, ...deduped.filter((option) => option.id !== null)];
+}
+function normalizeChatEffortValue(value) {
+    if (value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra") {
+        return value;
+    }
+    return undefined;
 }
 function normalizeItemActivity(value) {
     const item = extractItemRecord(value);
@@ -3224,6 +3579,95 @@ function extractRequestedPermissions(value) {
 }
 function sanitizePayload(value) {
     return limitText((0, logger_1.redact)(JSON.stringify(value, null, 2)), 2000);
+}
+function normalizeMcpStatusPage(value) {
+    const root = isRecord(value) ? value : {};
+    const data = Array.isArray(root.data) ? root.data.flatMap((candidate) => {
+        if (!isRecord(candidate)) {
+            return [];
+        }
+        const name = getString(candidate.name).trim();
+        if (!name) {
+            return [];
+        }
+        const tools = isRecord(candidate.tools)
+            ? Object.keys(candidate.tools).length
+            : Array.isArray(candidate.tools)
+                ? candidate.tools.length
+                : 0;
+        const resources = Array.isArray(candidate.resources) ? candidate.resources.length : 0;
+        const serverInfo = isRecord(candidate.serverInfo) ? candidate.serverInfo : {};
+        const error = getString(candidate.error) || getString(candidate.lastError) || undefined;
+        return [{
+                name,
+                authStatus: normalizeMcpAuthStatus(candidate.authStatus),
+                runtimeStatus: normalizeMcpRuntimeStatus(candidate.status)
+                    ?? normalizeMcpRuntimeStatus(candidate.runtimeStatus)
+                    ?? (error ? "failed" : "ready"),
+                toolCount: tools,
+                resourceCount: resources,
+                description: getString(serverInfo.description) || getString(serverInfo.title),
+                error
+            }];
+    }) : [];
+    return {
+        data,
+        nextCursor: getString(root.nextCursor) || null
+    };
+}
+function normalizeMcpAuthStatus(value) {
+    if (value === "unsupported" || value === "notLoggedIn" || value === "bearerToken" || value === "oAuth") {
+        return value;
+    }
+    return "unknown";
+}
+function normalizeMcpRuntimeStatus(value) {
+    return value === "starting" || value === "ready" || value === "failed" || value === "cancelled"
+        ? value
+        : undefined;
+}
+function normalizeSkillsList(value) {
+    const root = isRecord(value) ? value : {};
+    const entries = Array.isArray(root.data) ? root.data : [];
+    const byPath = new Map();
+    for (const entry of entries) {
+        if (!isRecord(entry) || !Array.isArray(entry.skills)) {
+            continue;
+        }
+        for (const candidate of entry.skills) {
+            if (!isRecord(candidate)) {
+                continue;
+            }
+            const name = getString(candidate.name).trim();
+            const skillPath = getString(candidate.path).trim();
+            if (!name || !skillPath) {
+                continue;
+            }
+            const skillInterface = isRecord(candidate.interface) ? candidate.interface : {};
+            const dependencies = isRecord(candidate.dependencies) && Array.isArray(candidate.dependencies.tools)
+                ? candidate.dependencies.tools.length
+                : 0;
+            const scope = candidate.scope === "user"
+                || candidate.scope === "repo"
+                || candidate.scope === "system"
+                || candidate.scope === "admin"
+                || candidate.scope === "plugin"
+                || candidate.scope === "marketplace"
+                ? candidate.scope
+                : "unknown";
+            byPath.set(skillPath, {
+                name,
+                path: skillPath,
+                description: getString(candidate.description),
+                displayName: getString(skillInterface.displayName) || name,
+                shortDescription: getString(skillInterface.shortDescription) || getString(candidate.shortDescription),
+                enabled: candidate.enabled !== false,
+                scope,
+                dependencyCount: dependencies
+            });
+        }
+    }
+    return [...byPath.values()].sort((left, right) => left.displayName.localeCompare(right.displayName));
 }
 function limitText(value, maxLength) {
     if (!value || value.length <= maxLength) {

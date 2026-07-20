@@ -40,9 +40,11 @@ const vscode = __importStar(require("vscode"));
 const approvalAttentionService_1 = require("./approvalAttentionService");
 const baseContextService_1 = require("./baseContextService");
 const chatPanelManager_1 = require("./chatPanelManager");
+const chatAttachmentService_1 = require("./chatAttachmentService");
 const chatHistoryService_1 = require("./chatHistoryService");
 const contextRouterService_1 = require("./contextRouterService");
 const contextTurnOrchestrator_1 = require("./contextTurnOrchestrator");
+const codexIntegrationsService_1 = require("./codexIntegrationsService");
 const codexRuntimeController_1 = require("./codexRuntimeController");
 const diagnosticsContextService_1 = require("./diagnosticsContextService");
 const diagnosticsToolsService_1 = require("./diagnosticsToolsService");
@@ -52,6 +54,7 @@ const docsRetrievalLoopService_1 = require("./docsRetrievalLoopService");
 const docsNormalizerService_1 = require("./docsNormalizerService");
 const docsToolsService_1 = require("./docsToolsService");
 const editorContextService_1 = require("./editorContextService");
+const elementMcpIdeBridgeService_1 = require("./elementMcpIdeBridgeService");
 const logger_1 = require("./logger");
 const managedContextToolLoopService_1 = require("./managedContextToolLoopService");
 const nativeContextToolLoopService_1 = require("./nativeContextToolLoopService");
@@ -75,9 +78,12 @@ async function activate(context) {
     const settings = new settingsService_1.SettingsService(context);
     logger.enableFileLogging(path.join(settings.getConfigRoot(), "logs"));
     logger.info("ripgrep discovery deferred until settings/runtime usage.");
+    const elementMcpIdeBridge = new elementMcpIdeBridgeService_1.ElementMcpIdeBridgeService(logger);
+    context.subscriptions.push(elementMcpIdeBridge);
     const contextRouter = new contextRouterService_1.ContextRouterService();
     const baseContext = new baseContextService_1.BaseContextService(context, logger);
     const diagnosticsContext = new diagnosticsContextService_1.DiagnosticsContextService(logger);
+    const attachments = new chatAttachmentService_1.ChatAttachmentService(logger);
     const diffArtifacts = new diffArtifactService_1.DiffArtifactService(logger);
     const docsCorpusContext = new docsContextService_1.DocsContextService(settings, logger);
     const nativeContextTools = new nativeContextToolLoopService_1.NativeContextToolLoopService(logger);
@@ -101,6 +107,7 @@ async function activate(context) {
     let historyProfileId;
     let sidebar;
     let runtime;
+    let integrations;
     let chatPanels;
     let approvalAttention;
     const docsContext = new docsRetrievalLoopService_1.DocsRetrievalLoopService(docsCorpusContext, logger, (request) => runtime.planDocsRetrieval(request));
@@ -119,7 +126,14 @@ async function activate(context) {
     state.setProxy(await settings.getSidebarProxyStatus());
     state.setDocs(settings.getSidebarDocsStatus());
     chatPanels = new chatPanelManager_1.ChatPanelManager(context, state, logger, {
-        sendPrompt: async (chatId, prompt, mode, transcriptText) => runtime.sendPrompt(chatId, prompt, mode, transcriptText),
+        sendPrompt: async (chatId, prompt, mode, transcriptText, skills, selectedAttachments) => runtime.sendPrompt(chatId, prompt, mode, transcriptText, [], skills, selectedAttachments),
+        queuePrompt: (chatId, prompt, mode, skills, selectedAttachments) => runtime.queuePrompt(chatId, prompt, mode, skills, selectedAttachments),
+        steerTurn: async (chatId, prompt, selectedAttachments) => runtime.steerTurn(chatId, prompt, selectedAttachments),
+        pickAttachments: (existing) => attachments.pick(existing),
+        resolveAttachments: (value) => attachments.resolve(value),
+        openAttachment: (value) => attachments.open(value),
+        removeQueuedPrompt: (chatId, messageId) => runtime.removeQueuedPrompt(chatId, messageId),
+        moveQueuedPrompt: (chatId, messageId, direction) => runtime.moveQueuedPrompt(chatId, messageId, direction),
         cancelTurn: async (chatId) => runtime.cancelTurn(chatId),
         markReadToBottom: (chatId) => {
             if (state.markChatRead(chatId)) {
@@ -175,6 +189,7 @@ async function activate(context) {
             state.setModelOptions(result.options, result.status);
             chatPanels.postSnapshot();
         },
+        loadSkills: async (forceReload) => integrations.listEnabledSkills(forceReload),
         getProjectContextDetails: async () => projectContext.getDetails(profiles.getCurrentProfileId()),
         getDocsContextDetails: async () => docsContext.decorateDetails(await settings.getDocsContextDetails()),
         toggleRules: async (chatId) => {
@@ -263,6 +278,7 @@ async function activate(context) {
         contextOrchestrator,
         docsContext,
         diagnosticsContext,
+        attachments,
         nativeContextTools,
         profiles,
         state,
@@ -276,7 +292,9 @@ async function activate(context) {
         onDidResolveProfile: ensureHistoryLoaded
     });
     context.subscriptions.push(runtime);
-    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, logger, async (options) => {
+    integrations = new codexIntegrationsService_1.CodexIntegrationsService(context, settings, profiles, runtime, logger);
+    context.subscriptions.push(integrations);
+    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, integrations, logger, async (options) => {
         if (options?.docsChanged) {
             docsContext.invalidate();
         }

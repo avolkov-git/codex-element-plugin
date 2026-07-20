@@ -44,6 +44,7 @@ class ChatPanelManager {
         this.state = state;
         this.logger = logger;
         this.handlers = handlers;
+        this.skillOptions = [];
     }
     registerSerializer() {
         return vscode.window.registerWebviewPanelSerializer(exports.CHAT_PANEL_VIEW_TYPE, {
@@ -148,6 +149,33 @@ class ChatPanelManager {
             return;
         }
         if (message.type !== "command") {
+            return;
+        }
+        if (message.command === "chat.attachments.pick") {
+            try {
+                const attachments = await this.handlers.pickAttachments(isObject(message.payload) ? message.payload.attachments : []);
+                await panel.webview.postMessage({ type: "event", event: "chat.attachments.selected", payload: attachments });
+            }
+            catch (error) {
+                await panel.webview.postMessage({
+                    type: "event",
+                    event: "chat.attachments.error",
+                    payload: error instanceof Error ? error.message : "Не удалось прикрепить файл."
+                });
+            }
+            return;
+        }
+        if (message.command === "chat.attachment.open") {
+            try {
+                await this.handlers.openAttachment(isObject(message.payload) ? message.payload.attachment : undefined);
+            }
+            catch (error) {
+                await panel.webview.postMessage({
+                    type: "event",
+                    event: "chat.attachments.error",
+                    payload: error instanceof Error ? error.message : "Вложение недоступно."
+                });
+            }
             return;
         }
         if (message.command === "chat.transcript.loadBefore") {
@@ -269,6 +297,24 @@ class ChatPanelManager {
             await this.handlers.loadModels();
             return;
         }
+        if (message.command === "chat.skills.load") {
+            try {
+                this.skillOptions = await this.handlers.loadSkills(isObject(message.payload) && message.payload.forceReload === true);
+                await panel.webview.postMessage({
+                    type: "event",
+                    event: "chat.skills.options",
+                    payload: this.skillOptions
+                });
+            }
+            catch (error) {
+                await panel.webview.postMessage({
+                    type: "event",
+                    event: "chat.skills.error",
+                    payload: error instanceof Error ? error.message : "Не удалось загрузить навыки."
+                });
+            }
+            return;
+        }
         if (message.command === "chat.context.projectDetails") {
             panel.webview.postMessage({
                 type: "event",
@@ -339,6 +385,51 @@ class ChatPanelManager {
             await this.handlers.cancelTurn(chatId);
             return;
         }
+        if (message.command === "chat.queue.remove") {
+            const chatId = this.state.getActiveChatId();
+            const messageId = isObject(message.payload) && typeof message.payload.messageId === "string" ? message.payload.messageId : "";
+            if (chatId && messageId) {
+                this.handlers.removeQueuedPrompt(chatId, messageId);
+            }
+            return;
+        }
+        if (message.command === "chat.queue.move") {
+            const chatId = this.state.getActiveChatId();
+            const messageId = isObject(message.payload) && typeof message.payload.messageId === "string" ? message.payload.messageId : "";
+            const direction = isObject(message.payload) && message.payload.direction === "up" ? "up" : "down";
+            if (chatId && messageId) {
+                this.handlers.moveQueuedPrompt(chatId, messageId, direction);
+            }
+            return;
+        }
+        if (message.command === "chat.queue.add" || message.command === "chat.steer") {
+            const chatId = this.state.getActiveChatId();
+            const prompt = isObject(message.payload) && typeof message.payload.prompt === "string" ? message.payload.prompt.trim() : "";
+            const attachments = await this.handlers.resolveAttachments(isObject(message.payload) ? message.payload.attachments : []);
+            if (!chatId || (!prompt && !attachments.length)) {
+                return;
+            }
+            try {
+                if (message.command === "chat.steer") {
+                    await this.handlers.steerTurn(chatId, prompt, attachments);
+                }
+                else if (!await this.handlers.queuePrompt(chatId, prompt, isObject(message.payload) ? parseRunMode(message.payload.mode) : "normal", this.parseSelectedSkills(message.payload), attachments)) {
+                    throw new Error("Сообщение можно поставить в очередь только во время активного запроса.");
+                }
+            }
+            catch (error) {
+                panel.webview.postMessage({
+                    type: "event",
+                    event: "chat.error",
+                    payload: {
+                        message: error instanceof Error ? error.message : "Не удалось отправить сообщение.",
+                        restorePrompt: prompt,
+                        restoreAttachments: attachments
+                    }
+                });
+            }
+            return;
+        }
         if (message.command === "chat.send") {
             const chatId = this.state.getActiveChatId();
             if (!chatId) {
@@ -367,7 +458,25 @@ class ChatPanelManager {
                 return;
             }
             const mode = parseRunMode(message.payload.mode);
-            await this.handlers.sendPrompt(chatId, message.payload.prompt, mode);
+            const attachments = await this.handlers.resolveAttachments(message.payload.attachments);
+            if (!message.payload.prompt.trim() && !attachments.length) {
+                panel.webview.postMessage({ type: "event", event: "chat.error", payload: "Введите сообщение или прикрепите файл." });
+                return;
+            }
+            try {
+                await this.handlers.sendPrompt(chatId, message.payload.prompt, mode, undefined, this.parseSelectedSkills(message.payload), attachments);
+            }
+            catch (error) {
+                panel.webview.postMessage({
+                    type: "event",
+                    event: "chat.error",
+                    payload: {
+                        message: error instanceof Error ? error.message : "Не удалось отправить сообщение.",
+                        restorePrompt: message.payload.prompt,
+                        restoreAttachments: attachments
+                    }
+                });
+            }
             return;
         }
         panel.webview.postMessage({
@@ -375,6 +484,25 @@ class ChatPanelManager {
             event: "chat.error",
             payload: `Команда ${message.command} пока не подключена.`
         });
+    }
+    parseSelectedSkills(payload) {
+        if (!isObject(payload) || !Array.isArray(payload.skills) || !this.skillOptions.length) {
+            return [];
+        }
+        const allowed = new Map(this.skillOptions
+            .filter((skill) => skill.enabled)
+            .map((skill) => [`${skill.name}\0${skill.path}`, skill]));
+        const selected = new Map();
+        for (const candidate of payload.skills.slice(0, 8)) {
+            if (!isObject(candidate) || typeof candidate.name !== "string" || typeof candidate.path !== "string") {
+                continue;
+            }
+            const skill = allowed.get(`${candidate.name}\0${candidate.path}`);
+            if (skill) {
+                selected.set(skill.path, { name: skill.name, path: skill.path });
+            }
+        }
+        return [...selected.values()];
     }
 }
 exports.ChatPanelManager = ChatPanelManager;
@@ -397,7 +525,7 @@ function parseAccessMode(value) {
     return undefined;
 }
 function parseEffort(value) {
-    if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+    if (value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra") {
         return value;
     }
     return undefined;

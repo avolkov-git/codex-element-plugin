@@ -26,7 +26,7 @@ export type ChatAccessMode = "read-only" | "workspace-write" | "danger-full-acce
 
 export type ChatRunMode = "normal" | "planning" | "implementPlan";
 
-export type ChatEffort = "low" | "medium" | "high" | "xhigh";
+export type ChatEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export type ChatSpeed = "standard" | "fast";
 
@@ -37,6 +37,18 @@ export type ApprovalKind = "command" | "file" | "diff" | "network" | "unknown";
 export interface ModelOption {
   id: string | null;
   label: string;
+  description?: string;
+  isDefault?: boolean;
+  supportedEfforts?: Array<{
+    value: ChatEffort;
+    description: string;
+  }>;
+  defaultEffort?: ChatEffort;
+  serviceTiers?: Array<{
+    id: string;
+    label: string;
+    description: string;
+  }>;
 }
 
 export interface ApprovalRequest {
@@ -50,6 +62,68 @@ export interface ApprovalRequest {
   cwd?: string;
   diff?: string;
   payloadPreview: string;
+}
+
+export interface ChatQueuedMessage {
+  id: string;
+  text: string;
+  mode: ChatRunMode;
+  skills?: SkillSelection[];
+  attachments?: ChatAttachment[];
+  createdAt: string;
+}
+
+export type ChatAttachmentKind = "file" | "folder" | "image";
+
+export interface ChatAttachment {
+  id: string;
+  kind: ChatAttachmentKind;
+  name: string;
+  path: string;
+  displayPath: string;
+  sizeBytes?: number;
+}
+
+export interface SkillSelection {
+  name: string;
+  path: string;
+}
+
+export interface SkillOption extends SkillSelection {
+  description: string;
+  displayName: string;
+  shortDescription: string;
+  enabled: boolean;
+  scope: "user" | "repo" | "system" | "admin" | "plugin" | "marketplace" | "unknown";
+  dependencyCount: number;
+}
+
+export type McpTransportKind = "stdio" | "http";
+
+export interface McpServerOption {
+  name: string;
+  enabled: boolean;
+  transport: McpTransportKind;
+  command?: string;
+  args?: string[];
+  url?: string;
+  bearerTokenEnvVar?: string;
+  authStatus: "unsupported" | "notLoggedIn" | "bearerToken" | "oAuth" | "unknown";
+  runtimeStatus: "unknown" | "starting" | "ready" | "failed" | "cancelled";
+  toolCount: number;
+  resourceCount: number;
+  description?: string;
+  error?: string;
+}
+
+export interface McpRuntimeStatus {
+  name: string;
+  authStatus: McpServerOption["authStatus"];
+  runtimeStatus: McpServerOption["runtimeStatus"];
+  toolCount: number;
+  resourceCount: number;
+  description?: string;
+  error?: string;
 }
 
 export interface ChatSummary {
@@ -67,6 +141,7 @@ export interface ChatSummary {
   modelLabel: string;
   effort: ChatEffort;
   speed: ChatSpeed;
+  queuedMessages: ChatQueuedMessage[];
   rulesEnabled: boolean;
   pendingApproval: ApprovalRequest | null;
   backendThreadAccessMode: ChatAccessMode | null;
@@ -77,6 +152,8 @@ export interface ChatSummary {
 
 export interface RateLimitRow {
   kind: "primary" | "secondary";
+  limitId?: string;
+  label?: string;
   usedPercent: number;
   remainingPercent: number;
   windowDurationMins: number | null;
@@ -255,6 +332,7 @@ export interface ChatMessageTranscriptItem {
   status?: "streaming" | "complete";
   completedAt?: string;
   durationMs?: number;
+  attachments?: ChatAttachment[];
 }
 
 export interface ChatClarificationOption {
@@ -334,6 +412,9 @@ export interface WorklogChild {
   query?: string;
   path?: string;
   command?: string;
+  server?: string;
+  tool?: string;
+  argumentsPreview?: string;
   resultCount?: number;
   outputPreview?: string;
   createdAt: string;

@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { Logger } from "./logger";
-import { ChatActivityDetail, ChatActivityKind, ChatClarificationOption, ChatDiffFileStatus, ChatEffort, ChatKind, ChatSpeed, ChatStatus, ChatSummary, ChatTranscriptItem, ChatTurnRunCounterKind, PersistedChatHistory, WorklogChild, WorklogOperationKind, WorklogSource, WorklogStatus } from "./types";
+import { ChatActivityDetail, ChatActivityKind, ChatAttachment, ChatClarificationOption, ChatDiffFileStatus, ChatEffort, ChatKind, ChatSpeed, ChatStatus, ChatSummary, ChatTranscriptItem, ChatTurnRunCounterKind, PersistedChatHistory, WorklogChild, WorklogOperationKind, WorklogSource, WorklogStatus } from "./types";
 
 interface PendingSave {
   profileId: string;
@@ -157,9 +157,12 @@ function normalizeChat(value: unknown): ChatSummary | undefined {
     status: normalizeChatStatus(value.status),
     accessMode: normalizeChatAccessMode(value.accessMode, kind),
     modelId: typeof value.modelId === "string" ? value.modelId : null,
-    modelLabel: typeof value.modelLabel === "string" && value.modelLabel.trim() ? value.modelLabel.trim() : "5.5",
+    modelLabel: typeof value.modelId === "string"
+      ? typeof value.modelLabel === "string" && value.modelLabel.trim() ? value.modelLabel.trim() : value.modelId
+      : "Авто",
     effort: normalizeChatEffort(value.effort),
     speed: normalizeChatSpeed(value.speed),
+    queuedMessages: normalizeQueuedMessages(value.queuedMessages),
     rulesEnabled: kind === "project" ? value.rulesEnabled !== false : false,
     pendingApproval: null,
     backendThreadAccessMode: normalizeOptionalChatAccessMode(value.backendThreadAccessMode),
@@ -167,6 +170,65 @@ function normalizeChat(value: unknown): ChatSummary | undefined {
     activeTurnId: null,
     activeRunMode: null
   };
+}
+
+function normalizeQueuedMessages(value: unknown): ChatSummary["queuedMessages"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    if (!isObject(entry) || typeof entry.id !== "string" || typeof entry.text !== "string") {
+      return [];
+    }
+    const attachments = normalizeAttachments(entry.attachments);
+    if (!entry.text.trim() && !attachments.length) {
+      return [];
+    }
+    return [{
+      id: entry.id,
+      text: entry.text.trim(),
+      mode: entry.mode === "planning" || entry.mode === "implementPlan" ? entry.mode : "normal",
+      skills: normalizeSkillSelections(entry.skills),
+      attachments,
+      createdAt: typeof entry.createdAt === "string" ? entry.createdAt : new Date().toISOString()
+    }];
+  });
+}
+
+function normalizeAttachments(value: unknown): ChatAttachment[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((candidate) => {
+    if (!isObject(candidate)
+      || typeof candidate.id !== "string"
+      || typeof candidate.name !== "string"
+      || typeof candidate.path !== "string"
+      || typeof candidate.displayPath !== "string"
+      || (candidate.kind !== "file" && candidate.kind !== "folder" && candidate.kind !== "image")) {
+      return [];
+    }
+    return [{
+      id: candidate.id,
+      kind: candidate.kind as ChatAttachment["kind"],
+      name: candidate.name,
+      path: candidate.path,
+      displayPath: candidate.displayPath,
+      sizeBytes: typeof candidate.sizeBytes === "number" ? candidate.sizeBytes : undefined
+    }];
+  }).slice(0, 10);
+}
+
+function normalizeSkillSelections(value: unknown): ChatSummary["queuedMessages"][number]["skills"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((candidate) => {
+    if (!isObject(candidate) || typeof candidate.name !== "string" || typeof candidate.path !== "string") {
+      return [];
+    }
+    return [{ name: candidate.name, path: candidate.path }];
+  });
 }
 
 function normalizeTranscriptItem(value: unknown): ChatTranscriptItem | undefined {
@@ -334,7 +396,8 @@ function normalizeTranscriptItem(value: unknown): ChatTranscriptItem | undefined
     turnId: typeof value.turnId === "string" ? value.turnId : undefined,
     status: value.status === "streaming" ? "streaming" : "complete",
     completedAt: typeof value.completedAt === "string" ? value.completedAt : undefined,
-    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined
+    durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
+    attachments: normalizeAttachments(value.attachments)
   };
 }
 
@@ -454,6 +517,9 @@ function normalizeWorklogChildren(value: unknown): WorklogChild[] {
         query: typeof item.query === "string" ? item.query : undefined,
         path: typeof item.path === "string" ? item.path : undefined,
         command: typeof item.command === "string" ? item.command : undefined,
+        server: typeof item.server === "string" ? item.server : undefined,
+        tool: typeof item.tool === "string" ? item.tool : undefined,
+        argumentsPreview: typeof item.argumentsPreview === "string" ? item.argumentsPreview : undefined,
         resultCount: typeof item.resultCount === "number" && Number.isFinite(item.resultCount) ? item.resultCount : undefined,
         outputPreview: typeof item.outputPreview === "string" ? item.outputPreview : undefined,
         createdAt,
@@ -537,7 +603,7 @@ function normalizeOptionalChatAccessMode(value: unknown): ChatSummary["backendTh
 }
 
 function normalizeChatEffort(value: unknown): ChatEffort {
-  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+  if (value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra") {
     return value;
   }
   return "medium";

@@ -2,13 +2,20 @@ import * as vscode from "vscode";
 import { Logger } from "./logger";
 import { getCodexPanelIconPath } from "./panelIcon";
 import { StateStore } from "./stateStore";
-import { ChatAccessMode, ChatEffort, ChatHeaderMode, ChatPanelState, ChatRunMode, ChatSpeed, DocsContextDetails, ProjectContextDetails, WebviewCommand } from "./types";
+import { ChatAccessMode, ChatAttachment, ChatEffort, ChatHeaderMode, ChatPanelState, ChatRunMode, ChatSpeed, DocsContextDetails, ProjectContextDetails, SkillOption, SkillSelection, WebviewCommand } from "./types";
 import { renderWebviewHtml } from "./webviewHtml";
 
 export const CHAT_PANEL_VIEW_TYPE = "codexElement.chatPanel";
 
 export interface ChatPanelHandlers {
-  sendPrompt(chatId: string, prompt: string, mode?: ChatRunMode, transcriptText?: string): Promise<void>;
+  sendPrompt(chatId: string, prompt: string, mode?: ChatRunMode, transcriptText?: string, skills?: readonly SkillSelection[], attachments?: readonly ChatAttachment[]): Promise<void>;
+  queuePrompt(chatId: string, prompt: string, mode?: ChatRunMode, skills?: readonly SkillSelection[], attachments?: readonly ChatAttachment[]): Promise<boolean>;
+  steerTurn(chatId: string, prompt: string, attachments?: readonly ChatAttachment[]): Promise<void>;
+  pickAttachments(existing: unknown): Promise<ChatAttachment[]>;
+  resolveAttachments(value: unknown): Promise<ChatAttachment[]>;
+  openAttachment(value: unknown): Promise<void>;
+  removeQueuedPrompt(chatId: string, messageId: string): boolean;
+  moveQueuedPrompt(chatId: string, messageId: string, direction: "up" | "down"): boolean;
   cancelTurn(chatId: string): Promise<void>;
   markReadToBottom(chatId: string): void;
   setAccessMode(chatId: string, accessMode: ChatAccessMode): void;
@@ -17,6 +24,7 @@ export interface ChatPanelHandlers {
   setSpeed(chatId: string, speed: ChatSpeed): void;
   setChatHeaderMode(mode: ChatHeaderMode): Promise<void> | void;
   loadModels(): Promise<void>;
+  loadSkills(forceReload?: boolean): Promise<SkillOption[]>;
   getProjectContextDetails(): Promise<ProjectContextDetails>;
   getDocsContextDetails(): Promise<DocsContextDetails>;
   toggleRules(chatId: string): Promise<void>;
@@ -29,6 +37,7 @@ export interface ChatPanelHandlers {
 
 export class ChatPanelManager {
   private panel: vscode.WebviewPanel | undefined;
+  private skillOptions: SkillOption[] = [];
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -165,6 +174,33 @@ export class ChatPanelManager {
       return;
     }
 
+    if (message.command === "chat.attachments.pick") {
+      try {
+        const attachments = await this.handlers.pickAttachments(isObject(message.payload) ? message.payload.attachments : []);
+        await panel.webview.postMessage({ type: "event", event: "chat.attachments.selected", payload: attachments });
+      } catch (error) {
+        await panel.webview.postMessage({
+          type: "event",
+          event: "chat.attachments.error",
+          payload: error instanceof Error ? error.message : "Не удалось прикрепить файл."
+        });
+      }
+      return;
+    }
+
+    if (message.command === "chat.attachment.open") {
+      try {
+        await this.handlers.openAttachment(isObject(message.payload) ? message.payload.attachment : undefined);
+      } catch (error) {
+        await panel.webview.postMessage({
+          type: "event",
+          event: "chat.attachments.error",
+          payload: error instanceof Error ? error.message : "Вложение недоступно."
+        });
+      }
+      return;
+    }
+
     if (message.command === "chat.transcript.loadBefore") {
       const chatId = this.state.getActiveChatId();
       const beforeItemId = isObject(message.payload) && typeof message.payload.beforeItemId === "string" ? message.payload.beforeItemId : "";
@@ -297,6 +333,24 @@ export class ChatPanelManager {
       return;
     }
 
+    if (message.command === "chat.skills.load") {
+      try {
+        this.skillOptions = await this.handlers.loadSkills(isObject(message.payload) && message.payload.forceReload === true);
+        await panel.webview.postMessage({
+          type: "event",
+          event: "chat.skills.options",
+          payload: this.skillOptions
+        });
+      } catch (error) {
+        await panel.webview.postMessage({
+          type: "event",
+          event: "chat.skills.error",
+          payload: error instanceof Error ? error.message : "Не удалось загрузить навыки."
+        });
+      }
+      return;
+    }
+
     if (message.command === "chat.context.projectDetails") {
       panel.webview.postMessage({
         type: "event",
@@ -375,6 +429,58 @@ export class ChatPanelManager {
       return;
     }
 
+    if (message.command === "chat.queue.remove") {
+      const chatId = this.state.getActiveChatId();
+      const messageId = isObject(message.payload) && typeof message.payload.messageId === "string" ? message.payload.messageId : "";
+      if (chatId && messageId) {
+        this.handlers.removeQueuedPrompt(chatId, messageId);
+      }
+      return;
+    }
+
+    if (message.command === "chat.queue.move") {
+      const chatId = this.state.getActiveChatId();
+      const messageId = isObject(message.payload) && typeof message.payload.messageId === "string" ? message.payload.messageId : "";
+      const direction = isObject(message.payload) && message.payload.direction === "up" ? "up" : "down";
+      if (chatId && messageId) {
+        this.handlers.moveQueuedPrompt(chatId, messageId, direction);
+      }
+      return;
+    }
+
+    if (message.command === "chat.queue.add" || message.command === "chat.steer") {
+      const chatId = this.state.getActiveChatId();
+      const prompt = isObject(message.payload) && typeof message.payload.prompt === "string" ? message.payload.prompt.trim() : "";
+      const attachments = await this.handlers.resolveAttachments(isObject(message.payload) ? message.payload.attachments : []);
+      if (!chatId || (!prompt && !attachments.length)) {
+        return;
+      }
+      try {
+        if (message.command === "chat.steer") {
+          await this.handlers.steerTurn(chatId, prompt, attachments);
+        } else if (!await this.handlers.queuePrompt(
+          chatId,
+          prompt,
+          isObject(message.payload) ? parseRunMode(message.payload.mode) : "normal",
+          this.parseSelectedSkills(message.payload),
+          attachments
+        )) {
+          throw new Error("Сообщение можно поставить в очередь только во время активного запроса.");
+        }
+      } catch (error) {
+        panel.webview.postMessage({
+          type: "event",
+          event: "chat.error",
+          payload: {
+            message: error instanceof Error ? error.message : "Не удалось отправить сообщение.",
+            restorePrompt: prompt,
+            restoreAttachments: attachments
+          }
+        });
+      }
+      return;
+    }
+
     if (message.command === "chat.send") {
       const chatId = this.state.getActiveChatId();
       if (!chatId) {
@@ -404,7 +510,24 @@ export class ChatPanelManager {
       }
 
       const mode = parseRunMode(message.payload.mode);
-      await this.handlers.sendPrompt(chatId, message.payload.prompt, mode);
+      const attachments = await this.handlers.resolveAttachments(message.payload.attachments);
+      if (!message.payload.prompt.trim() && !attachments.length) {
+        panel.webview.postMessage({ type: "event", event: "chat.error", payload: "Введите сообщение или прикрепите файл." });
+        return;
+      }
+      try {
+        await this.handlers.sendPrompt(chatId, message.payload.prompt, mode, undefined, this.parseSelectedSkills(message.payload), attachments);
+      } catch (error) {
+        panel.webview.postMessage({
+          type: "event",
+          event: "chat.error",
+          payload: {
+            message: error instanceof Error ? error.message : "Не удалось отправить сообщение.",
+            restorePrompt: message.payload.prompt,
+            restoreAttachments: attachments
+          }
+        });
+      }
       return;
     }
 
@@ -413,6 +536,28 @@ export class ChatPanelManager {
       event: "chat.error",
       payload: `Команда ${message.command} пока не подключена.`
     });
+  }
+
+  private parseSelectedSkills(payload: unknown): SkillSelection[] {
+    if (!isObject(payload) || !Array.isArray(payload.skills) || !this.skillOptions.length) {
+      return [];
+    }
+    const allowed = new Map(
+      this.skillOptions
+        .filter((skill) => skill.enabled)
+        .map((skill) => [`${skill.name}\0${skill.path}`, skill] as const)
+    );
+    const selected = new Map<string, SkillSelection>();
+    for (const candidate of payload.skills.slice(0, 8)) {
+      if (!isObject(candidate) || typeof candidate.name !== "string" || typeof candidate.path !== "string") {
+        continue;
+      }
+      const skill = allowed.get(`${candidate.name}\0${candidate.path}`);
+      if (skill) {
+        selected.set(skill.path, { name: skill.name, path: skill.path });
+      }
+    }
+    return [...selected.values()];
   }
 }
 
@@ -438,7 +583,7 @@ function parseAccessMode(value: unknown): ChatAccessMode | undefined {
 }
 
 function parseEffort(value: unknown): ChatEffort | undefined {
-  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+  if (value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra") {
     return value;
   }
   return undefined;

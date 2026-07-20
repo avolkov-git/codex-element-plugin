@@ -2,8 +2,9 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { ChatAttachmentService } from "./chatAttachmentService";
 import { ContextBlock } from "./contextRouterService";
-import { ContextTurnOrchestrator, ContextTurnOrchestratorResult } from "./contextTurnOrchestrator";
+import { ContextTurnInput, ContextTurnOrchestrator, ContextTurnOrchestratorResult } from "./contextTurnOrchestrator";
 import { DiagnosticsContextService } from "./diagnosticsContextService";
 import { DocsPlannerRuntimeRequest, DocsRetrievalLoopService } from "./docsRetrievalLoopService";
 import { JsonRpcClient, JsonRpcNotification, JsonRpcServerRequest } from "./jsonRpcClient";
@@ -21,7 +22,7 @@ import {
 import { RuntimeProcessManager } from "./runtimeProcessManager";
 import { RuntimeProxySettings, SettingsService } from "./settingsService";
 import { StateStore } from "./stateStore";
-import { ApprovalRequest, AuthAccountType, ChatAccessMode, ChatActivityDetail, ChatActivityKind, ChatClarificationOption, ChatDiffFileStatus, ChatDiffFileSummary, ChatRunMode, ContextWindowUsage, ModelOption, SidebarSnapshot } from "./types";
+import { ApprovalRequest, AuthAccountType, ChatAccessMode, ChatActivityDetail, ChatActivityKind, ChatAttachment, ChatClarificationOption, ChatDiffFileStatus, ChatDiffFileSummary, ChatEffort, ChatRunMode, ContextWindowUsage, McpRuntimeStatus, ModelOption, SidebarSnapshot, SkillOption, SkillSelection } from "./types";
 import { UserProfileService } from "./userProfileService";
 import { WorklogOperationNormalizer } from "./worklogNormalizer";
 
@@ -31,6 +32,7 @@ interface CodexRuntimeControllerOptions {
   contextOrchestrator: ContextTurnOrchestrator;
   docsContext: DocsRetrievalLoopService;
   diagnosticsContext: DiagnosticsContextService;
+  attachments: ChatAttachmentService;
   nativeContextTools: NativeContextToolLoopService;
   profiles: UserProfileService;
   state: StateStore;
@@ -70,13 +72,17 @@ interface HiddenPlannerRun {
 interface SendPromptCoreOptions {
   readonly addUserMessage: boolean;
   readonly isDiagnosticsRetry?: boolean;
+  readonly selectedSkills?: readonly SkillSelection[];
+  readonly attachments?: readonly ChatAttachment[];
 }
 
 interface StartTurnOptions {
-  readonly omitSpeed?: boolean;
+  readonly omitServiceTier?: boolean;
   readonly skipAutoDiagnostics?: boolean;
   readonly forceDiagnosticsContext?: boolean;
   readonly diagnosticsPriority?: number;
+  readonly selectedSkills?: readonly SkillSelection[];
+  readonly attachments?: readonly ChatAttachment[];
 }
 
 interface BackendStartAttempt {
@@ -102,18 +108,15 @@ class UserCancelledTurnError extends Error {
 }
 
 const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
-  { id: null, label: "5.5" },
-  { id: "gpt-5.5", label: "GPT-5.5" },
-  { id: "gpt-5.4", label: "GPT-5.4" },
-  { id: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
-  { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
-  { id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
-  { id: "gpt-5.2", label: "GPT-5.2" }
+  { id: null, label: "Авто", description: "Модель по умолчанию Codex" }
 ];
 
 export class CodexRuntimeController implements vscode.Disposable {
   private readonly processManager = new RuntimeProcessManager();
   private readonly worklogNormalizer = new WorklogOperationNormalizer();
+  private readonly integrationsChangedEmitter = new vscode.EventEmitter<void>();
+  readonly onDidChangeIntegrations = this.integrationsChangedEmitter.event;
+  private readonly mcpStartupStatuses = new Map<string, Pick<McpRuntimeStatus, "runtimeStatus" | "error">>();
   private rpcClient: JsonRpcClient | undefined;
   private activeTurnChatId = new Map<string, string>();
   private activeThreadChatId = new Map<string, string>();
@@ -319,10 +322,14 @@ export class CodexRuntimeController implements vscode.Disposable {
     prompt: string,
     mode: ChatRunMode = "normal",
     transcriptText?: string,
-    explicitContextBlocks: readonly ContextBlock[] = []
+    explicitContextBlocks: readonly ContextBlock[] = [],
+    selectedSkills: readonly SkillSelection[] = [],
+    attachments: readonly ChatAttachment[] = []
   ): Promise<void> {
     return this.sendPromptCore(chatId, prompt, mode, transcriptText, explicitContextBlocks, {
-      addUserMessage: true
+      addUserMessage: true,
+      selectedSkills,
+      attachments
     });
   }
 
@@ -335,10 +342,12 @@ export class CodexRuntimeController implements vscode.Disposable {
     options: SendPromptCoreOptions
   ): Promise<void> {
     const trimmed = prompt.trim();
-    if (!trimmed) {
+    const attachments = await this.options.attachments.resolve(options.attachments ?? []);
+    if (!trimmed && !attachments.length) {
       return;
     }
-    const visiblePrompt = (transcriptText ?? trimmed).trim() || trimmed;
+    const runtimePrompt = trimmed || "Изучи прикрепленные файлы.";
+    const visiblePrompt = (transcriptText ?? trimmed).trim();
 
     const chat = this.options.state.getChat(chatId);
     if (!chat) {
@@ -352,7 +361,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.latestChatId = chatId;
     const cancelEpoch = this.cancelEpoch(chatId);
     if (options.addUserMessage) {
-      this.options.state.addTranscriptItem(chatId, "user", visiblePrompt);
+      this.options.state.addTranscriptItem(chatId, "user", visiblePrompt, "immediate", undefined, attachments);
     }
     this.options.state.updateChat(chatId, { status: "running", activeRunMode: mode });
     this.options.onDidChange();
@@ -370,16 +379,20 @@ export class CodexRuntimeController implements vscode.Disposable {
 
       let turnResult: unknown;
       try {
-        turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
-          skipAutoDiagnostics: options.isDiagnosticsRetry
+        turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
+          skipAutoDiagnostics: options.isDiagnosticsRetry,
+          selectedSkills: options.selectedSkills,
+          attachments
         });
       } catch (error) {
         if (isContextWindowError(error) && this.options.state.getChat(chatId)?.backendThreadId) {
           this.options.logger.warn(`Context window exhausted, requesting app-server compaction before retry: ${normalizeErrorMessage(error)}`);
           await this.compactBackendThread(chatId);
           this.throwIfCancelled(chatId, cancelEpoch);
-          turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
-            skipAutoDiagnostics: options.isDiagnosticsRetry
+          turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
+            skipAutoDiagnostics: options.isDiagnosticsRetry,
+            selectedSkills: options.selectedSkills,
+            attachments
           });
         } else if (isThreadNotFoundError(error) && this.options.state.getChat(chatId)?.backendThreadId) {
           const staleThreadId = this.options.state.getChat(chatId)?.backendThreadId;
@@ -387,8 +400,10 @@ export class CodexRuntimeController implements vscode.Disposable {
           const resumed = await this.tryResumeBackendThread(chatId, requestedAccessMode);
           this.throwIfCancelled(chatId, cancelEpoch);
           if (resumed) {
-            turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
-              skipAutoDiagnostics: options.isDiagnosticsRetry
+            turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
+              skipAutoDiagnostics: options.isDiagnosticsRetry,
+              selectedSkills: options.selectedSkills,
+              attachments
             });
           } else {
             this.options.logger.warn(`thread/resume failed, recreating backend thread: ${staleThreadId ?? "-"}.`);
@@ -403,8 +418,10 @@ export class CodexRuntimeController implements vscode.Disposable {
             });
             await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
             this.throwIfCancelled(chatId, cancelEpoch);
-            turnResult = await this.startTurnWithFallback(chatId, trimmed, mode, explicitContextBlocks, {
-              skipAutoDiagnostics: options.isDiagnosticsRetry
+            turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
+              skipAutoDiagnostics: options.isDiagnosticsRetry,
+              selectedSkills: options.selectedSkills,
+              attachments
             });
           }
         } else {
@@ -461,18 +478,100 @@ export class CodexRuntimeController implements vscode.Disposable {
   async loadModelOptions(): Promise<{ options: ModelOption[]; status: "ready" | "error" }> {
     try {
       await this.ensureBackendProcess();
-      const result = await this.requireRpcClient().request("model/list", undefined, 10_000);
-      const options = normalizeModelOptions(result);
+      const collected: ModelOption[] = [];
+      let cursor: string | null = null;
+      for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
+        const result = await this.requireRpcClient().request("model/list", {
+          cursor,
+          limit: 100,
+          includeHidden: false
+        }, 10_000);
+        const page = normalizeModelOptionsPage(result);
+        collected.push(...page.options);
+        cursor = page.nextCursor;
+        if (!cursor) {
+          break;
+        }
+      }
+      const options = withAutomaticModelOption(collected);
       if (!options.length) {
         this.options.logger.warn("model/list returned no usable models; using fallback model list.");
         return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
       }
-      this.options.logger.info(`model/list completed: ${options.length} model options.`);
+      this.options.logger.info(`model/list completed: ${Math.max(0, options.length - 1)} runtime models; default=${options.find((option) => option.id === null)?.description ?? "runtime default"}.`);
       return { options, status: "ready" };
     } catch (error) {
       this.options.logger.warn(`model/list failed; using fallback model list: ${normalizeErrorMessage(error)}`);
       return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
     }
+  }
+
+  isBackendRunning(): boolean {
+    return this.processManager.isRunning;
+  }
+
+  async loadMcpRuntimeStatuses(): Promise<McpRuntimeStatus[]> {
+    await this.ensureBackendProcess();
+    const statuses: McpRuntimeStatus[] = [];
+    let cursor: string | null = null;
+    for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+      const result = await this.requireRpcClient().request("mcpServerStatus/list", {
+        cursor,
+        limit: 100,
+        detail: "toolsAndAuthOnly"
+      }, 15_000);
+      const page = normalizeMcpStatusPage(result);
+      statuses.push(...page.data.map((status) => ({
+        ...status,
+        ...(this.mcpStartupStatuses.get(status.name) ?? {})
+      })));
+      cursor = page.nextCursor;
+      if (!cursor) {
+        break;
+      }
+    }
+    return statuses;
+  }
+
+  async reloadMcpServers(): Promise<void> {
+    if (!this.processManager.isRunning) {
+      return;
+    }
+    await this.requireRpcClient().request("config/mcpServer/reload", null, 15_000);
+    this.integrationsChangedEmitter.fire();
+  }
+
+  async startMcpOAuth(name: string): Promise<void> {
+    await this.ensureBackendProcess();
+    const result = await this.requireRpcClient().request("mcpServer/oauth/login", {
+      name,
+      timeoutSecs: 300
+    }, 15_000);
+    const authorizationUrl = getString(isRecord(result) ? result.authorizationUrl : undefined);
+    if (!authorizationUrl) {
+      throw new Error("MCP OAuth не вернул ссылку авторизации.");
+    }
+    await vscode.env.openExternal(vscode.Uri.parse(authorizationUrl));
+  }
+
+  async loadSkills(forceReload = false): Promise<SkillOption[]> {
+    await this.ensureBackendProcess();
+    const cwd = resolveWorkspaceCwd(this.options.context);
+    const result = await this.requireRpcClient().request("skills/list", {
+      cwds: [cwd],
+      forceReload
+    }, 15_000);
+    return normalizeSkillsList(result);
+  }
+
+  async setSkillEnabled(skill: SkillSelection, enabled: boolean): Promise<void> {
+    await this.ensureBackendProcess();
+    await this.requireRpcClient().request("skills/config/write", {
+      path: skill.path,
+      name: skill.name,
+      enabled
+    }, 15_000);
+    this.integrationsChangedEmitter.fire();
   }
 
   async probeCapabilities(): Promise<void> {
@@ -537,7 +636,11 @@ export class CodexRuntimeController implements vscode.Disposable {
       return `account=${account.accountType}; label=${account.label ? "set" : "-"}`;
     });
 
-    await probe("model/list", () => rpcClient.request("model/list", undefined, 10_000), (result) => {
+    await probe("model/list", () => rpcClient.request("model/list", {
+      cursor: null,
+      limit: 100,
+      includeHidden: false
+    }, 10_000), (result) => {
       const models = normalizeModelOptions(result);
       return `models=${models.length}`;
     });
@@ -611,9 +714,9 @@ export class CodexRuntimeController implements vscode.Disposable {
       evidence: "static code path"
     });
     record({
-      capability: "turn/cancel",
+      capability: "turn/interrupt",
       status: "unknown",
-      observation: "implemented with {threadId, turnId} and turnId-only retry; live probe is intentionally skipped because it requires a running turn",
+      observation: "implemented with the current {threadId, turnId} contract; live probe is intentionally skipped because it requires a running turn",
       evidence: "static code path"
     });
     record({
@@ -695,7 +798,7 @@ export class CodexRuntimeController implements vscode.Disposable {
         try {
           const turnResult = await rpcClient.request("turn/start", {
             threadId,
-            input: [{ type: "text", text: plannerPrompt }],
+            input: [{ type: "text", text: plannerPrompt, text_elements: [] }],
             cwd,
             approvalPolicy: "never",
             approvalsReviewer: "user",
@@ -761,12 +864,12 @@ export class CodexRuntimeController implements vscode.Disposable {
 
     try {
       if (!this.rpcClient || !threadId || !turnId) {
-        throw new Error("turn/cancel недоступен: нет активного backend thread/turn.");
+        throw new Error("turn/interrupt недоступен: нет активного backend thread/turn.");
       }
-      await this.requestTurnCancel(threadId, turnId);
-      this.options.logger.info(`turn/cancel accepted: chat=${chatId}; turn=${turnId}.`);
+      await this.requestTurnInterrupt(threadId, turnId);
+      this.options.logger.info(`turn/interrupt accepted: chat=${chatId}; turn=${turnId}.`);
     } catch (error) {
-      this.options.logger.warn(`turn/cancel failed, stopping backend fallback: ${normalizeErrorMessage(error)}`);
+      this.options.logger.warn(`turn/interrupt failed, stopping backend fallback: ${normalizeErrorMessage(error)}`);
       await this.stopBackendAfterCancel();
     } finally {
       this.cancellingChatIds.delete(chatId);
@@ -782,6 +885,73 @@ export class CodexRuntimeController implements vscode.Disposable {
         this.options.onDidChangeChat(chatId);
       }
     }
+  }
+
+  queuePrompt(
+    chatId: string,
+    prompt: string,
+    mode: ChatRunMode = "normal",
+    selectedSkills: readonly SkillSelection[] = [],
+    attachments: readonly ChatAttachment[] = []
+  ): Promise<boolean> {
+    const chat = this.options.state.getChat(chatId);
+    if (!chat || (chat.status !== "running" && chat.status !== "waitingApproval")) {
+      return Promise.resolve(false);
+    }
+    return this.options.attachments.resolve(attachments).then((validatedAttachments) => {
+      const queued = this.options.state.enqueueChatMessage(chatId, prompt, mode, [...selectedSkills], validatedAttachments);
+      if (!queued) {
+        return false;
+      }
+      this.options.logger.info(`Prompt queued: chat=${chatId}; queue=${this.options.state.getChat(chatId)?.queuedMessages.length ?? 0}; attachments=${validatedAttachments.length}.`);
+      this.options.onDidChange();
+      this.options.onDidChangeChat(chatId);
+      return true;
+    });
+  }
+
+  removeQueuedPrompt(chatId: string, messageId: string): boolean {
+    const removed = this.options.state.removeQueuedChatMessage(chatId, messageId);
+    if (removed) {
+      this.options.onDidChange();
+      this.options.onDidChangeChat(chatId);
+    }
+    return removed;
+  }
+
+  moveQueuedPrompt(chatId: string, messageId: string, direction: "up" | "down"): boolean {
+    const moved = this.options.state.moveQueuedChatMessage(chatId, messageId, direction);
+    if (moved) {
+      this.options.onDidChange();
+      this.options.onDidChangeChat(chatId);
+    }
+    return moved;
+  }
+
+  async steerTurn(chatId: string, prompt: string, attachments: readonly ChatAttachment[] = []): Promise<void> {
+    const normalized = prompt.trim();
+    const validatedAttachments = await this.options.attachments.resolve(attachments);
+    const chat = this.options.state.getChat(chatId);
+    if ((!normalized && !validatedAttachments.length) || !chat?.backendThreadId || !chat.activeTurnId || chat.status !== "running") {
+      throw new Error("Рекомендацию можно отправить только во время активного запроса.");
+    }
+    const input: ContextTurnInput[] = [
+      ...(normalized ? [{ type: "text" as const, text: normalized, text_elements: [] as [] }] : []),
+      ...validatedAttachments.map((attachment): ContextTurnInput => attachment.kind === "image"
+        ? { type: "localImage", detail: "auto", path: attachment.path }
+        : { type: "mention", name: attachment.displayPath || attachment.name, path: attachment.path })
+    ];
+    const clientUserMessageId = `steer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    await this.requireRpcClient().request("turn/steer", {
+      threadId: chat.backendThreadId,
+      expectedTurnId: chat.activeTurnId,
+      clientUserMessageId,
+      input
+    }, 15_000);
+    this.options.state.addTranscriptItem(chatId, "user", normalized, "immediate", chat.activeTurnId, validatedAttachments);
+    this.options.logger.info(`turn/steer accepted: chat=${chatId}; turn=${chat.activeTurnId}.`);
+    this.options.onDidChange();
+    this.options.onDidChangeChat(chatId);
   }
 
   async readAccount(): Promise<void> {
@@ -871,6 +1041,14 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
   }
 
+  private resolveServiceTier(chatId: string): string | null {
+    const chat = this.options.state.getChat(chatId);
+    if (!chat || chat.speed !== "fast") {
+      return null;
+    }
+    return this.options.state.getModelOptionForChat(chatId)?.serviceTiers?.[0]?.id ?? "priority";
+  }
+
   private async tryResumeBackendThread(chatId: string, accessOverride?: ChatAccessMode): Promise<boolean> {
     try {
       await this.resumeBackendThread(chatId, accessOverride);
@@ -891,13 +1069,15 @@ export class CodexRuntimeController implements vscode.Disposable {
     const cwd = resolveWorkspaceCwd(this.options.context);
     const accessMode = accessOverride ?? chat.accessMode;
     const model = chat.modelId ?? null;
+    const serviceTier = this.resolveServiceTier(chatId);
     const fullPayload = {
       threadId: chat.backendThreadId,
       cwd,
       approvalPolicy: getApprovalPolicy(accessMode),
       approvalsReviewer: "user",
       sandbox: getThreadSandbox(accessMode),
-      model
+      model,
+      serviceTier
     };
 
     let result: unknown;
@@ -926,6 +1106,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     const chat = this.options.state.getChat(chatId);
     const accessMode = accessOverride ?? chat?.accessMode ?? (chat?.kind === "project" ? "workspace-write" : "read-only");
     const model = chat?.modelId ?? null;
+    const serviceTier = this.resolveServiceTier(chatId);
     const result = await rpcClient.request("thread/start", {
       cwd,
       approvalPolicy: getApprovalPolicy(accessMode),
@@ -933,7 +1114,8 @@ export class CodexRuntimeController implements vscode.Disposable {
       sandbox: getThreadSandbox(accessMode),
       sessionStartSource: "startup",
       serviceName: "codex_element_v1",
-      model
+      model,
+      serviceTier
     });
     const threadId = extractThreadId(result);
 
@@ -957,7 +1139,7 @@ export class CodexRuntimeController implements vscode.Disposable {
         throw error;
       }
       this.options.logger.warn(`thread/start model rejected; retrying with default model: ${normalizeErrorMessage(error)}`);
-      this.options.state.setChatModel(chatId, null, "5.5");
+      this.options.state.setChatModel(chatId, null, "Авто");
       await this.startBackendThread(chatId, accessOverride);
     }
   }
@@ -985,11 +1167,14 @@ export class CodexRuntimeController implements vscode.Disposable {
       explicitContextBlocks,
       skipAutoDiagnostics: options.skipAutoDiagnostics,
       forceDiagnosticsContext: options.forceDiagnosticsContext,
-      diagnosticsPriority: options.diagnosticsPriority
+      diagnosticsPriority: options.diagnosticsPriority,
+      selectedSkills: options.selectedSkills,
+      attachments: options.attachments
     });
 
     const turnAccessMode = getRunAccessMode(chat.accessMode, mode);
-    this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}; mode=${mode}; model=${chat.modelId || "<default>"}; effort=${chat.effort}; speed=${options.omitSpeed ? "<omitted>" : chat.speed}.`);
+    const serviceTier = this.resolveServiceTier(chatId);
+    this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}; mode=${mode}; model=${chat.modelId || "<default>"}; effort=${chat.effort}; serviceTier=${options.omitServiceTier ? "<omitted>" : serviceTier ?? "<standard>"}.`);
     const result = await this.requireRpcClient().request("turn/start", {
       threadId: chat.backendThreadId,
       input: turnContext.input,
@@ -999,7 +1184,7 @@ export class CodexRuntimeController implements vscode.Disposable {
       sandboxPolicy: getTurnSandboxPolicy(turnAccessMode, cwd),
       model: chat.modelId ?? null,
       effort: chat.effort,
-      ...(!options.omitSpeed ? { speed: chat.speed } : {})
+      ...(!options.omitServiceTier ? { serviceTier } : {})
     }, 30_000);
     this.addContextWorklogActivity(chatId, turnContext);
     return result;
@@ -1031,25 +1216,26 @@ export class CodexRuntimeController implements vscode.Disposable {
     try {
       return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, options);
     } catch (error) {
-      if (isSpeedError(error)) {
-        this.options.logger.warn(`turn/start speed unsupported by runtime; retrying without speed: ${normalizeErrorMessage(error)}`);
+      if (isServiceTierError(error)) {
+        this.options.logger.warn(`turn/start serviceTier unsupported by runtime; retrying without serviceTier: ${normalizeErrorMessage(error)}`);
+        this.options.state.setChatSpeed(chatId, "standard");
         try {
-          return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, { ...options, omitSpeed: true });
+          return await this.startTurn(chatId, prompt, mode, explicitContextBlocks, { ...options, omitServiceTier: true });
         } catch (retryError) {
           if (!isModelOrEffortError(retryError)) {
             throw retryError;
           }
-          this.options.logger.warn(`turn/start model/effort rejected after speed fallback; retrying with defaults: ${normalizeErrorMessage(retryError)}`);
-          this.options.state.setChatModel(chatId, null, "5.5");
+          this.options.logger.warn(`turn/start model/effort rejected after serviceTier fallback; retrying with defaults: ${normalizeErrorMessage(retryError)}`);
+          this.options.state.setChatModel(chatId, null, "Авто");
           this.options.state.setChatEffort(chatId, "medium");
-          return this.startTurn(chatId, prompt, mode, explicitContextBlocks, { ...options, omitSpeed: true });
+          return this.startTurn(chatId, prompt, mode, explicitContextBlocks, { ...options, omitServiceTier: true });
         }
       }
       if (!isModelOrEffortError(error)) {
         throw error;
       }
       this.options.logger.warn(`turn/start model/effort rejected; retrying with defaults: ${normalizeErrorMessage(error)}`);
-      this.options.state.setChatModel(chatId, null, "5.5");
+      this.options.state.setChatModel(chatId, null, "Авто");
       this.options.state.setChatEffort(chatId, "medium");
       return this.startTurn(chatId, prompt, mode, explicitContextBlocks, options);
     }
@@ -1415,15 +1601,8 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.options.state.setPendingApproval(chatId, null);
   }
 
-  private async requestTurnCancel(threadId: string, turnId: string): Promise<void> {
-    const rpcClient = this.requireRpcClient();
-    try {
-      await rpcClient.request("turn/cancel", { threadId, turnId }, 5_000);
-      return;
-    } catch (error) {
-      this.options.logger.warn(`turn/cancel with threadId failed, retrying turn-only payload: ${normalizeErrorMessage(error)}`);
-    }
-    await rpcClient.request("turn/cancel", { turnId }, 5_000);
+  private async requestTurnInterrupt(threadId: string, turnId: string): Promise<void> {
+    await this.requireRpcClient().request("turn/interrupt", { threadId, turnId }, 5_000);
   }
 
   private async stopBackendAfterCancel(): Promise<void> {
@@ -1443,6 +1622,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.rejectAllHiddenPlannerRuns(new Error("Codex runtime disposed before docs planner completed."));
     this.cleanupThinking();
     this.rpcClient?.dispose();
+    this.integrationsChangedEmitter.dispose();
     this.processManager.dispose();
   }
 
@@ -1635,6 +1815,12 @@ export class CodexRuntimeController implements vscode.Disposable {
         name: "codex_element_v1",
         title: "Codex for 1C: Element",
         version: String(this.options.context.extension.packageJSON.version ?? "0.0.0")
+      },
+      capabilities: {
+        experimentalApi: true,
+        requestAttestation: false,
+        mcpServerOpenaiFormElicitation: false,
+        optOutNotificationMethods: null
       }
     });
     rpcClient.notify("initialized");
@@ -1748,6 +1934,27 @@ export class CodexRuntimeController implements vscode.Disposable {
       return;
     }
 
+    if (
+      notification.method === "skills/changed"
+      || notification.method === "mcpServer/startupStatus/updated"
+      || notification.method === "mcpServerStatus/updated"
+      || notification.method === "mcpServer/oauthLogin/completed"
+    ) {
+      if (notification.method === "mcpServer/startupStatus/updated" || notification.method === "mcpServerStatus/updated") {
+        const payload = isRecord(notification.params) ? notification.params : {};
+        const name = getString(payload.name).trim();
+        const status = normalizeMcpRuntimeStatus(payload.status);
+        if (name && status) {
+          this.mcpStartupStatuses.set(name, {
+            runtimeStatus: status,
+            error: getString(payload.error) || undefined
+          });
+        }
+      }
+      this.integrationsChangedEmitter.fire();
+      return;
+    }
+
     if (notification.method === "account/login/completed") {
       const completed = normalizeLoginCompletedNotification(notification.params);
       this.updateAuth({
@@ -1770,7 +1977,10 @@ export class CodexRuntimeController implements vscode.Disposable {
 
     if (notification.method === "account/rateLimits/updated") {
       try {
-        const rateLimits = normalizeRateLimitsNotification(notification.params);
+        const rateLimits = mergeRateLimits(
+          this.options.state.getSidebarSnapshot().rateLimits,
+          normalizeRateLimitsNotification(notification.params)
+        );
         this.updateRateLimits(rateLimits);
         this.options.logger.info(`Rate limits updated: rows=${rateLimits.rows.length}${rateLimits.rateLimitReachedType ? `, reached=${rateLimits.rateLimitReachedType}` : ""}.`);
       } catch (error) {
@@ -1919,12 +2129,21 @@ export class CodexRuntimeController implements vscode.Disposable {
       return;
     }
 
-    if (notification.method === "item/commandExecution/outputDelta" || notification.method === "item/fileChange/outputDelta" || notification.method === "item/reasoning/summaryTextDelta" || notification.method === "item/reasoning/textDelta") {
+    if (
+      notification.method === "item/commandExecution/outputDelta"
+      || notification.method === "item/fileChange/outputDelta"
+      || notification.method === "item/reasoning/summaryTextDelta"
+      || notification.method === "item/reasoning/textDelta"
+      || notification.method === "item/mcpToolCall/progress"
+    ) {
       const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
-      const delta = extractDelta(notification.params);
+      const delta = notification.method === "item/mcpToolCall/progress"
+        ? extractMcpProgressMessage(notification.params)
+        : extractDelta(notification.params);
       const outputPatch = this.worklogNormalizer.outputPatch(notification.params);
       if (chatId && outputPatch && delta) {
-        this.options.state.appendWorklogChildOutput(chatId, outputPatch.worklogId, outputPatch.childId, delta);
+        const output = notification.method === "item/mcpToolCall/progress" ? `${delta}\n` : delta;
+        this.options.state.appendWorklogChildOutput(chatId, outputPatch.worklogId, outputPatch.childId, output);
         this.options.onDidChangeChat(chatId);
       }
       return;
@@ -2065,10 +2284,11 @@ export class CodexRuntimeController implements vscode.Disposable {
       if (turnId) {
         this.fileChangingTurnIds.delete(turnId);
       }
+      const queuedStarted = Boolean(chatId && (status === "completed" || !errorMessage) && this.startNextQueuedPrompt(chatId));
       if (chatId && turnId && isDiagnosticsRetryTurn) {
         this.diagnosticsRetryTurnIds.delete(turnId);
         void this.logDiagnosticsRetryResult(chatId, turnId);
-      } else if (chatId && turnId && (status === "completed" || !errorMessage)) {
+      } else if (!queuedStarted && chatId && turnId && (status === "completed" || !errorMessage)) {
         void this.maybeStartDiagnosticsAutoFix(chatId, turnId, completedAccessMode, completedRunMode, mayHaveChangedFiles);
       }
       return;
@@ -2117,6 +2337,52 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
   }
 
+  private startNextQueuedPrompt(chatId: string): boolean {
+    const queued = this.options.state.shiftQueuedChatMessage(chatId);
+    if (!queued) {
+      return false;
+    }
+    this.options.onDidChange();
+    this.options.onDidChangeChat(chatId);
+    setTimeout(() => {
+      void (async () => {
+        const skills = await this.validateQueuedSkills(queued.skills ?? []);
+        await this.sendPrompt(chatId, queued.text, queued.mode, undefined, [], skills, queued.attachments ?? []);
+      })().catch((error) => {
+        this.options.logger.error(`Queued prompt failed: chat=${chatId}; ${normalizeErrorMessage(error)}`);
+      });
+    }, 0);
+    return true;
+  }
+
+  private async validateQueuedSkills(selected: readonly SkillSelection[]): Promise<SkillSelection[]> {
+    if (!selected.length) {
+      return [];
+    }
+    try {
+      const enabled = await this.loadSkills(false);
+      const allowed = new Map(
+        enabled
+          .filter((skill) => skill.enabled)
+          .map((skill) => [`${skill.name}\0${skill.path}`, skill] as const)
+      );
+      const validated = new Map<string, SkillSelection>();
+      for (const candidate of selected.slice(0, 8)) {
+        const skill = allowed.get(`${candidate.name}\0${candidate.path}`);
+        if (skill) {
+          validated.set(skill.path, { name: skill.name, path: skill.path });
+        }
+      }
+      if (validated.size !== selected.length) {
+        this.options.logger.warn(`Queued skills revalidated: requested=${selected.length}; allowed=${validated.size}.`);
+      }
+      return [...validated.values()];
+    } catch (error) {
+      this.options.logger.warn(`Queued skills validation failed; continuing without skills: ${normalizeErrorMessage(error)}`);
+      return [];
+    }
+  }
+
   private async handleServerRequest(request: JsonRpcServerRequest): Promise<unknown> {
     const normalized = normalizeApprovalRequest(request, this.itemPayloads);
     if (!normalized) {
@@ -2159,6 +2425,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.pendingApprovals.clear();
     this.rejectAllHiddenPlannerRuns(new Error("Codex app-server exited before docs planner completed."));
     this.loadedThreadIds.clear();
+    this.mcpStartupStatuses.clear();
     this.activeItemChatId.clear();
     this.contextCompactionItemThreads.clear();
     this.contextCompactionActivityIds.clear();
@@ -2311,7 +2578,9 @@ function getTurnSandboxPolicy(accessMode: ChatAccessMode, cwd: string): Record<s
     return {
       type: "workspaceWrite",
       writableRoots: [cwd],
-      networkAccess: true
+      networkAccess: true,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false
     };
   }
   if (accessMode === "danger-full-access") {
@@ -2759,7 +3028,11 @@ function normalizeAccountReadResult(result: unknown): NormalizedAccount {
 
 function normalizeRateLimitsResult(result: unknown): SidebarSnapshot["rateLimits"] {
   const root = isRecord(result) ? result : {};
-  return normalizeRateLimits(root.rateLimits ?? root);
+  const snapshots: unknown[] = [root.rateLimits ?? root];
+  if (isRecord(root.rateLimitsByLimitId)) {
+    snapshots.push(...Object.values(root.rateLimitsByLimitId));
+  }
+  return normalizeRateLimitSnapshots(snapshots);
 }
 
 function normalizeRateLimitsNotification(params: unknown): SidebarSnapshot["rateLimits"] {
@@ -2767,22 +3040,71 @@ function normalizeRateLimitsNotification(params: unknown): SidebarSnapshot["rate
   return normalizeRateLimits(root.rateLimits ?? root);
 }
 
+function mergeRateLimits(
+  current: SidebarSnapshot["rateLimits"],
+  update: SidebarSnapshot["rateLimits"]
+): SidebarSnapshot["rateLimits"] {
+  const rows = new Map<string, SidebarSnapshot["rateLimits"]["rows"][number]>();
+  for (const row of current.rows) {
+    rows.set(rateLimitRowKey(row), row);
+  }
+  for (const row of update.rows) {
+    rows.set(rateLimitRowKey(row), row);
+  }
+  return {
+    status: "ready",
+    rows: [...rows.values()],
+    updatedAt: update.updatedAt ?? new Date().toISOString(),
+    rateLimitReachedType: update.rateLimitReachedType ?? current.rateLimitReachedType
+  };
+}
+
+function rateLimitRowKey(row: SidebarSnapshot["rateLimits"]["rows"][number]): string {
+  return `${row.limitId ?? row.label ?? "legacy"}:${row.kind}`;
+}
+
 function normalizeRateLimits(value: unknown): SidebarSnapshot["rateLimits"] {
-  const root = isRecord(value) ? value : {};
-  const rows = [
-    normalizeRateLimitRow("primary", root.primary),
-    normalizeRateLimitRow("secondary", root.secondary)
-  ].filter((row): row is NonNullable<typeof row> => Boolean(row));
+  return normalizeRateLimitSnapshots([value]);
+}
+
+function normalizeRateLimitSnapshots(values: unknown[]): SidebarSnapshot["rateLimits"] {
+  const rows: SidebarSnapshot["rateLimits"]["rows"] = [];
+  const seen = new Set<string>();
+  let rateLimitReachedType: string | undefined;
+  for (const value of values) {
+    const root = isRecord(value) ? value : {};
+    const limitId = getString(root.limitId) || undefined;
+    const limitName = getString(root.limitName) || undefined;
+    rateLimitReachedType ??= getString(root.rateLimitReachedType) || undefined;
+    for (const row of [
+      normalizeRateLimitRow("primary", root.primary, limitId, limitName),
+      normalizeRateLimitRow("secondary", root.secondary, limitId, limitName)
+    ]) {
+      if (!row) {
+        continue;
+      }
+      const key = `${row.limitId ?? ""}:${row.label ?? ""}:${row.kind}:${row.windowDurationMins ?? "-"}:${row.resetsAt ?? "-"}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        rows.push(row);
+      }
+    }
+  }
 
   return {
     status: "ready",
     rows,
     updatedAt: new Date().toISOString(),
-    rateLimitReachedType: getString(root.rateLimitReachedType) || undefined
+    rateLimitReachedType
   };
 }
 
-function normalizeRateLimitRow(kind: "primary" | "secondary", value: unknown): SidebarSnapshot["rateLimits"]["rows"][number] | undefined {
+function normalizeRateLimitRow(
+  kind: "primary" | "secondary",
+  value: unknown,
+  limitId: string | undefined,
+  label: string | undefined
+): SidebarSnapshot["rateLimits"]["rows"][number] | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
@@ -2792,6 +3114,8 @@ function normalizeRateLimitRow(kind: "primary" | "secondary", value: unknown): S
   const resetsAt = getOptionalNumber(value.resetsAt);
   return {
     kind,
+    limitId,
+    label,
     usedPercent,
     remainingPercent: clampPercent(100 - usedPercent),
     windowDurationMins,
@@ -3023,6 +3347,11 @@ function extractDelta(value: unknown): string {
   return getString(root.delta);
 }
 
+function extractMcpProgressMessage(value: unknown): string {
+  const root = isRecord(value) ? value : {};
+  return limitText(getString(root.message), 500);
+}
+
 function extractErrorNotificationMessage(value: unknown): string {
   const root = isRecord(value) ? value : {};
   const error = isRecord(root.error) ? root.error : root;
@@ -3166,13 +3495,13 @@ function isModelOrEffortError(error: unknown): boolean {
   );
 }
 
-function isSpeedError(error: unknown): boolean {
+function isServiceTierError(error: unknown): boolean {
   const message = normalizeErrorMessage(error).toLowerCase();
   return (
-    message.includes("speed") && message.includes("invalid request") ||
-    message.includes("unknown field") && message.includes("speed") ||
-    message.includes("unknown variant") && message.includes("speed") ||
-    message.includes("invalid speed")
+    message.includes("servicetier") && message.includes("invalid request") ||
+    message.includes("service_tier") && message.includes("invalid request") ||
+    message.includes("unknown field") && (message.includes("servicetier") || message.includes("service_tier")) ||
+    message.includes("invalid service tier")
   );
 }
 
@@ -3185,24 +3514,69 @@ function normalizeErrorMessage(error: unknown): string {
 }
 
 function normalizeModelOptions(value: unknown): ModelOption[] {
+  return withAutomaticModelOption(normalizeModelOptionsPage(value).options);
+}
+
+function normalizeModelOptionsPage(value: unknown): { options: ModelOption[]; nextCursor: string | null } {
   const items = Array.isArray(value)
     ? value
-    : isRecord(value) && Array.isArray(value.models)
-      ? value.models
-      : isRecord(value) && Array.isArray(value.items)
-        ? value.items
-        : [];
+    : isRecord(value) && Array.isArray(value.data)
+      ? value.data
+      : isRecord(value) && Array.isArray(value.models)
+        ? value.models
+        : isRecord(value) && Array.isArray(value.items)
+          ? value.items
+          : [];
   const normalized: ModelOption[] = [];
   const seen = new Set<string>();
 
   for (const item of items) {
     const record = isRecord(item) ? item : {};
+    if (record.hidden === true) {
+      continue;
+    }
     const id = getString(record.id) || getString(record.model) || getString(record.name);
     const label = getString(record.label) || getString(record.displayName) || getString(record.title) || prettifyModelLabel(id);
     if (!id && !label) {
       continue;
     }
-    const option = { id: id || null, label: label || id };
+    const supportedEfforts = Array.isArray(record.supportedReasoningEfforts)
+      ? record.supportedReasoningEfforts
+        .map((entry) => {
+          const effort = isRecord(entry) ? normalizeChatEffortValue(entry.reasoningEffort) : undefined;
+          return effort
+            ? { value: effort, description: isRecord(entry) ? getString(entry.description) : "" }
+            : undefined;
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+      : [];
+    const serviceTiers = Array.isArray(record.serviceTiers)
+      ? record.serviceTiers
+        .map((entry) => {
+          if (!isRecord(entry)) {
+            return undefined;
+          }
+          const tierId = getString(entry.id);
+          if (!tierId) {
+            return undefined;
+          }
+          return {
+            id: tierId,
+            label: getString(entry.name) || prettifyModelLabel(tierId),
+            description: getString(entry.description)
+          };
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+      : [];
+    const option: ModelOption = {
+      id: id || null,
+      label: label || id,
+      description: getString(record.description) || undefined,
+      isDefault: record.isDefault === true,
+      supportedEfforts,
+      defaultEffort: normalizeChatEffortValue(record.defaultReasoningEffort),
+      serviceTiers
+    };
     const key = `${option.id ?? "<default>"}:${option.label}`;
     if (!seen.has(key)) {
       seen.add(key);
@@ -3210,7 +3584,40 @@ function normalizeModelOptions(value: unknown): ModelOption[] {
     }
   }
 
-  return normalized.length ? normalized : FALLBACK_MODEL_OPTIONS;
+  return {
+    options: normalized,
+    nextCursor: isRecord(value) ? getString(value.nextCursor) || null : null
+  };
+}
+
+function withAutomaticModelOption(options: ModelOption[]): ModelOption[] {
+  const deduped: ModelOption[] = [];
+  const seen = new Set<string>();
+  for (const option of options) {
+    const key = option.id ?? "<auto>";
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(option);
+    }
+  }
+  const runtimeDefault = deduped.find((option) => option.isDefault) ?? deduped[0];
+  const automatic: ModelOption = {
+    id: null,
+    label: "Авто",
+    description: runtimeDefault ? `Модель Codex по умолчанию: ${runtimeDefault.label}` : "Модель по умолчанию Codex",
+    isDefault: true,
+    supportedEfforts: runtimeDefault?.supportedEfforts,
+    defaultEffort: runtimeDefault?.defaultEffort,
+    serviceTiers: runtimeDefault?.serviceTiers
+  };
+  return [automatic, ...deduped.filter((option) => option.id !== null)];
+}
+
+function normalizeChatEffortValue(value: unknown): ChatEffort | undefined {
+  if (value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra") {
+    return value;
+  }
+  return undefined;
 }
 
 function normalizeItemActivity(value: unknown): {
@@ -3658,6 +4065,99 @@ function extractRequestedPermissions(value: Record<string, unknown>): Record<str
 
 function sanitizePayload(value: unknown): string {
   return limitText(redact(JSON.stringify(value, null, 2)), 2_000);
+}
+
+function normalizeMcpStatusPage(value: unknown): { data: McpRuntimeStatus[]; nextCursor: string | null } {
+  const root = isRecord(value) ? value : {};
+  const data = Array.isArray(root.data) ? root.data.flatMap((candidate) => {
+    if (!isRecord(candidate)) {
+      return [];
+    }
+    const name = getString(candidate.name).trim();
+    if (!name) {
+      return [];
+    }
+    const tools = isRecord(candidate.tools)
+      ? Object.keys(candidate.tools).length
+      : Array.isArray(candidate.tools)
+        ? candidate.tools.length
+        : 0;
+    const resources = Array.isArray(candidate.resources) ? candidate.resources.length : 0;
+    const serverInfo = isRecord(candidate.serverInfo) ? candidate.serverInfo : {};
+    const error = getString(candidate.error) || getString(candidate.lastError) || undefined;
+    return [{
+      name,
+      authStatus: normalizeMcpAuthStatus(candidate.authStatus),
+      runtimeStatus: normalizeMcpRuntimeStatus(candidate.status)
+        ?? normalizeMcpRuntimeStatus(candidate.runtimeStatus)
+        ?? (error ? "failed" as const : "ready" as const),
+      toolCount: tools,
+      resourceCount: resources,
+      description: getString(serverInfo.description) || getString(serverInfo.title),
+      error
+    }];
+  }) : [];
+  return {
+    data,
+    nextCursor: getString(root.nextCursor) || null
+  };
+}
+
+function normalizeMcpAuthStatus(value: unknown): McpRuntimeStatus["authStatus"] {
+  if (value === "unsupported" || value === "notLoggedIn" || value === "bearerToken" || value === "oAuth") {
+    return value;
+  }
+  return "unknown";
+}
+
+function normalizeMcpRuntimeStatus(value: unknown): McpRuntimeStatus["runtimeStatus"] | undefined {
+  return value === "starting" || value === "ready" || value === "failed" || value === "cancelled"
+    ? value
+    : undefined;
+}
+
+function normalizeSkillsList(value: unknown): SkillOption[] {
+  const root = isRecord(value) ? value : {};
+  const entries = Array.isArray(root.data) ? root.data : [];
+  const byPath = new Map<string, SkillOption>();
+  for (const entry of entries) {
+    if (!isRecord(entry) || !Array.isArray(entry.skills)) {
+      continue;
+    }
+    for (const candidate of entry.skills) {
+      if (!isRecord(candidate)) {
+        continue;
+      }
+      const name = getString(candidate.name).trim();
+      const skillPath = getString(candidate.path).trim();
+      if (!name || !skillPath) {
+        continue;
+      }
+      const skillInterface = isRecord(candidate.interface) ? candidate.interface : {};
+      const dependencies = isRecord(candidate.dependencies) && Array.isArray(candidate.dependencies.tools)
+        ? candidate.dependencies.tools.length
+        : 0;
+      const scope = candidate.scope === "user"
+        || candidate.scope === "repo"
+        || candidate.scope === "system"
+        || candidate.scope === "admin"
+        || candidate.scope === "plugin"
+        || candidate.scope === "marketplace"
+        ? candidate.scope
+        : "unknown";
+      byPath.set(skillPath, {
+        name,
+        path: skillPath,
+        description: getString(candidate.description),
+        displayName: getString(skillInterface.displayName) || name,
+        shortDescription: getString(skillInterface.shortDescription) || getString(candidate.shortDescription),
+        enabled: candidate.enabled !== false,
+        scope,
+        dependencyCount: dependencies
+      });
+    }
+  }
+  return [...byPath.values()].sort((left, right) => left.displayName.localeCompare(right.displayName));
 }
 
 function limitText(value: string, maxLength: number): string {

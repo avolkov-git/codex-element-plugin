@@ -91,13 +91,15 @@ class ContextTurnOrchestrator {
         await this.updateProjectState(request.chatId, request.chatKind, routing.shouldUseProjectContext);
         contextBlocks.push(...explicitContextBlocks);
         const shouldUseSupportDocsContext = routing.shouldUseDocsContext && !docsMetadataRoute;
-        const shouldUseSupportContext = request.chatKind === "project"
-            && !routing.isSmallTalk
-            && (shouldUseSupportDocsContext
-                || routing.shouldUseProjectContext
-                || diagnosticsRoute === "added"
-                || Boolean(explicitDocs?.text)
-                || explicitContextBlocks.length > 0);
+        const shouldUseConsoleMcpContext = isConsoleMcpPrompt(request.prompt);
+        const shouldUseSupportContext = !routing.isSmallTalk
+            && (shouldUseConsoleMcpContext
+                || (request.chatKind === "project"
+                    && (shouldUseSupportDocsContext
+                        || routing.shouldUseProjectContext
+                        || diagnosticsRoute === "added"
+                        || Boolean(explicitDocs?.text)
+                        || explicitContextBlocks.length > 0)));
         if (shouldUseSupportContext) {
             const baseRules = await this.options.baseContext.buildContext();
             if (baseRules.text) {
@@ -149,14 +151,22 @@ class ContextTurnOrchestrator {
                 `sources=${budget.sourceStats.length ? budget.sourceStats.join(";") : "none"}, ` +
                 `decisions=${budget.decisions.length ? budget.decisions.join(";") : "none"}.`);
         }
-        const input = request.runMode === "planning"
-            ? [{ type: "text", text: this.options.contextRouter.buildPlanningEnvelope({ userPrompt: request.prompt, blocks: budget.blocks }) }]
+        const selectedSkills = deduplicateSkills(request.selectedSkills ?? []);
+        const promptText = request.runMode === "planning"
+            ? this.options.contextRouter.buildPlanningEnvelope({ userPrompt: request.prompt, blocks: budget.blocks })
             : budget.blocks.length
-                ? [{ type: "text", text: this.options.contextRouter.buildServiceEnvelope({ userPrompt: request.prompt, blocks: budget.blocks }) }]
-                : [{ type: "text", text: request.prompt }];
+                ? this.options.contextRouter.buildServiceEnvelope({ userPrompt: request.prompt, blocks: budget.blocks })
+                : request.prompt;
+        const input = [
+            { type: "text", text: promptText, text_elements: [] },
+            ...selectedSkills.map((skill) => ({ type: "skill", name: skill.name, path: skill.path })),
+            ...(request.attachments ?? []).map((attachment) => attachment.kind === "image"
+                ? { type: "localImage", detail: "auto", path: attachment.path }
+                : { type: "mention", name: attachment.displayPath || attachment.name, path: attachment.path })
+        ];
         this.options.logger.info(`context orchestrator: mode=${mode}, route=${routing.route}, docs=${docsRoute}, project=${projectRoute}, ` +
             `diagnostics=${diagnosticsRoute}, baseRules=${baseRulesRoute}, rules=${rulesRoute}, explicit=${explicitContextBlocks.length}, ` +
-            `blocks=${budget.blocks.length}, reason=${routing.reason}.`);
+            `blocks=${budget.blocks.length}, skills=${selectedSkills.length}, attachments=${request.attachments?.length ?? 0}, reason=${routing.reason}.`);
         this.options.logger.info(`context routed: route=${routing.route}, docsMode=${routing.docsMode}, projectMode=${routing.projectMode}, ` +
             `baseRules=${baseRulesRoute}, project=${projectRoute}, docs=${docsRoute}, diagnostics=${diagnosticsRoute}, ` +
             `rules=${rulesRoute}, explicit=${explicitContextBlocks.length}, reason=${routing.reason}, blocks=${budget.blocks.length}.`);
@@ -400,5 +410,19 @@ function formatCount(count, one, few, many) {
             ? few
             : many;
     return `${value} ${noun}`;
+}
+function deduplicateSkills(skills) {
+    const byPath = new Map();
+    for (const skill of skills) {
+        const name = skill.name.trim();
+        const skillPath = skill.path.trim();
+        if (name && skillPath) {
+            byPath.set(skillPath, { name, path: skillPath });
+        }
+    }
+    return [...byPath.values()].slice(0, 8);
+}
+function isConsoleMcpPrompt(prompt) {
+    return /(панел[ьи]\s+управлен|management\s+console|\bconsole\b|пространств|\bspaces?\b|1c\s*element\s*mcp)/iu.test(prompt);
 }
 //# sourceMappingURL=contextTurnOrchestrator.js.map

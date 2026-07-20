@@ -331,9 +331,10 @@
   }
 
   function rateLimitRow(row) {
-    const label = row.kind === "secondary"
-      ? "Еженедельно"
-      : formatWindowDuration(row.windowDurationMins);
+    const duration = formatWindowDuration(row.windowDurationMins);
+    const label = row.label
+      ? duration === "Лимит" ? row.label : `${row.label} · ${duration}`
+      : duration;
     const right = [
       formatRemainingPercent(row.remainingPercent),
       formatResetAt(row.resetsAt)

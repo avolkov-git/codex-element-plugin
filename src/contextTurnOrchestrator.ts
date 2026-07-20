@@ -13,7 +13,7 @@ import { NativeContextToolLoopService } from "./nativeContextToolLoopService";
 import { ProjectContextService } from "./projectContextService";
 import { RulesContextService } from "./rulesContextService";
 import { StateStore } from "./stateStore";
-import { ChatKind, ChatRunMode, SidebarSnapshot } from "./types";
+import { ChatAttachment, ChatKind, ChatRunMode, SidebarSnapshot, SkillSelection } from "./types";
 import { UserProfileService } from "./userProfileService";
 
 export type ContextTurnMode = "native-tools" | "managed-fallback" | "retrieval-only";
@@ -29,10 +29,18 @@ export interface ContextTurnOrchestratorRequest {
   readonly skipAutoDiagnostics?: boolean;
   readonly forceDiagnosticsContext?: boolean;
   readonly diagnosticsPriority?: number;
+  readonly selectedSkills?: readonly SkillSelection[];
+  readonly attachments?: readonly ChatAttachment[];
 }
 
+export type ContextTurnInput =
+  | { type: "text"; text: string; text_elements: [] }
+  | { type: "skill"; name: string; path: string }
+  | { type: "mention"; name: string; path: string }
+  | { type: "localImage"; detail: "auto"; path: string };
+
 export interface ContextTurnOrchestratorResult {
-  readonly input: Array<{ type: "text"; text: string }>;
+  readonly input: ContextTurnInput[];
   readonly mode: ContextTurnMode;
   readonly route: string;
   readonly docsRoute: DocsRoute;
@@ -182,14 +190,20 @@ export class ContextTurnOrchestrator {
     contextBlocks.push(...explicitContextBlocks);
 
     const shouldUseSupportDocsContext = routing.shouldUseDocsContext && !docsMetadataRoute;
-    const shouldUseSupportContext = request.chatKind === "project"
-      && !routing.isSmallTalk
+    const shouldUseConsoleMcpContext = isConsoleMcpPrompt(request.prompt);
+    const shouldUseSupportContext = !routing.isSmallTalk
       && (
-        shouldUseSupportDocsContext
-        || routing.shouldUseProjectContext
-        || diagnosticsRoute === "added"
-        || Boolean(explicitDocs?.text)
-        || explicitContextBlocks.length > 0
+        shouldUseConsoleMcpContext
+        || (
+          request.chatKind === "project"
+          && (
+            shouldUseSupportDocsContext
+            || routing.shouldUseProjectContext
+            || diagnosticsRoute === "added"
+            || Boolean(explicitDocs?.text)
+            || explicitContextBlocks.length > 0
+          )
+        )
       );
 
     if (shouldUseSupportContext) {
@@ -245,16 +259,24 @@ export class ContextTurnOrchestrator {
       );
     }
 
-    const input = request.runMode === "planning"
-      ? [{ type: "text" as const, text: this.options.contextRouter.buildPlanningEnvelope({ userPrompt: request.prompt, blocks: budget.blocks }) }]
+    const selectedSkills = deduplicateSkills(request.selectedSkills ?? []);
+    const promptText = request.runMode === "planning"
+      ? this.options.contextRouter.buildPlanningEnvelope({ userPrompt: request.prompt, blocks: budget.blocks })
       : budget.blocks.length
-        ? [{ type: "text" as const, text: this.options.contextRouter.buildServiceEnvelope({ userPrompt: request.prompt, blocks: budget.blocks }) }]
-        : [{ type: "text" as const, text: request.prompt }];
+        ? this.options.contextRouter.buildServiceEnvelope({ userPrompt: request.prompt, blocks: budget.blocks })
+        : request.prompt;
+    const input: ContextTurnInput[] = [
+      { type: "text", text: promptText, text_elements: [] },
+      ...selectedSkills.map((skill): ContextTurnInput => ({ type: "skill", name: skill.name, path: skill.path })),
+      ...(request.attachments ?? []).map((attachment): ContextTurnInput => attachment.kind === "image"
+        ? { type: "localImage", detail: "auto", path: attachment.path }
+        : { type: "mention", name: attachment.displayPath || attachment.name, path: attachment.path })
+    ];
 
     this.options.logger.info(
       `context orchestrator: mode=${mode}, route=${routing.route}, docs=${docsRoute}, project=${projectRoute}, ` +
       `diagnostics=${diagnosticsRoute}, baseRules=${baseRulesRoute}, rules=${rulesRoute}, explicit=${explicitContextBlocks.length}, ` +
-      `blocks=${budget.blocks.length}, reason=${routing.reason}.`
+      `blocks=${budget.blocks.length}, skills=${selectedSkills.length}, attachments=${request.attachments?.length ?? 0}, reason=${routing.reason}.`
     );
     this.options.logger.info(
       `context routed: route=${routing.route}, docsMode=${routing.docsMode}, projectMode=${routing.projectMode}, ` +
@@ -560,4 +582,20 @@ function formatCount(count: number, one: string, few: string, many: string): str
       ? few
       : many;
   return `${value} ${noun}`;
+}
+
+function deduplicateSkills(skills: readonly SkillSelection[]): SkillSelection[] {
+  const byPath = new Map<string, SkillSelection>();
+  for (const skill of skills) {
+    const name = skill.name.trim();
+    const skillPath = skill.path.trim();
+    if (name && skillPath) {
+      byPath.set(skillPath, { name, path: skillPath });
+    }
+  }
+  return [...byPath.values()].slice(0, 8);
+}
+
+function isConsoleMcpPrompt(prompt: string): boolean {
+  return /(панел[ьи]\s+управлен|management\s+console|\bconsole\b|пространств|\bspaces?\b|1c\s*element\s*mcp)/iu.test(prompt);
 }

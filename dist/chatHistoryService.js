@@ -169,9 +169,12 @@ function normalizeChat(value) {
         status: normalizeChatStatus(value.status),
         accessMode: normalizeChatAccessMode(value.accessMode, kind),
         modelId: typeof value.modelId === "string" ? value.modelId : null,
-        modelLabel: typeof value.modelLabel === "string" && value.modelLabel.trim() ? value.modelLabel.trim() : "5.5",
+        modelLabel: typeof value.modelId === "string"
+            ? typeof value.modelLabel === "string" && value.modelLabel.trim() ? value.modelLabel.trim() : value.modelId
+            : "Авто",
         effort: normalizeChatEffort(value.effort),
         speed: normalizeChatSpeed(value.speed),
+        queuedMessages: normalizeQueuedMessages(value.queuedMessages),
         rulesEnabled: kind === "project" ? value.rulesEnabled !== false : false,
         pendingApproval: null,
         backendThreadAccessMode: normalizeOptionalChatAccessMode(value.backendThreadAccessMode),
@@ -179,6 +182,62 @@ function normalizeChat(value) {
         activeTurnId: null,
         activeRunMode: null
     };
+}
+function normalizeQueuedMessages(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.flatMap((entry) => {
+        if (!isObject(entry) || typeof entry.id !== "string" || typeof entry.text !== "string") {
+            return [];
+        }
+        const attachments = normalizeAttachments(entry.attachments);
+        if (!entry.text.trim() && !attachments.length) {
+            return [];
+        }
+        return [{
+                id: entry.id,
+                text: entry.text.trim(),
+                mode: entry.mode === "planning" || entry.mode === "implementPlan" ? entry.mode : "normal",
+                skills: normalizeSkillSelections(entry.skills),
+                attachments,
+                createdAt: typeof entry.createdAt === "string" ? entry.createdAt : new Date().toISOString()
+            }];
+    });
+}
+function normalizeAttachments(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.flatMap((candidate) => {
+        if (!isObject(candidate)
+            || typeof candidate.id !== "string"
+            || typeof candidate.name !== "string"
+            || typeof candidate.path !== "string"
+            || typeof candidate.displayPath !== "string"
+            || (candidate.kind !== "file" && candidate.kind !== "folder" && candidate.kind !== "image")) {
+            return [];
+        }
+        return [{
+                id: candidate.id,
+                kind: candidate.kind,
+                name: candidate.name,
+                path: candidate.path,
+                displayPath: candidate.displayPath,
+                sizeBytes: typeof candidate.sizeBytes === "number" ? candidate.sizeBytes : undefined
+            }];
+    }).slice(0, 10);
+}
+function normalizeSkillSelections(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.flatMap((candidate) => {
+        if (!isObject(candidate) || typeof candidate.name !== "string" || typeof candidate.path !== "string") {
+            return [];
+        }
+        return [{ name: candidate.name, path: candidate.path }];
+    });
 }
 function normalizeTranscriptItem(value) {
     if (!isObject(value)) {
@@ -335,7 +394,8 @@ function normalizeTranscriptItem(value) {
         turnId: typeof value.turnId === "string" ? value.turnId : undefined,
         status: value.status === "streaming" ? "streaming" : "complete",
         completedAt: typeof value.completedAt === "string" ? value.completedAt : undefined,
-        durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined
+        durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
+        attachments: normalizeAttachments(value.attachments)
     };
 }
 function normalizeClarificationOptions(value) {
@@ -444,6 +504,9 @@ function normalizeWorklogChildren(value) {
             query: typeof item.query === "string" ? item.query : undefined,
             path: typeof item.path === "string" ? item.path : undefined,
             command: typeof item.command === "string" ? item.command : undefined,
+            server: typeof item.server === "string" ? item.server : undefined,
+            tool: typeof item.tool === "string" ? item.tool : undefined,
+            argumentsPreview: typeof item.argumentsPreview === "string" ? item.argumentsPreview : undefined,
             resultCount: typeof item.resultCount === "number" && Number.isFinite(item.resultCount) ? item.resultCount : undefined,
             outputPreview: typeof item.outputPreview === "string" ? item.outputPreview : undefined,
             createdAt,
@@ -519,7 +582,7 @@ function normalizeOptionalChatAccessMode(value) {
     return null;
 }
 function normalizeChatEffort(value) {
-    if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
+    if (value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra") {
         return value;
     }
     return "medium";
