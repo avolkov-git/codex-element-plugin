@@ -55,6 +55,7 @@ class ElementMcpIdeBridgeService {
                 || event.affectsConfiguration("1C.clientId")
                 || event.affectsConfiguration("1C.clientSecret")
                 || event.affectsConfiguration("1C.projectId")
+                || event.affectsConfiguration("1C.applicationId")
                 || event.affectsConfiguration("codexElement.elementMcpUrl")) {
                 this.lastContextFingerprint = "";
                 void this.sync();
@@ -98,6 +99,7 @@ class ElementMcpIdeBridgeService {
         const clientId = configuration.get("1C.clientId", "").trim();
         const clientSecret = configuration.get("1C.clientSecret", "").trim();
         const projectId = configuration.get("1C.projectId", "").trim();
+        const applicationId = configuration.get("1C.applicationId", "").trim();
         if (!server || !clientId || !clientSecret) {
             return;
         }
@@ -120,6 +122,7 @@ class ElementMcpIdeBridgeService {
             client_secret: clientSecret,
             workspace_folders: workspaceFolders,
             ...(projectId ? { project_id: projectId } : {}),
+            ...(applicationId ? { application_id: applicationId } : {}),
             ...(gitStatus ? { git_status: gitStatus } : {})
         };
         const fingerprint = crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");

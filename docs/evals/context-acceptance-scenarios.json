@@ -3,7 +3,7 @@
   "initiative": "050-desktop-like-context-tool-loop",
   "title": "Context Acceptance Scenarios",
   "description": "Manual Element acceptance matrix for desktop-like context behavior. This file is validated by npm run eval:context and executed manually before release gates.",
-  "minimumScenarios": 11,
+  "minimumScenarios": 12,
   "requiredScenarioIds": [
     "ctx-small-talk-no-context",
     "ctx-docs-overview-configured-path",
@@ -15,7 +15,8 @@
     "ctx-large-project-budget",
     "ctx-broken-docs-graceful-fallback",
     "ctx-safety-forbidden-paths",
-    "ctx-transcript-worklog-metadata-only"
+    "ctx-transcript-worklog-metadata-only",
+    "ctx-current-application-ide-only"
   ],
   "globalReject": [
     "raw service envelope in transcript",
@@ -389,6 +390,42 @@
       "acceptance": [
         "Запрещенные пути не читаются.",
         "Отказ контролируемый и не раскрывает содержимое."
+      ]
+    },
+    {
+      "id": "ctx-current-application-ide-only",
+      "title": "Текущее опубликованное приложение определяется только через Element IDE",
+      "area": "routing",
+      "chatKind": "project",
+      "mode": "manual-element",
+      "prompt": "Какое текущее приложение подключено к этой IDE?",
+      "manualSteps": [
+        "Открыть проектный чат в IDE, привязанной к опубликованному приложению.",
+        "Убедиться, что 1C Element MCP 0.13.0 подключён и bridge синхронизирован.",
+        "Отправить запрос и проверить вызов get_current_application без аргументов."
+      ],
+      "expected": {
+        "context": [
+          "base rules route current application questions to get_current_application",
+          "application id comes only from temporary IDE handoff"
+        ],
+        "transcript": [
+          "ответ называет точное приложение, статус, URL и опубликованную версию",
+          "Client Secret и bearer token отсутствуют"
+        ],
+        "output": [
+          "нет raw credentials или Authorization header",
+          "обычный VS Code получает not_available вместо догадки"
+        ]
+      },
+      "reject": [
+        "application selected by project name",
+        "request for bearer token or Client Secret",
+        "arbitrary application id passed as a tool argument"
+      ],
+      "acceptance": [
+        "Приложение совпадает с экземпляром, к которому привязана IDE.",
+        "Вне Element IDE текущий экземпляр не угадывается."
       ]
     },
     {

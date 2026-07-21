@@ -597,5 +597,8 @@ function deduplicateSkills(skills: readonly SkillSelection[]): SkillSelection[] 
 }
 
 function isConsoleMcpPrompt(prompt: string): boolean {
-  return /(панел[ьи]\s+управлен|management\s+console|\bconsole\b|пространств|\bspaces?\b|1c\s*element\s*mcp)/iu.test(prompt);
+  return [
+    /(панел[ьи]\s+управлен|management\s+console|\bconsole\b|пространств|\bspaces?\b|1c\s*element\s*mcp)/iu,
+    /((?:текущ\w*|опубликованн\w*)\s+приложен|приложен\w*.{0,40}(?:ide|иде))/iu
+  ].some((pattern) => pattern.test(prompt));
 }

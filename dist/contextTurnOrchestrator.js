@@ -423,6 +423,9 @@ function deduplicateSkills(skills) {
     return [...byPath.values()].slice(0, 8);
 }
 function isConsoleMcpPrompt(prompt) {
-    return /(панел[ьи]\s+управлен|management\s+console|\bconsole\b|пространств|\bspaces?\b|1c\s*element\s*mcp)/iu.test(prompt);
+    return [
+        /(панел[ьи]\s+управлен|management\s+console|\bconsole\b|пространств|\bspaces?\b|1c\s*element\s*mcp)/iu,
+        /((?:текущ\w*|опубликованн\w*)\s+приложен|приложен\w*.{0,40}(?:ide|иде))/iu
+    ].some((pattern) => pattern.test(prompt));
 }
 //# sourceMappingURL=contextTurnOrchestrator.js.map
