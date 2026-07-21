@@ -42,6 +42,7 @@ function main() {
     copyPayload(sourceRoot, targetRoot);
     overlayPreservedRuntimes(backupBin);
     overlayRuntimeRoot();
+    pruneUnrequestedRuntimePlatforms();
     removeInvalidAlternativeRuntimeFiles();
     removeInvalidUnrequestedRuntimeFiles();
     runDeployPreflight();
@@ -97,6 +98,9 @@ function copyPayload(fromRoot, toRoot) {
 function shouldCopyPayloadEntry(relativePath, entry) {
   const name = entry.name;
   if (entry.isDirectory()) {
+    if (args.platformOnly && path.dirname(relativePath) === "bin") {
+      return requestedRuntimeDirectoryNames().has(name);
+    }
     return ![
       ".git",
       "node_modules",
@@ -122,6 +126,14 @@ function shouldCopyPayloadEntry(relativePath, entry) {
   }
 
   return true;
+}
+
+function requestedRuntimeDirectoryNames() {
+  const names = new Set();
+  for (const target of requestedRuntimeTargets()) {
+    names.add(target.platformId);
+  }
+  return names;
 }
 
 function overlayPreservedRuntimes(backupBin) {
@@ -193,6 +205,34 @@ function removeInvalidAlternativeRuntimeFiles() {
   }
 }
 
+function pruneUnrequestedRuntimePlatforms() {
+  if (!args.platformOnly) {
+    return;
+  }
+
+  const requested = new Set(requestedRuntimeTargets().map((target) => target.platformId));
+  for (const target of targets) {
+    if (requested.has(target.platformId)) {
+      if (target.legacyPlatformId) {
+        const legacyDirectory = path.dirname(targetPaths(targetRoot, target)[1]);
+        if (fs.existsSync(legacyDirectory)) {
+          fs.rmSync(legacyDirectory, { recursive: true, force: true });
+          warnings.push(`removed legacy runtime directory from platform-only payload: ${legacyDirectory}`);
+        }
+      }
+      continue;
+    }
+    for (const candidatePath of targetPaths(targetRoot, target)) {
+      const platformDirectory = path.dirname(candidatePath);
+      if (!fs.existsSync(platformDirectory)) {
+        continue;
+      }
+      fs.rmSync(platformDirectory, { recursive: true, force: true });
+      warnings.push(`removed unrequested runtime platform ${target.platformId}: ${platformDirectory}`);
+    }
+  }
+}
+
 function removeInvalidUnrequestedRuntimeFiles() {
   const requested = new Set(requestedRuntimeTargets().map((target) => target.platformId));
   for (const target of targets) {
@@ -233,6 +273,9 @@ function runDeployPreflight() {
   }
   if (args.allowLfsPointer) {
     preflightArgs.push("--allow-lfs-pointer");
+  }
+  if (args.platformOnly) {
+    preflightArgs.push("--platform-only");
   }
 
   const result = childProcess.spawnSync(process.execPath, preflightArgs, {
@@ -318,6 +361,7 @@ function parseArgs(rawArgs) {
     runtimeRoot: "",
     platforms: ["win32-x64"],
     requireAll: false,
+    platformOnly: false,
     strict: false,
     allowLfsPointer: false,
     help: false
@@ -340,6 +384,10 @@ function parseArgs(rawArgs) {
     if (arg === "--require-all") {
       result.requireAll = true;
       result.platforms = [];
+      continue;
+    }
+    if (arg === "--platform-only") {
+      result.platformOnly = true;
       continue;
     }
     if (arg === "--target") {
@@ -373,6 +421,10 @@ function parseArgs(rawArgs) {
       continue;
     }
     throwUsage(`unknown option: ${arg}`);
+  }
+
+  if (result.requireAll && result.platformOnly) {
+    throwUsage("--platform-only cannot be combined with --require-all");
   }
 
   return result;
@@ -418,6 +470,7 @@ function printHelp() {
 Options:
   --target <path>           Output deploy payload directory. Defaults to ../codex-plugin-deploy.
   --platform <id>[,<id>]    Runtime platforms to validate and optionally overlay. Defaults to win32-x64.
+  --platform-only           Remove every runtime platform not requested by --platform.
   --require-all             Validate and optionally overlay every supported runtime target.
   --runtime-root <path>     Optional root with real runtime binaries in bin-compatible layout.
   --strict                  Fail on deploy trash files and Git LFS pointers.
@@ -426,6 +479,7 @@ Options:
 
 Examples:
   node scripts/stage-deploy-payload.js --allow-lfs-pointer
+  node scripts/stage-deploy-payload.js --target ../release/win32-x64/codex-plugins --platform win32-x64 --platform-only --strict
   node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy --platform win32-x64 --strict --runtime-root /secure/runtime
   node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy --require-all --strict --runtime-root /secure/runtime
 `);

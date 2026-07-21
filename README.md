@@ -5,9 +5,10 @@
 Плагин для Theia IDE, который добавляет Codex в среду разработки 1C: Элемент. Runtime работает через поставляемый вместе с плагином [codex app-server](https://github.com/openai/codex).
 Подробнее про `codex app-server` [тут](https://developers.openai.com/codex/app-server) и [тут](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
-- Текущая версия плагина: `0.1.79`
+- Текущая версия плагина: `0.1.80`
 - Текущая версия Codex CLI/app-server: `0.144.5`
-- Поддерживаемые платформы: Windows, Linux и macOS на x64 и arm64
+- Готовые поставки: Windows x64 и Linux x64
+- Исходный проект также содержит runtime-матрицу для Windows, Linux и macOS на x64 и arm64
 - [Релизы](https://github.com/avolkov-git/codex-element-plugin/releases)
 
 ## Возможности
@@ -49,13 +50,15 @@
 ## Установка
 
 1. Откройте страницу [Releases](https://github.com/avolkov-git/codex-element-plugin/releases).
-2. Загрузите `codex-plugins-<version>.zip` или `codex-plugins-<version>.tar.gz`.
+2. Выберите архив по операционной системе сервера Element:
+   - Windows x64: `codex-plugins-0.1.80-win32-x64.zip`;
+   - Linux x64: `codex-plugins-0.1.80-linux-x64.tar.gz`.
 3. Сверьте SHA-256 с `SHA256SUMS.txt`.
 4. Распакуйте архив.
 5. Поместите каталог `codex-plugins` в каталог `/plugins` сервера Element.
 6. Обновите страницу с открытой IDE.
 
-Release-архив содержит runtime для всех поддерживаемых платформ. Администратору не нужно устанавливать Codex CLI в системный `PATH`.
+Оба архива собраны из одного проекта и имеют одну версию плагина. Каждый архив содержит runtime только своей платформы, поэтому Windows-сервер не загружает Linux/macOS-бинарники, а Linux-сервер — Windows/macOS-бинарники. Администратору не нужно устанавливать Codex CLI в системный `PATH`.
 
 ## Первый запуск
 
@@ -194,6 +197,31 @@ npm run deploy:stage
 npm run deploy:stage:strict
 npm run preflight:deploy
 ```
+
+## Сборка platform-specific релизов
+
+Один исходный проект выпускается двумя архивами с общей версией:
+
+```bash
+npm run release:platforms
+```
+
+Команда собирает и повторно распаковывает оба архива, запускает строгий preflight и создает в `../codex-plugin-release`:
+
+```text
+codex-plugins-0.1.80-win32-x64.zip
+codex-plugins-0.1.80-linux-x64.tar.gz
+SHA256SUMS.txt
+README_RELEASE.md
+```
+
+Внутри каждого архива находится каталог `codex-plugins`. Проверка `--platform-only` запрещает попадание runtime другой операционной системы в platform-specific поставку.
+
+### Автоматический выпуск
+
+Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v0.1.80`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
+
+CI загружает из Git LFS только `win32-x64` и `linux-x64`. Остальная runtime-матрица не скачивается для этого релиза.
 
 Передать отдельный каталог runtime можно через `--runtime-root`:
 

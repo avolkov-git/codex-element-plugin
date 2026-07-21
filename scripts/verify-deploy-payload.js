@@ -150,6 +150,7 @@ function checkPackageMetadata(value) {
 
 function checkRuntimeBinaries(value) {
   const requestedTargets = requestedRuntimeTargets();
+  const requestedPlatformIds = new Set(requestedTargets.map((target) => target.platformId));
   for (const target of requestedTargets) {
     const candidatePaths = targetPaths(value, target);
     const existingPath = candidatePaths.find((candidate) => fs.existsSync(candidate));
@@ -160,6 +161,21 @@ function checkRuntimeBinaries(value) {
     const result = validateRuntimeFile(existingPath, target, { allowLfsPointer });
     errors.push(...result.errors);
     warnings.push(...result.warnings);
+  }
+
+  if (!args.platformOnly) {
+    return;
+  }
+
+  for (const target of targets) {
+    if (requestedPlatformIds.has(target.platformId)) {
+      continue;
+    }
+    for (const candidatePath of targetPaths(value, target)) {
+      if (fs.existsSync(candidatePath)) {
+        errors.push(`unexpected runtime in platform-only payload: ${path.relative(value, candidatePath)}`);
+      }
+    }
   }
 }
 
@@ -239,6 +255,7 @@ function parseArgs(rawArgs) {
     strict: false,
     allowLfsPointer: false,
     requireAll: false,
+    platformOnly: false,
     help: false
   };
 
@@ -258,6 +275,10 @@ function parseArgs(rawArgs) {
     }
     if (arg === "--require-all") {
       result.requireAll = true;
+      continue;
+    }
+    if (arg === "--platform-only") {
+      result.platformOnly = true;
       continue;
     }
     if (arg === "--root") {
@@ -289,6 +310,10 @@ function parseArgs(rawArgs) {
     throwUsage(`unknown option: ${arg}`);
   }
 
+  if (result.requireAll && result.platformOnly) {
+    throwUsage("--platform-only cannot be combined with --require-all");
+  }
+
   return result;
 }
 
@@ -308,6 +333,7 @@ function printHelp() {
 Options:
   --root <path>             Validate deploy payload root. Defaults to this repo.
   --platform <id>[,<id>]    Require runtime for one or more platform ids. Use "all" for full matrix.
+  --platform-only           Fail if runtimes for non-requested platforms are present.
   --require-all             Require runtimes for every supported target.
   --strict                  Treat deploy trash files and Git LFS pointers as errors.
   --allow-lfs-pointer       Treat Git LFS pointer runtime as warning in non-strict dev checks.

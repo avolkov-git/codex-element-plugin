@@ -1,0 +1,94 @@
+name: Build platform releases
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: platform-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package Windows and Linux x64
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source without the full LFS matrix
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: false
+
+      - name: Fetch release runtime binaries
+        shell: bash
+        run: |
+          git lfs install --local
+          git lfs pull --include="bin/win32-x64/**,bin/linux-x64/**" --exclude=""
+          node scripts/verify-runtime-binaries.js --platform win32-x64,linux-x64
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Validate tag version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          test "v${VERSION}" = "${GITHUB_REF_NAME}" || {
+            echo "Tag ${GITHUB_REF_NAME} does not match package version ${VERSION}." >&2
+            exit 1
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate source
+        shell: bash
+        run: |
+          npm run check
+          npm run build
+          npm run check:markdown-links
+          npm run check:transcript-window
+          npm run eval:context
+          node --check media/chat.js
+          node --check media/sidebar.js
+          node --check media/settings.js
+          git diff --check
+
+      - name: Build platform packages
+        run: node scripts/package-platform-releases.js --output ./release
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-element-${{ github.ref_name }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" release/* --clobber
+            gh release edit "${GITHUB_REF_NAME}" \
+              --title "Codex for 1C: Element ${GITHUB_REF_NAME#v}" \
+              --notes-file release/README_RELEASE.md
+          else
+            gh release create "${GITHUB_REF_NAME}" release/* \
+              --title "Codex for 1C: Element ${GITHUB_REF_NAME#v}" \
+              --notes-file release/README_RELEASE.md
+          fi
