@@ -1,5 +1,7 @@
 # Codex for 1C: Element
 
+[![License](https://img.shields.io/badge/license-MIT-d68048?style=flat-square)](LICENSE)
+
 Плагин для Theia IDE, который добавляет Codex в среду разработки 1C: Элемент. Runtime работает через поставляемый вместе с плагином [codex app-server](https://github.com/openai/codex).
 Подробнее про `codex app-server` [тут](https://developers.openai.com/codex/app-server) и [тут](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
