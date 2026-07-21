@@ -4,7 +4,7 @@
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
   "version": "0.1.79",
   "publisher": "element-ai",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true,
   "engines": {
     "vscode": "^1.97.0"

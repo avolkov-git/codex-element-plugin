@@ -1,6 +1,6 @@
 # Codex for 1C: Element
 
-Плагин доя Theia IDE, который добавляет Codex в среду разработки 1C: Элемент. Runtime работает через поставляемый вместе с плагином [codex app-server](https://github.com/openai/codex).
+Плагин для Theia IDE, который добавляет Codex в среду разработки 1C: Элемент. Runtime работает через поставляемый вместе с плагином [codex app-server](https://github.com/openai/codex).
 Подробнее про `codex app-server` [тут](https://developers.openai.com/codex/app-server) и [тут](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
 - Текущая версия плагина: `0.1.79`
@@ -266,4 +266,4 @@ npm run preflight:runtime
 - [Контракт Codex app-server 0.144.5](docs/app-server-0.144.5.md)
 - [Unix smoke checklist](docs/unix-smoke-checklist.md)
 
-Проект распространяется без открытой лицензии. См. поле `license` в `package.json`.
+Проект распространяется по [лицензии MIT](LICENSE). Copyright (c) 2026 Alexandr Volkov.
