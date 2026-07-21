@@ -224,7 +224,12 @@ function normalizeAttachments(value) {
                 name: candidate.name,
                 path: candidate.path,
                 displayPath: candidate.displayPath,
-                sizeBytes: typeof candidate.sizeBytes === "number" ? candidate.sizeBytes : undefined
+                sizeBytes: typeof candidate.sizeBytes === "number" ? candidate.sizeBytes : undefined,
+                source: candidate.source === "upload"
+                    ? "upload"
+                    : candidate.source === "workspace"
+                        ? "workspace"
+                        : undefined
             }];
     }).slice(0, 10);
 }

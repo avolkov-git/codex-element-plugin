@@ -82,6 +82,7 @@ export interface ChatAttachment {
   path: string;
   displayPath: string;
   sizeBytes?: number;
+  source?: "workspace" | "upload";
 }
 
 export interface SkillSelection {

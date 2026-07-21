@@ -214,7 +214,12 @@ function normalizeAttachments(value: unknown): ChatAttachment[] {
       name: candidate.name,
       path: candidate.path,
       displayPath: candidate.displayPath,
-      sizeBytes: typeof candidate.sizeBytes === "number" ? candidate.sizeBytes : undefined
+      sizeBytes: typeof candidate.sizeBytes === "number" ? candidate.sizeBytes : undefined,
+      source: candidate.source === "upload"
+        ? "upload" as const
+        : candidate.source === "workspace"
+          ? "workspace" as const
+          : undefined
     }];
   }).slice(0, 10);
 }

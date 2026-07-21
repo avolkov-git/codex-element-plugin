@@ -6,10 +6,16 @@
   const assetMode = window.__codexElementWebviewAssetMode || "external";
   const vscode = acquireVsCodeApi();
   const root = document.getElementById("root");
-  const TRANSCRIPT_INITIAL_WINDOW_SIZE = 40;
-  const TRANSCRIPT_PAGE_SIZE = 20;
-  const TRANSCRIPT_MAX_RENDERED_ITEMS = 40;
-  const TRANSCRIPT_LOAD_THRESHOLD = 280;
+  const TRANSCRIPT_INITIAL_WINDOW_SIZE = 120;
+  const TRANSCRIPT_PAGE_SIZE = 40;
+  const TRANSCRIPT_MAX_RENDERED_ITEMS = 120;
+  const TRANSCRIPT_ACTIVE_SCROLL_BUFFER_ITEMS = 200;
+  const TRANSCRIPT_LOAD_THRESHOLD = 640;
+  const TRANSCRIPT_SCROLL_IDLE_MS = 520;
+  const ATTACHMENT_MAX_COUNT = 10;
+  const ATTACHMENT_MAX_FILE_BYTES = 50 * 1024 * 1024;
+  const ATTACHMENT_MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+  const ATTACHMENT_UPLOAD_CHUNK_BYTES = 512 * 1024;
   const state = {
     snapshot: undefined,
     transcriptWindow: undefined,
@@ -27,6 +33,7 @@
     skillsError: "",
     selectedSkillsByChat: Object.create(null),
     attachmentsByChat: Object.create(null),
+    pendingAttachmentUploads: Object.create(null),
     attachmentsStatus: "idle",
     contextPopup: null,
     contextDetails: null,
@@ -42,12 +49,18 @@
     loadingBefore: false,
     loadingAfter: false,
     pendingScrollAnchor: null,
+    pendingTranscriptWindowRequest: null,
+    pendingTranscriptWindowTimer: 0,
+    transcriptWindowTrimTimer: 0,
+    nextTranscriptWindowRequestId: 1,
     scrollToBottomAfterWindow: false,
     lastTranscriptUserNavigationAt: 0,
-    lastTranscriptNavigationDirection: "both",
+    lastTranscriptNavigationDirection: "after",
+    lastTranscriptScrollTop: 0,
     lastTranscriptStructureSignature: "",
     lastChromeSignature: "",
-    allowStreamingPatch: false
+    allowStreamingPatch: false,
+    bindCommandButtons: null
   };
 
   document.addEventListener("click", (event) => {
@@ -100,15 +113,61 @@
       render();
     }
     if (message.type === "event" && message.event === "chat.attachments.selected") {
-      if (state.snapshot && state.snapshot.chat) {
-        setAttachments(state.snapshot.chat.id, Array.isArray(message.payload) ? message.payload : []);
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
+      const chatId = typeof payload.chatId === "string" ? payload.chatId : state.snapshot && state.snapshot.chat ? state.snapshot.chat.id : "";
+      const attachments = Array.isArray(payload.attachments) ? payload.attachments : Array.isArray(message.payload) ? message.payload : [];
+      if (chatId) {
+        setAttachments(chatId, attachments);
       }
       state.attachmentsStatus = "idle";
       render();
     }
     if (message.type === "event" && message.event === "chat.attachments.error") {
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
       state.attachmentsStatus = "idle";
-      state.notice = String(message.payload || "Не удалось прикрепить файл.");
+      state.notice = String(payload.message || message.payload || "Не удалось прикрепить файл.");
+      render();
+    }
+    if (message.type === "event" && message.event === "chat.attachment.upload.ready") {
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
+      const uploadId = typeof payload.uploadId === "string" ? payload.uploadId : "";
+      const pending = state.pendingAttachmentUploads[uploadId];
+      if (pending) {
+        pending.status = "uploading";
+        void sendNextAttachmentChunk(uploadId);
+      }
+    }
+    if (message.type === "event" && message.event === "chat.attachment.upload.chunkAccepted") {
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
+      const uploadId = typeof payload.uploadId === "string" ? payload.uploadId : "";
+      const pending = state.pendingAttachmentUploads[uploadId];
+      if (pending) {
+        pending.offset = Number(payload.receivedBytes) || pending.offset;
+        pending.chunkIndex = Number(payload.chunkIndex) + 1;
+        updatePendingAttachmentProgress(uploadId);
+        void sendNextAttachmentChunk(uploadId);
+      }
+    }
+    if (message.type === "event" && message.event === "chat.attachment.upload.completed") {
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
+      const uploadId = payload.attachment && typeof payload.attachment.id === "string" ? payload.attachment.id : "";
+      const pending = state.pendingAttachmentUploads[uploadId];
+      const chatId = typeof payload.chatId === "string" ? payload.chatId : pending ? pending.chatId : "";
+      if (uploadId) {
+        delete state.pendingAttachmentUploads[uploadId];
+      }
+      if (chatId && payload.attachment) {
+        setAttachments(chatId, [...getAttachments(chatId), payload.attachment]);
+      }
+      render();
+    }
+    if (message.type === "event" && message.event === "chat.attachment.upload.error") {
+      const payload = message.payload && typeof message.payload === "object" ? message.payload : {};
+      const uploadId = typeof payload.uploadId === "string" ? payload.uploadId : "";
+      if (uploadId) {
+        delete state.pendingAttachmentUploads[uploadId];
+      }
+      state.notice = String(payload.message || "Не удалось загрузить файл.");
       render();
     }
     if (message.type === "event" && message.event === "chat.context.details") {
@@ -130,8 +189,13 @@
       render();
     }
     if (message.type === "event" && message.event === "chat.transcript.window") {
-      applyTranscriptWindowEvent(message.payload || {});
-      render();
+      const appliedMode = applyTranscriptWindowEvent(message.payload || {});
+      if (appliedMode && patchTranscriptWindowDom(appliedMode)) {
+        return;
+      }
+      if (appliedMode) {
+        render();
+      }
     }
     if (message.type === "event" && message.event === "chat.plan.reviseDraft") {
       const snapshot = state.snapshot;
@@ -158,6 +222,8 @@
       state.loadingBefore = false;
       state.loadingAfter = false;
       state.pendingScrollAnchor = null;
+      clearPendingTranscriptWindowRequest();
+      clearTranscriptWindowTrimTimer();
       state.scrollToBottomAfterWindow = false;
       return;
     }
@@ -169,6 +235,8 @@
       state.loadingBefore = false;
       state.loadingAfter = false;
       state.pendingScrollAnchor = null;
+      clearPendingTranscriptWindowRequest();
+      clearTranscriptWindowTrimTimer();
       state.scrollToBottomAfterWindow = false;
       return;
     }
@@ -194,7 +262,19 @@
     const mode = payload.mode || "tail";
     const incoming = normalizeTranscriptWindow(payload.window);
     if (!state.snapshot || !state.snapshot.chat) {
-      return;
+      return null;
+    }
+    if (payload.chatId && payload.chatId !== state.snapshot.chat.id) {
+      return null;
+    }
+
+    const pendingRequest = state.pendingTranscriptWindowRequest;
+    if (
+      mode !== "tail"
+      && payload.requestId
+      && (!pendingRequest || payload.requestId !== pendingRequest.id)
+    ) {
+      return null;
     }
 
     if (mode === "tail" || !state.transcriptWindow) {
@@ -202,22 +282,79 @@
       state.loadingBefore = false;
       state.loadingAfter = false;
       state.pendingScrollAnchor = null;
+      clearPendingTranscriptWindowRequest();
       state.scrollToBottomAfterWindow = mode === "tail";
       state.stickToBottom = true;
       state.showScrollToBottom = false;
-      return;
+      return "tail";
     }
 
     if (mode === "before") {
+      state.pendingScrollAnchor = captureTranscriptAnchor(root.querySelector("[data-role='transcript']"), "before") || pendingRequest?.anchor || null;
       state.transcriptWindow = mergeTranscriptBefore(state.transcriptWindow, incoming);
       state.loadingBefore = false;
-      return;
+      clearPendingTranscriptWindowRequest();
+      return "before";
     }
 
     if (mode === "after") {
+      state.pendingScrollAnchor = captureTranscriptAnchor(root.querySelector("[data-role='transcript']"), "after") || pendingRequest?.anchor || null;
       state.transcriptWindow = mergeTranscriptAfter(state.transcriptWindow, incoming);
       state.loadingAfter = false;
+      clearPendingTranscriptWindowRequest();
+      return "after";
     }
+    return null;
+  }
+
+  function transcriptBodyContents() {
+    return `
+      ${renderTranscriptWindow(getTranscriptWindow())}
+      ${state.notice ? `<div class="event">${escapeHtml(state.notice)}</div>` : ""}
+      <div class="transcript-end" data-role="transcript-end"></div>
+    `;
+  }
+
+  function patchTranscriptWindowDom(mode, options) {
+    const body = root.querySelector("[data-role='transcript']");
+    const snapshot = state.snapshot;
+    if (!body || !snapshot || !snapshot.chat || typeof state.bindCommandButtons !== "function") {
+      return false;
+    }
+
+    const previousScrollTop = body.scrollTop;
+    const anchor = state.pendingScrollAnchor || captureTranscriptAnchor(body, mode);
+    state.suppressScrollEvents = true;
+    body.innerHTML = transcriptBodyContents();
+    state.bindCommandButtons(body);
+
+    const end = body.querySelector("[data-role='transcript-end']");
+    if (mode === "tail" || state.scrollToBottomAfterWindow) {
+      state.scrollToBottomAfterWindow = false;
+      body.scrollTop = body.scrollHeight;
+      state.stickToBottom = true;
+    } else if (!restoreTranscriptAnchor(body, anchor)) {
+      body.scrollTop = mode === "before" ? 0 : Math.min(previousScrollTop, body.scrollHeight);
+    }
+
+    state.pendingScrollAnchor = null;
+    state.lastTranscriptScrollTop = body.scrollTop;
+    state.lastTranscriptSignature = transcriptSignature(snapshot);
+    state.lastTranscriptStructureSignature = transcriptStructureSignature(snapshot);
+    requestAnimationFrame(() => {
+      state.suppressScrollEvents = false;
+      state.lastTranscriptScrollTop = body.scrollTop;
+      notifyReadToBottomIfNeeded(body, snapshot);
+      updateScrollToBottomButton(body);
+      if (!options || options.prefetch !== false) {
+        maybeRequestTranscriptWindow(body, {
+          userInitiated: wasRecentTranscriptUserNavigation(),
+          direction: state.lastTranscriptNavigationDirection
+        });
+      }
+      scheduleTranscriptWindowTrim(body);
+    });
+    return true;
   }
 
   function normalizeTranscriptWindow(raw) {
@@ -228,8 +365,8 @@
       items = items.slice(removeCount);
       offset += removeCount;
     }
-    const firstItemId = raw && typeof raw.firstItemId === "string" ? raw.firstItemId : items[0]?.id;
-    const lastItemId = raw && typeof raw.lastItemId === "string" ? raw.lastItemId : items[items.length - 1]?.id;
+    const firstItemId = items[0]?.id;
+    const lastItemId = items[items.length - 1]?.id;
     return {
       items,
       offset,
@@ -260,12 +397,21 @@
     const currentItems = Array.isArray(current.items) ? current.items : [];
     const known = new Set(currentItems.map((item) => item.id));
     const incomingItems = (incoming.items || []).filter((item) => item && !known.has(item.id));
+    if (!incomingItems.length) {
+      return buildClientTranscriptWindow(
+        currentItems,
+        current.offset || 0,
+        Math.max(current.totalCount || 0, incoming.totalCount || 0),
+        incoming.hasBefore && incoming.offset === current.offset,
+        current.hasAfter
+      );
+    }
     let items = [...incomingItems, ...currentItems];
     let offset = incoming.offset || 0;
     let hasBefore = incoming.hasBefore;
     let hasAfter = current.hasAfter;
-    if (items.length > TRANSCRIPT_MAX_RENDERED_ITEMS) {
-      items = items.slice(0, TRANSCRIPT_MAX_RENDERED_ITEMS);
+    if (items.length > TRANSCRIPT_ACTIVE_SCROLL_BUFFER_ITEMS) {
+      items = items.slice(0, TRANSCRIPT_ACTIVE_SCROLL_BUFFER_ITEMS);
       hasAfter = true;
     }
     return buildClientTranscriptWindow(items, offset, Math.max(current.totalCount || 0, incoming.totalCount || 0), hasBefore, hasAfter);
@@ -275,12 +421,21 @@
     const currentItems = Array.isArray(current.items) ? current.items : [];
     const known = new Set(currentItems.map((item) => item.id));
     const incomingItems = (incoming.items || []).filter((item) => item && !known.has(item.id));
+    if (!incomingItems.length) {
+      return buildClientTranscriptWindow(
+        currentItems,
+        current.offset || 0,
+        Math.max(current.totalCount || 0, incoming.totalCount || 0),
+        current.hasBefore,
+        incoming.hasAfter
+      );
+    }
     let items = [...currentItems, ...incomingItems];
     let offset = current.offset || 0;
     let hasBefore = current.hasBefore;
     let hasAfter = incoming.hasAfter;
-    if (items.length > TRANSCRIPT_MAX_RENDERED_ITEMS) {
-      const removeCount = items.length - TRANSCRIPT_MAX_RENDERED_ITEMS;
+    if (items.length > TRANSCRIPT_ACTIVE_SCROLL_BUFFER_ITEMS) {
+      const removeCount = items.length - TRANSCRIPT_ACTIVE_SCROLL_BUFFER_ITEMS;
       items = items.slice(removeCount);
       offset += removeCount;
       hasBefore = true;
@@ -336,6 +491,8 @@
       state.loadingBefore = false;
       state.loadingAfter = false;
       state.pendingScrollAnchor = null;
+      clearPendingTranscriptWindowRequest();
+      clearTranscriptWindowTrimTimer();
       state.scrollToBottomAfterWindow = false;
       state.openMenu = null;
       state.openModelSubmenu = null;
@@ -368,11 +525,7 @@
     root.innerHTML = `
       <main class="app">
         ${chatHeader(snapshot)}
-        <section class="body" data-role="transcript">
-          ${renderTranscriptWindow(getTranscriptWindow())}
-          ${state.notice ? `<div class="event">${escapeHtml(state.notice)}</div>` : ""}
-          <div class="transcript-end" data-role="transcript-end"></div>
-        </section>
+        <section class="body" data-role="transcript">${transcriptBodyContents()}</section>
         ${scrollToBottomButton()}
         ${snapshot.chat.archivedAt ? archivedFooter() : composerFooter(snapshot)}
         ${snapshot.chat.pendingApproval ? approvalModal(snapshot.chat.pendingApproval) : ""}
@@ -385,14 +538,22 @@
     const transcriptChanged = signature !== state.lastTranscriptSignature;
     if (body) {
       body.addEventListener("scroll", () => {
+        const currentScrollTop = body.scrollTop;
         if (state.suppressScrollEvents) {
+          state.lastTranscriptScrollTop = currentScrollTop;
           return;
         }
+        const delta = currentScrollTop - state.lastTranscriptScrollTop;
+        if (Math.abs(delta) > 1) {
+          markTranscriptUserNavigation(delta < 0 ? "before" : "after");
+        }
+        state.lastTranscriptScrollTop = currentScrollTop;
         state.stickToBottom = isAtTranscriptTail(body);
         maybeRequestTranscriptWindow(body, {
           userInitiated: wasRecentTranscriptUserNavigation(),
           direction: state.lastTranscriptNavigationDirection
         });
+        scheduleTranscriptWindowTrim(body);
         notifyReadToBottomIfNeeded(body, snapshot);
         updateScrollToBottomButton(body);
       });
@@ -404,16 +565,22 @@
             userInitiated: true,
             direction: state.lastTranscriptNavigationDirection
           });
+          scheduleTranscriptWindowTrim(body);
           notifyReadToBottomIfNeeded(body, snapshot);
           updateScrollToBottomButton(body);
         });
       });
       body.addEventListener("pointerdown", () => {
-        markTranscriptUserNavigation("both");
+        state.lastTranscriptScrollTop = body.scrollTop;
       });
       requestAnimationFrame(() => {
+        state.suppressScrollEvents = true;
         restoreTranscriptScroll(body, end, previousScrollTop, shouldStickToBottom, transcriptChanged, state.pendingScrollAnchor || previousAnchor);
         state.pendingScrollAnchor = null;
+        state.lastTranscriptScrollTop = body.scrollTop;
+        requestAnimationFrame(() => {
+          state.suppressScrollEvents = false;
+        });
         notifyReadToBottomIfNeeded(body, snapshot);
         updateScrollToBottomButton(body);
       });
@@ -426,7 +593,7 @@
     restorePromptFocus(focusState, snapshot.chat.id);
     syncLiveDurationTimer();
 
-    root.querySelectorAll("[data-command]").forEach((button) => {
+    state.bindCommandButtons = (scope) => scope.querySelectorAll("[data-command]").forEach((button) => {
       button.addEventListener("click", () => {
         const command = button.dataset.command;
         if (command === "chat.cancel") {
@@ -456,7 +623,12 @@
           }
           return;
         }
+        if (command === "chat.attachments.toggle") {
+          toggleMenu("attachments");
+          return;
+        }
         if (command === "chat.attachments.pick") {
+          closeMenus();
           state.attachmentsStatus = "picking";
           vscode.postMessage({
             type: "command",
@@ -466,8 +638,25 @@
           render();
           return;
         }
+        if (command === "chat.attachments.localPick") {
+          state.openMenu = null;
+          state.openModelSubmenu = null;
+          const picker = root.querySelector("[data-role='local-attachment-input']");
+          if (picker) {
+            picker.click();
+          }
+          return;
+        }
+        if (command === "chat.attachment.upload.cancel") {
+          cancelPendingAttachment(button.dataset.uploadId || "");
+          return;
+        }
         if (command === "chat.attachment.remove") {
+          const attachment = getAttachments(snapshot.chat.id).find((candidate) => candidate.id === (button.dataset.attachmentId || ""));
           removeAttachment(snapshot.chat.id, button.dataset.attachmentId || "");
+          if (attachment && attachment.source === "upload") {
+            vscode.postMessage({ type: "command", command: "chat.attachment.discard", payload: { attachment } });
+          }
           render();
           return;
         }
@@ -482,6 +671,11 @@
           const input = root.querySelector("[data-role='prompt-input']");
           const prompt = input ? input.value : "";
           const attachments = getAttachments(snapshot.chat.id);
+          if (getPendingAttachmentUploads(snapshot.chat.id).length) {
+            state.notice = "Дождитесь завершения загрузки файлов.";
+            render();
+            return;
+          }
           if (!prompt.trim() && !attachments.length) {
             state.notice = "Введите сообщение или прикрепите файл.";
             render();
@@ -748,6 +942,7 @@
         vscode.postMessage({ type: "command", command });
       });
     });
+    state.bindCommandButtons(root);
 
     const textarea = root.querySelector("[data-role='prompt-input']");
     if (textarea) {
@@ -779,6 +974,57 @@
             send.click();
           }
         }
+      });
+      textarea.addEventListener("paste", (event) => {
+        const files = filesFromDataTransfer(event.clipboardData);
+        if (!files.length) {
+          return;
+        }
+        event.preventDefault();
+        startLocalAttachmentUploads(snapshot.chat.id, files, "clipboard");
+      });
+    }
+
+    const localAttachmentInput = root.querySelector("[data-role='local-attachment-input']");
+    if (localAttachmentInput) {
+      localAttachmentInput.addEventListener("change", () => {
+        const files = Array.from(localAttachmentInput.files || []);
+        localAttachmentInput.value = "";
+        startLocalAttachmentUploads(snapshot.chat.id, files, "picker");
+      });
+    }
+
+    const composerBox = root.querySelector(".composer-box");
+    if (composerBox) {
+      composerBox.addEventListener("dragenter", (event) => {
+        if (!hasFileTransfer(event.dataTransfer)) {
+          return;
+        }
+        event.preventDefault();
+        composerBox.classList.add("attachment-drag-active");
+      });
+      composerBox.addEventListener("dragover", (event) => {
+        if (!hasFileTransfer(event.dataTransfer)) {
+          return;
+        }
+        event.preventDefault();
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = "copy";
+        }
+      });
+      composerBox.addEventListener("dragleave", (event) => {
+        if (!composerBox.contains(event.relatedTarget)) {
+          composerBox.classList.remove("attachment-drag-active");
+        }
+      });
+      composerBox.addEventListener("drop", (event) => {
+        const files = filesFromDataTransfer(event.dataTransfer);
+        composerBox.classList.remove("attachment-drag-active");
+        if (!files.length) {
+          return;
+        }
+        event.preventDefault();
+        startLocalAttachmentUploads(snapshot.chat.id, files, "drop");
       });
     }
   }
@@ -817,23 +1063,52 @@
   }
 
   function attachmentButton(snapshot) {
-    const count = getAttachments(snapshot.chat.id).length;
-    const disabled = state.attachmentsStatus === "picking" || count >= 10;
-    const title = count >= 10 ? "Достигнут лимит: 10 вложений" : "Прикрепить файл или папку из workspace";
+    const pendingCount = getPendingAttachmentUploads(snapshot.chat.id).length;
+    const count = getAttachments(snapshot.chat.id).length + pendingCount;
+    const disabled = state.attachmentsStatus === "picking" || count >= ATTACHMENT_MAX_COUNT;
+    const title = count >= ATTACHMENT_MAX_COUNT ? `Достигнут лимит: ${ATTACHMENT_MAX_COUNT} вложений` : "Добавить вложение";
     return `
-      <button class="composer-icon-button attachment-trigger" type="button" data-command="chat.attachments.pick" title="${escapeAttribute(title)}" aria-label="${escapeAttribute(title)}" ${disabled ? "disabled" : ""}>
-        ${state.attachmentsStatus === "picking" ? spinnerIcon() : paperclipIcon()}
-      </button>
+      <div class="attachment-selector composer-selector${state.openMenu === "attachments" ? " open" : ""}">
+        <button class="composer-icon-button attachment-trigger" type="button" data-command="chat.attachments.toggle" title="${escapeAttribute(title)}" aria-label="${escapeAttribute(title)}" aria-haspopup="menu" aria-expanded="${state.openMenu === "attachments" ? "true" : "false"}" ${disabled ? "disabled" : ""}>
+          ${state.attachmentsStatus === "picking" ? spinnerIcon() : paperclipIcon()}
+          ${count ? `<span class="attachment-trigger-count" aria-hidden="true">${count}</span>` : ""}
+        </button>
+        <div class="selector-menu attachment-source-menu" role="menu">
+          <button class="selector-option attachment-source-option" type="button" data-command="chat.attachments.pick" role="menuitem">
+            ${folderSourceIcon()}
+            <span><strong>Из проекта</strong><small>Файл или папка из workspace</small></span>
+          </button>
+          <button class="selector-option attachment-source-option" type="button" data-command="chat.attachments.localPick" role="menuitem">
+            ${uploadSourceIcon()}
+            <span><strong>С компьютера</strong><small>Загрузить один или несколько файлов</small></span>
+          </button>
+          <div class="attachment-source-hint">Файлы также можно перетащить или вставить из буфера</div>
+        </div>
+        <input class="attachment-file-input" data-role="local-attachment-input" type="file" multiple tabindex="-1" aria-hidden="true">
+      </div>
     `;
   }
 
   function attachmentTray(chatId) {
     const attachments = getAttachments(chatId);
-    if (!attachments.length) {
+    const pending = getPendingAttachmentUploads(chatId);
+    if (!attachments.length && !pending.length) {
       return "";
     }
     return `
-      <div class="attachment-tray" role="list" aria-label="Вложения сообщения">
+      <div class="attachment-tray" role="list" aria-label="Вложения сообщения" aria-live="polite">
+        ${pending.map((upload) => `
+          <div class="attachment-pill pending" role="listitem" data-upload-progress-id="${escapeAttribute(upload.uploadId)}">
+            <div class="attachment-pending-copy">
+              ${spinnerIcon()}
+              <span class="attachment-copy">
+                <strong>${escapeHtml(upload.name || "Файл")}</strong>
+                <span data-role="attachment-upload-progress">${escapeHtml(formatUploadProgress(upload))}</span>
+              </span>
+            </div>
+            <button class="attachment-remove" type="button" data-command="chat.attachment.upload.cancel" data-upload-id="${escapeAttribute(upload.uploadId)}" title="Отменить загрузку" aria-label="Отменить загрузку ${escapeAttribute(upload.name || "файла")}">${removeIcon()}</button>
+          </div>
+        `).join("")}
         ${attachments.map((attachment) => `
           <div class="attachment-pill ${escapeAttribute(attachment.kind || "file")}" role="listitem">
             <button class="attachment-open" type="button" data-command="chat.attachment.open" data-attachment-id="${escapeAttribute(attachment.id)}" title="Открыть ${escapeAttribute(attachment.displayPath || attachment.name)}">
@@ -1167,6 +1442,204 @@
       : undefined;
   }
 
+  function getPendingAttachmentUploads(chatId) {
+    return Object.values(state.pendingAttachmentUploads)
+      .filter((upload) => upload && upload.chatId === chatId)
+      .sort((left, right) => left.createdAt - right.createdAt);
+  }
+
+  function startLocalAttachmentUploads(chatId, files, origin) {
+    const candidates = Array.isArray(files) ? files.filter((file) => file && typeof file.slice === "function") : [];
+    if (!chatId || !candidates.length) {
+      return;
+    }
+    const used = getAttachments(chatId).length + getPendingAttachmentUploads(chatId).length;
+    const remaining = Math.max(0, ATTACHMENT_MAX_COUNT - used);
+    if (!remaining) {
+      state.notice = `К сообщению можно прикрепить не больше ${ATTACHMENT_MAX_COUNT} объектов.`;
+      render();
+      return;
+    }
+
+    const accepted = [];
+    const rejected = [];
+    candidates.slice(0, remaining).forEach((file, index) => {
+      const image = isImageFile(file);
+      const maxBytes = image ? ATTACHMENT_MAX_IMAGE_BYTES : ATTACHMENT_MAX_FILE_BYTES;
+      if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > maxBytes) {
+        rejected.push(`${file.name || "Файл"}: лимит ${image ? "20" : "50"} МБ`);
+        return;
+      }
+      const uploadId = createClientUploadId();
+      const name = attachmentUploadName(file, origin, index);
+      state.pendingAttachmentUploads[uploadId] = {
+        uploadId,
+        chatId,
+        name,
+        file,
+        sizeBytes: file.size,
+        mimeType: file.type || "application/octet-stream",
+        offset: 0,
+        chunkIndex: 0,
+        status: "preparing",
+        createdAt: Date.now()
+      };
+      accepted.push(uploadId);
+    });
+
+    if (candidates.length > remaining) {
+      rejected.push(`Добавлены первые ${remaining} объектов из-за лимита вложений`);
+    }
+    if (rejected.length) {
+      state.notice = rejected.join(". ");
+    } else {
+      state.notice = "";
+    }
+    if (!accepted.length) {
+      render();
+      return;
+    }
+    render();
+    accepted.forEach((uploadId) => {
+      const upload = state.pendingAttachmentUploads[uploadId];
+      vscode.postMessage({
+        type: "command",
+        command: "chat.attachment.upload.start",
+        payload: {
+          uploadId,
+          chatId,
+          name: upload.name,
+          sizeBytes: upload.sizeBytes,
+          mimeType: upload.mimeType
+        }
+      });
+    });
+  }
+
+  async function sendNextAttachmentChunk(uploadId) {
+    const upload = state.pendingAttachmentUploads[uploadId];
+    if (!upload || upload.status === "reading") {
+      return;
+    }
+    if (upload.offset >= upload.sizeBytes) {
+      upload.status = "finishing";
+      updatePendingAttachmentProgress(uploadId);
+      vscode.postMessage({ type: "command", command: "chat.attachment.upload.complete", payload: { uploadId } });
+      return;
+    }
+
+    upload.status = "reading";
+    try {
+      const end = Math.min(upload.offset + ATTACHMENT_UPLOAD_CHUNK_BYTES, upload.sizeBytes);
+      const bytes = await upload.file.slice(upload.offset, end).arrayBuffer();
+      if (state.pendingAttachmentUploads[uploadId] !== upload) {
+        return;
+      }
+      upload.status = "uploading";
+      vscode.postMessage({
+        type: "command",
+        command: "chat.attachment.upload.chunk",
+        payload: {
+          uploadId,
+          chunkIndex: upload.chunkIndex,
+          data: arrayBufferToBase64(bytes)
+        }
+      });
+    } catch (error) {
+      cancelPendingAttachment(uploadId, false);
+      state.notice = error instanceof Error ? error.message : "Не удалось прочитать локальный файл.";
+      render();
+    }
+  }
+
+  function cancelPendingAttachment(uploadId, notifyServer = true) {
+    if (!uploadId || !state.pendingAttachmentUploads[uploadId]) {
+      return;
+    }
+    delete state.pendingAttachmentUploads[uploadId];
+    if (notifyServer) {
+      vscode.postMessage({ type: "command", command: "chat.attachment.upload.cancel", payload: { uploadId } });
+    }
+    render();
+  }
+
+  function updatePendingAttachmentProgress(uploadId) {
+    const upload = state.pendingAttachmentUploads[uploadId];
+    const row = root.querySelector(`[data-upload-progress-id="${escapeCssValue(uploadId)}"]`);
+    const label = row && row.querySelector("[data-role='attachment-upload-progress']");
+    if (upload && label) {
+      label.textContent = formatUploadProgress(upload);
+    }
+  }
+
+  function formatUploadProgress(upload) {
+    if (upload.status === "preparing") {
+      return "Подготовка...";
+    }
+    if (upload.status === "finishing") {
+      return "Сохраняется...";
+    }
+    const percent = upload.sizeBytes > 0 ? Math.min(100, Math.round(upload.offset / upload.sizeBytes * 100)) : 100;
+    return `Загрузка ${percent}% · ${formatAttachmentBytes(upload.sizeBytes)}`;
+  }
+
+  function formatAttachmentBytes(value) {
+    const bytes = Number(value) || 0;
+    if (bytes < 1024) {
+      return `${bytes} Б`;
+    }
+    if (bytes < 1024 * 1024) {
+      return `${Math.round(bytes / 1024)} КБ`;
+    }
+    return `${(bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} МБ`;
+  }
+
+  function filesFromDataTransfer(transfer) {
+    if (!transfer || !transfer.files) {
+      return [];
+    }
+    return Array.from(transfer.files).filter((file) => file && typeof file.slice === "function");
+  }
+
+  function hasFileTransfer(transfer) {
+    return Boolean(transfer && Array.from(transfer.types || []).includes("Files"));
+  }
+
+  function isImageFile(file) {
+    return String(file.type || "").toLowerCase().startsWith("image/") || /\.(gif|jpe?g|png|webp)$/i.test(file.name || "");
+  }
+
+  function attachmentUploadName(file, origin, index) {
+    const name = String(file.name || "").trim();
+    if (origin === "clipboard" && (!name || /^image\.(png|jpe?g|webp)$/i.test(name))) {
+      const suffix = index ? ` ${index + 1}` : "";
+      const extension = name.includes(".") ? name.slice(name.lastIndexOf(".")) : ".png";
+      return `Снимок из буфера${suffix}${extension}`;
+    }
+    return name || `Локальный файл ${index + 1}`;
+  }
+
+  function createClientUploadId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return `upload-${window.crypto.randomUUID()}`;
+    }
+    return `upload-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function arrayBufferToBase64(value) {
+    const bytes = new Uint8Array(value);
+    const parts = [];
+    const batchSize = 0x8000;
+    for (let index = 0; index < bytes.length; index += batchSize) {
+      parts.push(String.fromCharCode(...bytes.subarray(index, Math.min(index + batchSize, bytes.length))));
+    }
+    return btoa(parts.join(""));
+  }
+
+  function escapeCssValue(value) {
+    return window.CSS && typeof window.CSS.escape === "function" ? window.CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+  }
+
   function isPlanningArmed(chatId) {
     return Boolean(chatId && state.planningArmedByChat[chatId]);
   }
@@ -1496,10 +1969,11 @@
   function sendOrStopButton(snapshot) {
     const chat = snapshot.chat;
     const hasDraft = Boolean(getDraft(chat.id).trim() || getAttachments(chat.id).length);
+    const hasPendingUploads = getPendingAttachmentUploads(chat.id).length > 0;
     const cancellable = chat.status === "running" || chat.status === "waitingApproval" || chat.status === "cancelling";
     if (!cancellable) {
       return `
-        <button class="composer-submit" type="button" data-command="chat.send" title="Отправить" aria-label="Отправить сообщение" ${hasDraft ? "" : "disabled"}>
+        <button class="composer-submit" type="button" data-command="chat.send" title="${hasPendingUploads ? "Дождитесь загрузки файлов" : "Отправить"}" aria-label="${hasPendingUploads ? "Файлы загружаются" : "Отправить сообщение"}" ${hasDraft && !hasPendingUploads ? "" : "disabled"}>
           ${sendIcon()}
         </button>
       `;
@@ -1507,7 +1981,7 @@
     const stopping = chat.status === "cancelling";
     return `
       <div class="running-send-actions">
-        ${hasDraft && !stopping ? followUpSubmitControl(chat) : ""}
+        ${hasDraft && !hasPendingUploads && !stopping ? followUpSubmitControl(chat) : ""}
         <button class="composer-stop${stopping ? " stopping" : ""}" type="button" data-command="chat.cancel" title="${stopping ? "Останавливается" : "Остановить"}" aria-label="${stopping ? "Запрос останавливается" : "Остановить текущий запрос"}" ${stopping ? "disabled" : ""}>
           ${stopIcon()}
         </button>
@@ -1558,6 +2032,14 @@
 
   function paperclipIcon() {
     return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.6 12 21a6 6 0 0 1-8.5-8.5l10-10a4 4 0 0 1 5.7 5.7l-10 10a2 2 0 0 1-2.8-2.8l9.3-9.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+
+  function folderSourceIcon() {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5h6l2-2h9v12a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+
+  function uploadSourceIcon() {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L7.8 8.2M12 4l4.2 4.2M5 14.5v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
 
   function attachmentTypeIcon(kind) {
@@ -2005,7 +2487,9 @@
   }
 
   function renderTranscriptWindow(windowState) {
-    const window = normalizeTranscriptWindow(windowState);
+    const window = windowState && Array.isArray(windowState.items)
+      ? windowState
+      : normalizeTranscriptWindow(windowState);
     const hasItems = Array.isArray(window.items) && window.items.length > 0;
     return `
       ${window.hasBefore ? `<div class="transcript-window-sentinel before" data-role="transcript-before">Загрузить предыдущие сообщения</div>` : ""}
@@ -2185,6 +2669,7 @@
       createdAt: items[0].createdAt,
       updatedAt: items[items.length - 1].updatedAt,
       completedAt: items[items.length - 1].completedAt || items[items.length - 1].updatedAt,
+      __anchorIds: items.map((item) => item.id).filter(Boolean),
       details: items.map(activityDetailFromItem).filter(Boolean)
     };
   }
@@ -2376,7 +2861,7 @@
     const outputPreview = !expanded ? activityOutputPreviewHtml(item) : "";
     const details = expanded ? activityDetailsHtml(item) : "";
     return `
-      <article class="transcript-item activity-row ${escapeAttribute(item.status || "completed")} ${expandable ? "expandable" : ""} ${expanded ? "expanded" : ""}" data-item-id="${escapeAttribute(item.id)}">
+      <article class="transcript-item activity-row ${escapeAttribute(item.status || "completed")} ${expandable ? "expandable" : ""} ${expanded ? "expanded" : ""}" data-item-id="${escapeAttribute(item.id)}"${transcriptAnchorKeysAttribute(item)}>
         <${expandable ? "button" : "div"} class="activity-line" ${expandable ? `type="button" data-command="activity.toggle" data-activity-id="${escapeAttribute(item.id)}" aria-expanded="${expanded ? "true" : "false"}"` : ""}>
           ${activityIcon(item.activityKind)}
           <span class="activity-label">${label}</span>
@@ -3027,36 +3512,78 @@
     return isNearBottom(element) && !(state.transcriptWindow && state.transcriptWindow.hasAfter);
   }
 
-  function captureTranscriptAnchor(body) {
+  function topLevelTranscriptItems(body) {
+    if (!body) {
+      return [];
+    }
+    return Array.from(body.children).filter((item) => item.matches && item.matches(".transcript-item[data-item-id]"));
+  }
+
+  function transcriptElementAnchorKeys(item) {
+    if (!item) {
+      return [];
+    }
+    const keys = [item.dataset.itemId || ""];
+    const encodedKeys = String(item.dataset.anchorKeys || "").split(" ").filter(Boolean);
+    for (const encodedKey of encodedKeys) {
+      try {
+        keys.push(decodeURIComponent(encodedKey));
+      } catch {
+        // Ignore malformed compatibility metadata and keep the primary item id.
+      }
+    }
+    return [...new Set(keys.filter(Boolean))];
+  }
+
+  function transcriptAnchorKeysAttribute(item) {
+    const ids = Array.isArray(item && item.__anchorIds) ? item.__anchorIds.filter(Boolean) : [];
+    return ids.length
+      ? ` data-anchor-keys="${escapeAttribute(ids.map((id) => encodeURIComponent(id)).join(" "))}"`
+      : "";
+  }
+
+  function captureTranscriptAnchor(body, mode) {
     if (!body) {
       return null;
     }
     const bodyRect = body.getBoundingClientRect();
-    const items = Array.from(body.querySelectorAll("[data-item-id]"));
-    for (const item of items) {
-      const rect = item.getBoundingClientRect();
-      if (rect.bottom >= bodyRect.top + 1) {
-        return {
-          id: item.dataset.itemId || "",
-          offset: rect.top - bodyRect.top
-        };
-      }
+    const items = topLevelTranscriptItems(body);
+    const firstVisibleIndex = items.findIndex((item) => item.getBoundingClientRect().bottom >= bodyRect.top + 1);
+    if (firstVisibleIndex < 0) {
+      return null;
     }
-    return null;
+    const startIndex = Math.max(0, firstVisibleIndex - 1);
+    const candidates = items.slice(startIndex, Math.min(items.length, firstVisibleIndex + 9)).map((item) => {
+      const rect = item.getBoundingClientRect();
+      return {
+        keys: transcriptElementAnchorKeys(item),
+        offset: rect.top - bodyRect.top
+      };
+    }).filter((candidate) => candidate.keys.length > 0);
+    return candidates.length ? {
+      mode: mode || "preserve",
+      candidates,
+      scrollTop: body.scrollTop
+    } : null;
   }
 
   function restoreTranscriptAnchor(body, anchor) {
-    if (!body || !anchor || !anchor.id) {
+    if (!body || !anchor || !Array.isArray(anchor.candidates)) {
       return false;
     }
-    const item = Array.from(body.querySelectorAll("[data-item-id]")).find((candidate) => candidate.dataset.itemId === anchor.id);
-    if (!item) {
-      return false;
+    const items = topLevelTranscriptItems(body);
+    for (const candidate of anchor.candidates) {
+      const candidateKeys = new Set(Array.isArray(candidate.keys) ? candidate.keys : []);
+      const item = items.find((element) => transcriptElementAnchorKeys(element).some((key) => candidateKeys.has(key)));
+      if (!item) {
+        continue;
+      }
+      const bodyRect = body.getBoundingClientRect();
+      const rect = item.getBoundingClientRect();
+      body.scrollTop += rect.top - bodyRect.top - candidate.offset;
+      return true;
     }
-    const bodyRect = body.getBoundingClientRect();
-    const rect = item.getBoundingClientRect();
-    body.scrollTop += rect.top - bodyRect.top - anchor.offset;
-    return true;
+    return false;
   }
 
   function markTranscriptUserNavigation(direction) {
@@ -3065,7 +3592,7 @@
   }
 
   function wasRecentTranscriptUserNavigation() {
-    return Date.now() - state.lastTranscriptUserNavigationAt < 900;
+    return Date.now() - state.lastTranscriptUserNavigationAt < 1600;
   }
 
   function maybeRequestTranscriptWindow(body, options) {
@@ -3077,36 +3604,146 @@
     if (!userInitiated) {
       return;
     }
+    if (state.pendingTranscriptWindowRequest || state.loadingBefore || state.loadingAfter) {
+      return;
+    }
 
-    const direction = options && options.direction ? options.direction : "both";
-    const nearBottom = isNearBottom(body);
-    const canLoadBefore = direction !== "after" && (!nearBottom || direction === "before");
-    if (canLoadBefore && body.scrollTop < TRANSCRIPT_LOAD_THRESHOLD && windowState.hasBefore && !state.loadingBefore) {
+    const direction = options && options.direction === "before" ? "before" : "after";
+    const threshold = Math.max(TRANSCRIPT_LOAD_THRESHOLD, Math.min(960, Math.round(body.clientHeight * 0.8)));
+    if (direction === "before" && body.scrollTop < threshold && windowState.hasBefore) {
       const beforeItemId = windowState.firstItemId || windowState.items?.[0]?.id;
       if (beforeItemId) {
-        state.loadingBefore = true;
-        state.pendingScrollAnchor = captureTranscriptAnchor(body);
-        vscode.postMessage({
-          type: "command",
-          command: "chat.transcript.loadBefore",
-          payload: { beforeItemId, count: TRANSCRIPT_PAGE_SIZE }
+        requestTranscriptWindow(body, "before", {
+          beforeItemId,
+          beforeOffset: windowState.offset || 0,
+          count: TRANSCRIPT_PAGE_SIZE
         });
       }
+      return;
     }
 
     const distanceToBottom = body.scrollHeight - body.scrollTop - body.clientHeight;
-    if (direction !== "before" && distanceToBottom < TRANSCRIPT_LOAD_THRESHOLD && windowState.hasAfter && !state.loadingAfter && !state.scrollToBottomAfterWindow) {
+    if (direction === "after" && distanceToBottom < threshold && windowState.hasAfter && !state.scrollToBottomAfterWindow) {
       const afterItemId = windowState.lastItemId || windowState.items?.[windowState.items.length - 1]?.id;
       if (afterItemId) {
-        state.loadingAfter = true;
-        state.pendingScrollAnchor = captureTranscriptAnchor(body);
-        vscode.postMessage({
-          type: "command",
-          command: "chat.transcript.loadAfter",
-          payload: { afterItemId, count: TRANSCRIPT_PAGE_SIZE }
+        requestTranscriptWindow(body, "after", {
+          afterItemId,
+          afterOffset: (windowState.offset || 0) + Math.max(0, (windowState.items?.length || 1) - 1),
+          count: TRANSCRIPT_PAGE_SIZE
         });
       }
     }
+  }
+
+  function requestTranscriptWindow(body, mode, payload) {
+    const requestId = `transcript-window-${state.nextTranscriptWindowRequestId++}`;
+    state.loadingBefore = mode === "before";
+    state.loadingAfter = mode === "after";
+    state.pendingTranscriptWindowRequest = {
+      id: requestId,
+      mode,
+      anchor: captureTranscriptAnchor(body, mode)
+    };
+    setTranscriptSentinelLoading(body, mode, true);
+    if (state.pendingTranscriptWindowTimer) {
+      window.clearTimeout(state.pendingTranscriptWindowTimer);
+    }
+    state.pendingTranscriptWindowTimer = window.setTimeout(() => {
+      if (!state.pendingTranscriptWindowRequest || state.pendingTranscriptWindowRequest.id !== requestId) {
+        return;
+      }
+      state.loadingBefore = false;
+      state.loadingAfter = false;
+      state.pendingTranscriptWindowRequest = null;
+      state.pendingTranscriptWindowTimer = 0;
+      setTranscriptSentinelLoading(root.querySelector("[data-role='transcript']"), mode, false);
+    }, 8000);
+    vscode.postMessage({
+      type: "command",
+      command: mode === "before" ? "chat.transcript.loadBefore" : "chat.transcript.loadAfter",
+      payload: { ...payload, requestId }
+    });
+  }
+
+  function scheduleTranscriptWindowTrim(body) {
+    clearTranscriptWindowTrimTimer();
+    const items = state.transcriptWindow && Array.isArray(state.transcriptWindow.items)
+      ? state.transcriptWindow.items
+      : [];
+    if (!body || items.length <= TRANSCRIPT_MAX_RENDERED_ITEMS) {
+      return;
+    }
+    state.transcriptWindowTrimTimer = window.setTimeout(() => {
+      state.transcriptWindowTrimTimer = 0;
+      if (state.pendingTranscriptWindowRequest || state.loadingBefore || state.loadingAfter) {
+        scheduleTranscriptWindowTrim(root.querySelector("[data-role='transcript']"));
+        return;
+      }
+      trimTranscriptWindowAroundViewport(root.querySelector("[data-role='transcript']"));
+    }, TRANSCRIPT_SCROLL_IDLE_MS);
+  }
+
+  function clearTranscriptWindowTrimTimer() {
+    if (!state.transcriptWindowTrimTimer) {
+      return;
+    }
+    window.clearTimeout(state.transcriptWindowTrimTimer);
+    state.transcriptWindowTrimTimer = 0;
+  }
+
+  function trimTranscriptWindowAroundViewport(body) {
+    const current = state.transcriptWindow;
+    const items = current && Array.isArray(current.items) ? current.items : [];
+    if (!body || items.length <= TRANSCRIPT_MAX_RENDERED_ITEMS) {
+      return;
+    }
+
+    const anchor = captureTranscriptAnchor(body, "preserve");
+    const anchorKeys = new Set(anchor?.candidates?.[0]?.keys || []);
+    let visibleIndex = items.findIndex((item) => anchorKeys.has(item.id));
+    if (visibleIndex < 0) {
+      visibleIndex = Math.min(items.length - 1, Math.max(0, Math.round((body.scrollTop / Math.max(1, body.scrollHeight)) * items.length)));
+    }
+
+    const reserveBefore = state.lastTranscriptNavigationDirection === "before" ? 24 : 88;
+    const maxStart = Math.max(0, items.length - TRANSCRIPT_MAX_RENDERED_ITEMS);
+    const start = Math.min(maxStart, Math.max(0, visibleIndex - reserveBefore));
+    const end = Math.min(items.length, start + TRANSCRIPT_MAX_RENDERED_ITEMS);
+    if (start === 0 && end === items.length) {
+      return;
+    }
+
+    state.pendingScrollAnchor = anchor;
+    state.transcriptWindow = buildClientTranscriptWindow(
+      items.slice(start, end),
+      (current.offset || 0) + start,
+      current.totalCount || items.length,
+      Boolean(current.hasBefore || start > 0),
+      Boolean(current.hasAfter || end < items.length)
+    );
+    patchTranscriptWindowDom("preserve", { prefetch: false });
+  }
+
+  function clearPendingTranscriptWindowRequest() {
+    if (state.pendingTranscriptWindowTimer) {
+      window.clearTimeout(state.pendingTranscriptWindowTimer);
+      state.pendingTranscriptWindowTimer = 0;
+    }
+    state.pendingTranscriptWindowRequest = null;
+  }
+
+  function setTranscriptSentinelLoading(body, mode, loading) {
+    if (!body) {
+      return;
+    }
+    const sentinel = body.querySelector(`[data-role='transcript-${mode}']`);
+    if (!sentinel) {
+      return;
+    }
+    sentinel.classList.toggle("loading", loading);
+    sentinel.textContent = loading
+      ? (mode === "before" ? "Загружаем предыдущие сообщения" : "Загружаем следующие сообщения")
+      : (mode === "before" ? "Загрузить предыдущие сообщения" : "Ниже есть новые сообщения");
   }
 
   function restoreTranscriptScroll(body, end, previousScrollTop, shouldStickToBottom, transcriptChanged, anchor) {
@@ -3117,7 +3754,9 @@
     }
 
     if (!restoreTranscriptAnchor(body, anchor)) {
-      body.scrollTop = Math.min(previousScrollTop, body.scrollHeight);
+      body.scrollTop = anchor && anchor.mode === "before"
+        ? 0
+        : Math.min(previousScrollTop, body.scrollHeight);
     }
     if (transcriptChanged) {
       state.stickToBottom = isAtTranscriptTail(body);

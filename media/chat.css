@@ -200,6 +200,14 @@ textarea {
   overflow: auto;
   min-height: 0;
   overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .notice {
@@ -224,6 +232,34 @@ textarea {
   font-size: 12px;
   line-height: 18px;
   text-align: center;
+  transition: color 120ms ease;
+}
+
+.transcript-window-sentinel.loading::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 7px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: transcript-window-spin 700ms linear infinite;
+}
+
+@keyframes transcript-window-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transcript-window-sentinel {
+    transition: none;
+  }
+
+  .transcript-window-sentinel.loading::before {
+    animation: none;
+  }
 }
 
 .transcript-window-sentinel.after {
@@ -1552,6 +1588,28 @@ button.worklog-line {
   box-shadow: 0 7px 24px rgba(0, 0, 0, 0.1);
 }
 
+.composer-box.attachment-drag-active {
+  position: relative;
+  border-color: var(--vscode-focusBorder, var(--accent));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder, var(--accent)) 24%, transparent), 0 7px 24px rgba(0, 0, 0, 0.1);
+}
+
+.composer-box.attachment-drag-active::after {
+  content: "Добавить файлы";
+  position: absolute;
+  inset: 6px;
+  z-index: 12;
+  border: 1px dashed var(--vscode-focusBorder, var(--accent));
+  border-radius: 7px;
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  background: color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-editor-background)) 92%, transparent);
+  display: grid;
+  place-items: center;
+  font-weight: 650;
+  pointer-events: none;
+}
+
 .attachment-tray {
   padding: 2px 4px 4px;
   display: flex;
@@ -1568,6 +1626,25 @@ button.worklog-line {
   background: var(--vscode-editor-background, var(--vscode-input-background));
   display: inline-flex;
   align-items: stretch;
+}
+
+.attachment-pill.pending {
+  border-style: dashed;
+}
+
+.attachment-pending-copy {
+  min-width: 0;
+  padding: 5px 5px 5px 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.attachment-pending-copy > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  color: var(--vscode-progressBar-background, var(--accent));
 }
 
 .attachment-open {
@@ -1670,6 +1747,94 @@ button.worklog-line {
 .composer-icon-button svg {
   width: 18px;
   height: 18px;
+}
+
+.attachment-trigger {
+  position: relative;
+}
+
+.attachment-trigger-count {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  min-width: 14px;
+  height: 14px;
+  padding-inline: 3px;
+  border: 2px solid var(--vscode-input-background, var(--vscode-editorWidget-background));
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground, #fff);
+  background: var(--vscode-badge-background, var(--accent));
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+.attachment-source-menu {
+  left: 0;
+  min-width: 276px;
+  max-width: min(340px, calc(100vw - 32px));
+}
+
+.attachment-source-option {
+  width: 100%;
+  padding: 8px;
+  border-radius: 7px;
+  align-items: flex-start;
+  text-align: left;
+}
+
+.attachment-source-option:hover,
+.attachment-source-option:focus-visible {
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.14));
+  outline: none;
+}
+
+.attachment-source-option > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin-top: 1px;
+}
+
+.attachment-source-option > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.attachment-source-option strong,
+.attachment-source-option small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-source-option strong {
+  color: var(--vscode-editor-foreground);
+  font-size: 12px;
+}
+
+.attachment-source-option small,
+.attachment-source-hint {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.attachment-source-hint {
+  margin: 5px 8px 2px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  line-height: 1.35;
+}
+
+.attachment-file-input {
+  display: none;
 }
 
 .attachment-spinner {

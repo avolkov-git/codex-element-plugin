@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transcript scroll harness</title>
+  <link rel="stylesheet" href="../media/chat.css">
+  <style>
+    html, body, #root { width: 100%; height: 100%; }
+    body { margin: 0; }
+  </style>
+</head>
+<body class="vscode-light">
+  <div id="root"></div>
+  <script>
+    (() => {
+      const allItems = [];
+      for (let index = 0; index < 1000; index += 1) {
+        const role = index % 2 === 0 ? "user" : "assistant";
+        const repeated = role === "assistant" ? 1 + (index % 5) : 1 + (index % 3);
+        allItems.push({
+          kind: "message",
+          id: `fixture-${index}`,
+          role,
+          text: `${role === "user" ? "Пользователь" : "Codex"} ${index}. ` + "Сообщение разной высоты для проверки стабильного положения при загрузке истории. ".repeat(repeated),
+          status: "complete",
+          createdAt: new Date(Date.now() - (1000 - index) * 1000).toISOString()
+        });
+      }
+
+      function windowSlice(start, end) {
+        const safeStart = Math.max(0, Math.min(start, allItems.length));
+        const safeEnd = Math.max(safeStart, Math.min(end, allItems.length));
+        const items = allItems.slice(safeStart, safeEnd);
+        return {
+          items,
+          offset: safeStart,
+          totalCount: allItems.length,
+          hasBefore: safeStart > 0,
+          hasAfter: safeEnd < allItems.length,
+          firstItemId: items[0]?.id,
+          lastItemId: items[items.length - 1]?.id
+        };
+      }
+
+      function snapshot() {
+        return {
+          kind: "chat",
+          version: 1,
+          chatHeaderMode: "collapsed",
+          chat: {
+            id: "fixture-chat",
+            kind: "project",
+            title: "Проверка большой истории",
+            status: "idle",
+            archivedAt: null,
+            hasUnread: false,
+            accessMode: "workspace-write",
+            modelId: null,
+            modelLabel: "Авто",
+            effort: "medium",
+            speed: "standard",
+            rulesEnabled: true,
+            queuedMessages: [],
+            pendingApproval: null
+          },
+          auth: { status: "authenticated", accountLabel: "fixture", accountType: "chatgpt" },
+          runtime: { status: "running", label: "Backend запущен" },
+          docs: { status: "ready", label: "Документация готова" },
+          projectContext: { status: "ready", label: "Проект проиндексирован" },
+          rulesContext: { status: "active", label: "Правила активны" },
+          contextWindow: { status: "unknown", usedTokens: null, maxTokens: null, usedPercent: null },
+          modelOptions: [{ id: null, label: "Авто" }],
+          modelOptionsStatus: "ready",
+          transcriptWindow: windowSlice(880, 1000)
+        };
+      }
+
+      window.acquireVsCodeApi = () => ({
+        setState() {},
+        postMessage(message) {
+          if (message.type === "ready") {
+            setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "chat.snapshot", snapshot: snapshot() } })), 0);
+            return;
+          }
+          if (message.type !== "command") return;
+          const payload = message.payload || {};
+          if (message.command === "chat.transcript.loadBefore") {
+            const index = allItems.findIndex((item) => item.id === payload.beforeItemId);
+            const boundary = index >= 0 ? index : Number(payload.beforeOffset) || 0;
+            setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: {
+              type: "event",
+              event: "chat.transcript.window",
+              payload: {
+                mode: "before",
+                chatId: "fixture-chat",
+                requestId: payload.requestId,
+                window: windowSlice(boundary - Number(payload.count || 20), boundary)
+              }
+            } })), 90);
+          }
+          if (message.command === "chat.transcript.loadAfter") {
+            const index = allItems.findIndex((item) => item.id === payload.afterItemId);
+            const boundary = index >= 0 ? index : Number(payload.afterOffset) || 0;
+            setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: {
+              type: "event",
+              event: "chat.transcript.window",
+              payload: {
+                mode: "after",
+                chatId: "fixture-chat",
+                requestId: payload.requestId,
+                window: windowSlice(boundary + 1, boundary + 1 + Number(payload.count || 20))
+              }
+            } })), 90);
+          }
+        }
+      });
+      window.__codexElementWebviewAssetMode = "external";
+    })();
+  </script>
+  <script src="../media/chat.js"></script>
+</body>
+</html>

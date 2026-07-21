@@ -1,8 +1,15 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.StateStore = exports.TRANSCRIPT_PAGE_SIZE = exports.TRANSCRIPT_INITIAL_WINDOW_SIZE = void 0;
-exports.TRANSCRIPT_INITIAL_WINDOW_SIZE = 40;
-exports.TRANSCRIPT_PAGE_SIZE = 20;
+exports.StateStore = exports.TRANSCRIPT_MAX_WINDOW_REQUEST_SIZE = exports.TRANSCRIPT_PAGE_SIZE = exports.TRANSCRIPT_INITIAL_WINDOW_SIZE = void 0;
+exports.TRANSCRIPT_INITIAL_WINDOW_SIZE = 120;
+exports.TRANSCRIPT_PAGE_SIZE = 40;
+exports.TRANSCRIPT_MAX_WINDOW_REQUEST_SIZE = 200;
+function normalizeTranscriptBoundaryOffset(value, transcriptLength) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return -1;
+    }
+    return Math.max(0, Math.min(Math.trunc(value), Math.max(0, transcriptLength - 1)));
+}
 const FALLBACK_MODEL_OPTIONS = [
     { id: null, label: "Авто", description: "Модель по умолчанию Codex" }
 ];
@@ -174,20 +181,26 @@ class StateStore {
         const safeCount = normalizeTranscriptWindowCount(count, exports.TRANSCRIPT_INITIAL_WINDOW_SIZE);
         return this.buildTranscriptWindow(chatId, Math.max(0, transcript.length - safeCount), transcript.length);
     }
-    getTranscriptBefore(chatId, beforeItemId, count = exports.TRANSCRIPT_PAGE_SIZE) {
+    getTranscriptBefore(chatId, beforeItemId, count = exports.TRANSCRIPT_PAGE_SIZE, beforeOffset) {
         const transcript = this.transcripts.get(chatId) ?? [];
-        const index = transcript.findIndex((item) => item.id === beforeItemId);
+        const itemIndex = transcript.findIndex((item) => item.id === beforeItemId);
+        const index = itemIndex >= 0
+            ? itemIndex
+            : normalizeTranscriptBoundaryOffset(beforeOffset, transcript.length);
         if (index < 0) {
-            return this.getTranscriptTail(chatId, count);
+            return this.buildTranscriptWindow(chatId, 0, 0);
         }
         const safeCount = normalizeTranscriptWindowCount(count, exports.TRANSCRIPT_PAGE_SIZE);
         return this.buildTranscriptWindow(chatId, Math.max(0, index - safeCount), index);
     }
-    getTranscriptAfter(chatId, afterItemId, count = exports.TRANSCRIPT_PAGE_SIZE) {
+    getTranscriptAfter(chatId, afterItemId, count = exports.TRANSCRIPT_PAGE_SIZE, afterOffset) {
         const transcript = this.transcripts.get(chatId) ?? [];
-        const index = transcript.findIndex((item) => item.id === afterItemId);
+        const itemIndex = transcript.findIndex((item) => item.id === afterItemId);
+        const index = itemIndex >= 0
+            ? itemIndex
+            : normalizeTranscriptBoundaryOffset(afterOffset, transcript.length);
         if (index < 0) {
-            return this.getTranscriptTail(chatId, count);
+            return this.buildTranscriptWindow(chatId, transcript.length, transcript.length);
         }
         const safeCount = normalizeTranscriptWindowCount(count, exports.TRANSCRIPT_PAGE_SIZE);
         return this.buildTranscriptWindow(chatId, index + 1, Math.min(transcript.length, index + 1 + safeCount));
@@ -1093,7 +1106,7 @@ function normalizeTranscriptWindowCount(count, fallback) {
     if (!Number.isFinite(count)) {
         return fallback;
     }
-    return Math.max(1, Math.min(40, Math.floor(count)));
+    return Math.max(1, Math.min(exports.TRANSCRIPT_MAX_WINDOW_REQUEST_SIZE, Math.floor(count)));
 }
 function mergeActivityDetails(existing, next) {
     if (!existing?.length) {

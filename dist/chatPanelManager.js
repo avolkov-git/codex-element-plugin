@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ChatPanelManager = exports.CHAT_PANEL_VIEW_TYPE = void 0;
 const vscode = __importStar(require("vscode"));
+const markdownFileLink_1 = require("./markdownFileLink");
 const panelIcon_1 = require("./panelIcon");
 const webviewHtml_1 = require("./webviewHtml");
 exports.CHAT_PANEL_VIEW_TYPE = "codexElement.chatPanel";
@@ -152,17 +153,68 @@ class ChatPanelManager {
             return;
         }
         if (message.command === "chat.attachments.pick") {
+            const chatId = this.state.getActiveChatId();
+            if (!chatId) {
+                return;
+            }
             try {
                 const attachments = await this.handlers.pickAttachments(isObject(message.payload) ? message.payload.attachments : []);
-                await panel.webview.postMessage({ type: "event", event: "chat.attachments.selected", payload: attachments });
+                await panel.webview.postMessage({ type: "event", event: "chat.attachments.selected", payload: { chatId, attachments } });
             }
             catch (error) {
                 await panel.webview.postMessage({
                     type: "event",
                     event: "chat.attachments.error",
-                    payload: error instanceof Error ? error.message : "Не удалось прикрепить файл."
+                    payload: { chatId, message: error instanceof Error ? error.message : "Не удалось прикрепить файл." }
                 });
             }
+            return;
+        }
+        if (message.command === "chat.attachment.upload.start") {
+            const payload = isObject(message.payload) ? message.payload : {};
+            const chatId = typeof payload.chatId === "string" ? payload.chatId : this.state.getActiveChatId();
+            if (!chatId || !this.state.getChat(chatId)) {
+                return;
+            }
+            try {
+                const result = await this.handlers.startAttachmentUpload(chatId, payload);
+                await panel.webview.postMessage({ type: "event", event: "chat.attachment.upload.ready", payload: { chatId, ...result } });
+            }
+            catch (error) {
+                await this.postAttachmentUploadError(panel, chatId, payload, error);
+            }
+            return;
+        }
+        if (message.command === "chat.attachment.upload.chunk") {
+            try {
+                const result = await this.handlers.appendAttachmentUpload(message.payload);
+                await panel.webview.postMessage({ type: "event", event: "chat.attachment.upload.chunkAccepted", payload: result });
+            }
+            catch (error) {
+                await this.handlers.cancelAttachmentUpload(message.payload).catch(() => undefined);
+                await this.postAttachmentUploadError(panel, "", message.payload, error);
+            }
+            return;
+        }
+        if (message.command === "chat.attachment.upload.complete") {
+            try {
+                const result = await this.handlers.completeAttachmentUpload(message.payload);
+                await panel.webview.postMessage({ type: "event", event: "chat.attachment.upload.completed", payload: result });
+            }
+            catch (error) {
+                await this.handlers.cancelAttachmentUpload(message.payload).catch(() => undefined);
+                await this.postAttachmentUploadError(panel, "", message.payload, error);
+            }
+            return;
+        }
+        if (message.command === "chat.attachment.upload.cancel") {
+            await this.handlers.cancelAttachmentUpload(message.payload).catch(() => undefined);
+            return;
+        }
+        if (message.command === "chat.attachment.discard") {
+            await this.handlers.discardAttachment(isObject(message.payload) ? message.payload.attachment : undefined).catch((error) => {
+                this.logger.warn(`Managed attachment cleanup failed: ${error instanceof Error ? error.message : "unknown error"}.`);
+            });
             return;
         }
         if (message.command === "chat.attachment.open") {
@@ -181,6 +233,8 @@ class ChatPanelManager {
         if (message.command === "chat.transcript.loadBefore") {
             const chatId = this.state.getActiveChatId();
             const beforeItemId = isObject(message.payload) && typeof message.payload.beforeItemId === "string" ? message.payload.beforeItemId : "";
+            const requestId = isObject(message.payload) && typeof message.payload.requestId === "string" ? message.payload.requestId : "";
+            const beforeOffset = isObject(message.payload) && typeof message.payload.beforeOffset === "number" ? message.payload.beforeOffset : undefined;
             if (!chatId || !beforeItemId) {
                 return;
             }
@@ -189,7 +243,9 @@ class ChatPanelManager {
                 event: "chat.transcript.window",
                 payload: {
                     mode: "before",
-                    window: this.state.getTranscriptBefore(chatId, beforeItemId, isObject(message.payload) ? parseTranscriptCount(message.payload.count) : undefined)
+                    chatId,
+                    requestId,
+                    window: this.state.getTranscriptBefore(chatId, beforeItemId, isObject(message.payload) ? parseTranscriptCount(message.payload.count) : undefined, beforeOffset)
                 }
             });
             return;
@@ -197,6 +253,8 @@ class ChatPanelManager {
         if (message.command === "chat.transcript.loadAfter") {
             const chatId = this.state.getActiveChatId();
             const afterItemId = isObject(message.payload) && typeof message.payload.afterItemId === "string" ? message.payload.afterItemId : "";
+            const requestId = isObject(message.payload) && typeof message.payload.requestId === "string" ? message.payload.requestId : "";
+            const afterOffset = isObject(message.payload) && typeof message.payload.afterOffset === "number" ? message.payload.afterOffset : undefined;
             if (!chatId || !afterItemId) {
                 return;
             }
@@ -205,7 +263,9 @@ class ChatPanelManager {
                 event: "chat.transcript.window",
                 payload: {
                     mode: "after",
-                    window: this.state.getTranscriptAfter(chatId, afterItemId, isObject(message.payload) ? parseTranscriptCount(message.payload.count) : undefined)
+                    chatId,
+                    requestId,
+                    window: this.state.getTranscriptAfter(chatId, afterItemId, isObject(message.payload) ? parseTranscriptCount(message.payload.count) : undefined, afterOffset)
                 }
             });
             return;
@@ -485,6 +545,18 @@ class ChatPanelManager {
             payload: `Команда ${message.command} пока не подключена.`
         });
     }
+    async postAttachmentUploadError(panel, chatId, value, error) {
+        const payload = isObject(value) ? value : {};
+        await panel.webview.postMessage({
+            type: "event",
+            event: "chat.attachment.upload.error",
+            payload: {
+                chatId,
+                uploadId: typeof payload.uploadId === "string" ? payload.uploadId : "",
+                message: error instanceof Error ? error.message : "Не удалось загрузить файл."
+            }
+        });
+    }
     parseSelectedSkills(payload) {
         if (!isObject(payload) || !Array.isArray(payload.skills) || !this.skillOptions.length) {
             return [];
@@ -549,18 +621,40 @@ async function openMarkdownTarget(rawTarget) {
         await vscode.env.openExternal(vscode.Uri.parse(target));
         return;
     }
-    const fileUri = markdownTargetToFileUri(target);
+    const parsedTarget = (0, markdownFileLink_1.parseMarkdownFileTarget)(target);
+    const fileUri = await resolveMarkdownFileUri(parsedTarget.path);
     if (!fileUri) {
         vscode.window.showWarningMessage("Не удалось открыть ссылку из ответа Codex.");
         return;
     }
     try {
         const document = await vscode.workspace.openTextDocument(fileUri);
-        await vscode.window.showTextDocument(document, { preview: true });
+        const line = Math.min(Math.max(0, (parsedTarget.line ?? 1) - 1), Math.max(0, document.lineCount - 1));
+        const column = Math.min(Math.max(0, (parsedTarget.column ?? 1) - 1), document.lineAt(line).range.end.character);
+        const position = new vscode.Position(line, column);
+        await vscode.window.showTextDocument(document, {
+            preview: true,
+            selection: new vscode.Range(position, position)
+        });
     }
     catch {
-        vscode.window.showWarningMessage(`Не удалось открыть файл: ${fileUri.fsPath || target}`);
+        vscode.window.showWarningMessage(`Не удалось открыть файл: ${fileUri.fsPath || parsedTarget.path}`);
     }
+}
+async function resolveMarkdownFileUri(target) {
+    const directUri = markdownTargetToFileUri(target);
+    if (directUri && await isFile(directUri)) {
+        return directUri;
+    }
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        for (const relativePath of (0, markdownFileLink_1.workspaceRelativePathCandidates)(target, folder.name)) {
+            const candidate = vscode.Uri.joinPath(folder.uri, ...relativePath.split("/"));
+            if (await isFile(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    return directUri;
 }
 function markdownTargetToFileUri(target) {
     if (/^[a-zA-Z]:[\\/]/.test(target) || /^[a-zA-Z]:\//.test(target)) {
@@ -573,10 +667,20 @@ function markdownTargetToFileUri(target) {
         const uri = vscode.Uri.parse(target);
         return uri.scheme === "file" ? uri : undefined;
     }
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)) {
+        return undefined;
+    }
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
-    return workspaceRoot && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)
-        ? vscode.Uri.joinPath(workspaceRoot, target)
-        : undefined;
+    return workspaceRoot ? vscode.Uri.joinPath(workspaceRoot, ...target.replace(/\\/g, "/").split("/").filter(Boolean)) : undefined;
+}
+async function isFile(uri) {
+    try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        return (stat.type & vscode.FileType.File) !== 0;
+    }
+    catch {
+        return false;
+    }
 }
 function decodeMarkdownTarget(value) {
     try {

@@ -50,7 +50,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const contextRouter = new ContextRouterService();
   const baseContext = new BaseContextService(context, logger);
   const diagnosticsContext = new DiagnosticsContextService(logger);
-  const attachments = new ChatAttachmentService(logger);
+  const attachments = new ChatAttachmentService(logger, path.join(settings.getConfigRoot(), "attachments"));
   const diffArtifacts = new DiffArtifactService(logger);
   const docsCorpusContext = new DocsContextService(settings, logger);
   const nativeContextTools = new NativeContextToolLoopService(logger);
@@ -70,7 +70,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const docsNormalizer = new DocsNormalizerService(context, settings, logger);
   const ripgrepInstaller = new RipgrepInstallerService(settings, logger);
   const history = new ChatHistoryService(context, settings.getConfigRoot(), logger);
-  context.subscriptions.push(history, projectContext, diffArtifacts);
+  context.subscriptions.push(history, projectContext, diffArtifacts, attachments);
   let historyProfileId: string | undefined;
   let sidebar: SidebarProvider | undefined;
   let runtime: CodexRuntimeController;
@@ -110,6 +110,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     pickAttachments: (existing: unknown) => attachments.pick(existing),
     resolveAttachments: (value: unknown) => attachments.resolve(value),
     openAttachment: (value: unknown) => attachments.open(value),
+    startAttachmentUpload: (chatId: string, value: unknown) => attachments.beginUpload(chatId, value),
+    appendAttachmentUpload: (value: unknown) => attachments.appendUploadChunk(value),
+    completeAttachmentUpload: (value: unknown) => attachments.completeUpload(value),
+    cancelAttachmentUpload: (value: unknown) => attachments.cancelUpload(value),
+    discardAttachment: (value: unknown) => attachments.discard(value),
     removeQueuedPrompt: (chatId: string, messageId: string) => runtime.removeQueuedPrompt(chatId, messageId),
     moveQueuedPrompt: (chatId: string, messageId: string, direction: "up" | "down") => runtime.moveQueuedPrompt(chatId, messageId, direction),
     cancelTurn: async (chatId: string) => runtime.cancelTurn(chatId),
@@ -293,7 +298,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     renameChat: async (chatId: string): Promise<void> => renameChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
     archiveChat: async (chatId: string): Promise<void> => archiveChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
     restoreChat: async (chatId: string): Promise<void> => restoreChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
-    deleteChat: async (chatId: string): Promise<void> => deleteChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
+    deleteChat: async (chatId: string): Promise<void> => deleteChat(chatId, state, sidebar, chatPanels, attachments, logger, ensureHistoryLoaded),
     openSettings: async () => settingsPanels.open(),
     openLogs: () => logger.show(),
     restoreAuth: async () => runtime.restoreAccountIfAvailable(),
@@ -581,6 +586,7 @@ async function deleteChat(
   state: StateStore,
   sidebar: SidebarProvider | undefined,
   chatPanels: ChatPanelManager,
+  attachments: ChatAttachmentService,
   logger: Logger,
   ensureHistoryLoaded: () => Promise<void>
 ): Promise<void> {
@@ -611,6 +617,12 @@ async function deleteChat(
   if (!state.deleteChat(chatId)) {
     vscode.window.showWarningMessage("Чат не найден или уже удален.");
     return;
+  }
+
+  try {
+    await attachments.deleteChat(chatId);
+  } catch (error) {
+    logger.warn(`Deleted chat attachment cleanup failed: ${error instanceof Error ? error.message : "unknown error"}.`);
   }
 
   logger.info(`Deleted archived chat from local history: ${chatId}.`);

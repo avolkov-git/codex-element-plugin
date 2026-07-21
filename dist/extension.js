@@ -83,7 +83,7 @@ async function activate(context) {
     const contextRouter = new contextRouterService_1.ContextRouterService();
     const baseContext = new baseContextService_1.BaseContextService(context, logger);
     const diagnosticsContext = new diagnosticsContextService_1.DiagnosticsContextService(logger);
-    const attachments = new chatAttachmentService_1.ChatAttachmentService(logger);
+    const attachments = new chatAttachmentService_1.ChatAttachmentService(logger, path.join(settings.getConfigRoot(), "attachments"));
     const diffArtifacts = new diffArtifactService_1.DiffArtifactService(logger);
     const docsCorpusContext = new docsContextService_1.DocsContextService(settings, logger);
     const nativeContextTools = new nativeContextToolLoopService_1.NativeContextToolLoopService(logger);
@@ -103,7 +103,7 @@ async function activate(context) {
     const docsNormalizer = new docsNormalizerService_1.DocsNormalizerService(context, settings, logger);
     const ripgrepInstaller = new ripgrepInstallerService_1.RipgrepInstallerService(settings, logger);
     const history = new chatHistoryService_1.ChatHistoryService(context, settings.getConfigRoot(), logger);
-    context.subscriptions.push(history, projectContext, diffArtifacts);
+    context.subscriptions.push(history, projectContext, diffArtifacts, attachments);
     let historyProfileId;
     let sidebar;
     let runtime;
@@ -132,6 +132,11 @@ async function activate(context) {
         pickAttachments: (existing) => attachments.pick(existing),
         resolveAttachments: (value) => attachments.resolve(value),
         openAttachment: (value) => attachments.open(value),
+        startAttachmentUpload: (chatId, value) => attachments.beginUpload(chatId, value),
+        appendAttachmentUpload: (value) => attachments.appendUploadChunk(value),
+        completeAttachmentUpload: (value) => attachments.completeUpload(value),
+        cancelAttachmentUpload: (value) => attachments.cancelUpload(value),
+        discardAttachment: (value) => attachments.discard(value),
         removeQueuedPrompt: (chatId, messageId) => runtime.removeQueuedPrompt(chatId, messageId),
         moveQueuedPrompt: (chatId, messageId, direction) => runtime.moveQueuedPrompt(chatId, messageId, direction),
         cancelTurn: async (chatId) => runtime.cancelTurn(chatId),
@@ -312,7 +317,7 @@ async function activate(context) {
         renameChat: async (chatId) => renameChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
         archiveChat: async (chatId) => archiveChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
         restoreChat: async (chatId) => restoreChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
-        deleteChat: async (chatId) => deleteChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded),
+        deleteChat: async (chatId) => deleteChat(chatId, state, sidebar, chatPanels, attachments, logger, ensureHistoryLoaded),
         openSettings: async () => settingsPanels.open(),
         openLogs: () => logger.show(),
         restoreAuth: async () => runtime.restoreAccountIfAvailable(),
@@ -501,7 +506,7 @@ async function restoreChat(chatId, state, sidebar, chatPanels, logger, rulesCont
     sidebar?.postSnapshot();
     chatPanels.openChat(chatId);
 }
-async function deleteChat(chatId, state, sidebar, chatPanels, logger, ensureHistoryLoaded) {
+async function deleteChat(chatId, state, sidebar, chatPanels, attachments, logger, ensureHistoryLoaded) {
     await ensureHistoryLoaded();
     const chat = state.getChat(chatId);
     if (!chat) {
@@ -523,6 +528,12 @@ async function deleteChat(chatId, state, sidebar, chatPanels, logger, ensureHist
     if (!state.deleteChat(chatId)) {
         vscode.window.showWarningMessage("Чат не найден или уже удален.");
         return;
+    }
+    try {
+        await attachments.deleteChat(chatId);
+    }
+    catch (error) {
+        logger.warn(`Deleted chat attachment cleanup failed: ${error instanceof Error ? error.message : "unknown error"}.`);
     }
     logger.info(`Deleted archived chat from local history: ${chatId}.`);
     sidebar?.postSnapshot();

@@ -7,8 +7,16 @@ type AuthPatch = Omit<Partial<SidebarSnapshot["auth"]>, "deviceCode" | "apiKey">
 
 export type StateMutationMode = "debounced" | "immediate";
 
-export const TRANSCRIPT_INITIAL_WINDOW_SIZE = 40;
-export const TRANSCRIPT_PAGE_SIZE = 20;
+export const TRANSCRIPT_INITIAL_WINDOW_SIZE = 120;
+export const TRANSCRIPT_PAGE_SIZE = 40;
+export const TRANSCRIPT_MAX_WINDOW_REQUEST_SIZE = 200;
+
+function normalizeTranscriptBoundaryOffset(value: number | undefined, transcriptLength: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return -1;
+  }
+  return Math.max(0, Math.min(Math.trunc(value), Math.max(0, transcriptLength - 1)));
+}
 
 const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
   { id: null, label: "Авто", description: "Модель по умолчанию Codex" }
@@ -202,22 +210,28 @@ export class StateStore {
     return this.buildTranscriptWindow(chatId, Math.max(0, transcript.length - safeCount), transcript.length);
   }
 
-  getTranscriptBefore(chatId: string, beforeItemId: string, count = TRANSCRIPT_PAGE_SIZE): ChatTranscriptWindow {
+  getTranscriptBefore(chatId: string, beforeItemId: string, count = TRANSCRIPT_PAGE_SIZE, beforeOffset?: number): ChatTranscriptWindow {
     const transcript = this.transcripts.get(chatId) ?? [];
-    const index = transcript.findIndex((item) => item.id === beforeItemId);
+    const itemIndex = transcript.findIndex((item) => item.id === beforeItemId);
+    const index = itemIndex >= 0
+      ? itemIndex
+      : normalizeTranscriptBoundaryOffset(beforeOffset, transcript.length);
     if (index < 0) {
-      return this.getTranscriptTail(chatId, count);
+      return this.buildTranscriptWindow(chatId, 0, 0);
     }
 
     const safeCount = normalizeTranscriptWindowCount(count, TRANSCRIPT_PAGE_SIZE);
     return this.buildTranscriptWindow(chatId, Math.max(0, index - safeCount), index);
   }
 
-  getTranscriptAfter(chatId: string, afterItemId: string, count = TRANSCRIPT_PAGE_SIZE): ChatTranscriptWindow {
+  getTranscriptAfter(chatId: string, afterItemId: string, count = TRANSCRIPT_PAGE_SIZE, afterOffset?: number): ChatTranscriptWindow {
     const transcript = this.transcripts.get(chatId) ?? [];
-    const index = transcript.findIndex((item) => item.id === afterItemId);
+    const itemIndex = transcript.findIndex((item) => item.id === afterItemId);
+    const index = itemIndex >= 0
+      ? itemIndex
+      : normalizeTranscriptBoundaryOffset(afterOffset, transcript.length);
     if (index < 0) {
-      return this.getTranscriptTail(chatId, count);
+      return this.buildTranscriptWindow(chatId, transcript.length, transcript.length);
     }
 
     const safeCount = normalizeTranscriptWindowCount(count, TRANSCRIPT_PAGE_SIZE);
@@ -1266,7 +1280,7 @@ function normalizeTranscriptWindowCount(count: number, fallback: number): number
   if (!Number.isFinite(count)) {
     return fallback;
   }
-  return Math.max(1, Math.min(40, Math.floor(count)));
+  return Math.max(1, Math.min(TRANSCRIPT_MAX_WINDOW_REQUEST_SIZE, Math.floor(count)));
 }
 
 function mergeActivityDetails(existing: ChatActivityDetail[] | undefined, next: ChatActivityDetail[] | undefined): ChatActivityDetail[] | undefined {
