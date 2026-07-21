@@ -18,6 +18,8 @@ jobs:
     name: Package Windows and Linux x64
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      RELEASE_DIR: ${{ runner.temp }}/codex-plugin-release
 
     steps:
       - name: Check out source without the full LFS matrix
@@ -66,13 +68,13 @@ jobs:
           git diff --check
 
       - name: Build platform packages
-        run: node scripts/package-platform-releases.js --output ./release
+        run: node scripts/package-platform-releases.js --output "${RELEASE_DIR}"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: codex-element-${{ github.ref_name }}
-          path: release/*
+          path: ${{ runner.temp }}/codex-plugin-release/*
           if-no-files-found: error
           retention-days: 14
 
@@ -83,12 +85,12 @@ jobs:
         shell: bash
         run: |
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" release/* --clobber
+            gh release upload "${GITHUB_REF_NAME}" "${RELEASE_DIR}"/* --clobber
             gh release edit "${GITHUB_REF_NAME}" \
               --title "Codex for 1C: Element ${GITHUB_REF_NAME#v}" \
-              --notes-file release/README_RELEASE.md
+              --notes-file "${RELEASE_DIR}/README_RELEASE.md"
           else
-            gh release create "${GITHUB_REF_NAME}" release/* \
+            gh release create "${GITHUB_REF_NAME}" "${RELEASE_DIR}"/* \
               --title "Codex for 1C: Element ${GITHUB_REF_NAME#v}" \
-              --notes-file release/README_RELEASE.md
+              --notes-file "${RELEASE_DIR}/README_RELEASE.md"
           fi
