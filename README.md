@@ -1,27 +1,164 @@
 # Codex for 1C: Element
 
-Новый clean-room plugin project для 1C: Element.
+Codex for 1C: Element добавляет Codex в IDE 1C: Element. Плагин управляет чатами, контекстом проекта и документации, правами на изменение файлов, MCP-серверами и навыками. Runtime работает через поставляемый вместе с плагином `codex app-server`.
 
-Этот каталог является будущим deploy payload: его содержимое должно переноситься в `/plugins` серверного bundle Element.
+- Текущая версия плагина: `0.1.79`
+- Базовая версия Codex CLI/app-server: `0.144.5`
+- Поддерживаемые платформы: Windows, Linux и macOS на x64 и arm64
+- [Релизы](https://github.com/avolkov-git/codex-element-plugin/releases)
 
-На старте здесь нет кода старой версии. Разработка будет идти маленькими проверяемыми итерациями.
+## Возможности
 
-## Правила текущей версии
+### Чаты и выполнение задач
 
-- Не запускать `codex.exe` на activation.
-- Использовать webview sidebar с postMessage-состоянием.
-- Чаты открывать в отдельных workspace webview panels.
-- Поддерживать serializer для восстановления chat panels после reload.
-- Хранить пользовательские данные вне plugin directory.
-- Перед каждой итерацией фиксировать пользовательский план проверки.
+- Проектные и общие чаты с отдельной историей и настройками модели.
+- Режимы доступа `Только чтение`, `Подтверждение` и `Полный доступ`.
+- Режим планирования с уточняющими вопросами и карточкой готового плана.
+- Остановка активного запроса, очередь сообщений и отправка рекомендации в текущий turn.
+- Popup подтверждения для операций, которым требуется разрешение.
+- Архивирование, восстановление и полное удаление чатов.
 
-## Runtime Binaries
+### Контекст
 
-Поставочный каталог должен содержать реальный `codex` runtime под целевую платформу. Git LFS pointer вместо бинарника считается ошибкой поставки.
+- Индекс проекта с поиском по файлам, чанкам и символам.
+- Поиск по нормализованной документации и server docs.
+- Правила проекта из `.local-codex/rules.md`.
+- Базовые правила языка 1C: Element из поставки плагина.
+- Контекст открытого файла, выделения и ошибок IDE.
+- Управляемый tool-loop для документации, проекта и диагностик.
+- Планировщик бюджета, который ограничивает объем служебного контекста.
 
-Текущая protocol baseline плагина: **Codex CLI/app-server 0.144.5**. Все platform runtime в одном release должны иметь эту же версию. Смешивать runtime разных версий нельзя: методы авторизации, sandbox payload, model metadata и lifecycle notifications меняются вместе с app-server.
+Плагин не добавляет проект и документацию к бытовым сообщениям. Технический запрос в проектном чате получает подходящие фрагменты. Общий чат не получает проектный контекст без явного запроса.
 
-Целевой layout:
+### Transcript
+
+- Markdown, таблицы, блоки кода и подсветка XBSL/YAML.
+- Ссылки на файлы workspace с переходом к строке и колонке.
+- Сгруппированный журнал поисков, команд, чтения и изменений.
+- Карточки diff с просмотром отдельных файлов и открытием native diff editor.
+- Оконный рендер больших историй без загрузки всего transcript в DOM.
+- Вложения из workspace, локального компьютера, drag-and-drop и буфера обмена.
+
+### Интеграции
+
+- Локальные STDIO и удаленные HTTP MCP-серверы.
+- OAuth и bearer token через переменную окружения.
+- Навыки Codex с включением на уровне профиля и прикреплением к сообщению.
+- IDE bridge для связи с сервисами Element.
+- Настраиваемый proxy для app-server и загрузки управляемых инструментов.
+
+## Установка
+
+1. Откройте страницу [Releases](https://github.com/avolkov-git/codex-element-plugin/releases).
+2. Загрузите `codex-plugins-<version>.zip` или `codex-plugins-<version>.tar.gz`.
+3. Сверьте SHA-256 с `SHA256SUMS.txt`.
+4. Распакуйте архив.
+5. Поместите каталог `codex-plugins` в каталог `/plugins` сервера Element.
+6. Перезапустите сервер или IDE backend.
+
+Release-архив содержит runtime для всех поддерживаемых платформ. Администратору не нужно устанавливать Codex CLI в системный `PATH`.
+
+## Первый запуск
+
+1. Откройте Codex в activity bar.
+2. Авторизуйтесь через Device Code или API key.
+3. При закрытом сетевом контуре настройте proxy в `Codex: Настройки`.
+4. Укажите каталог нормализованной документации, если сервер не предоставляет его сам.
+5. Создайте проектный или общий чат.
+
+Device Code экран показывает URL, код и QR. Плагин не открывает браузер без действия пользователя. Runtime продолжает ожидать подтверждение через настроенный proxy, пока пользователь завершает вход на другом устройстве.
+
+## Настройки
+
+Откройте команду `Codex: Настройки`.
+
+### Proxy
+
+Плагин принимает HTTP proxy с хостом и портом. Логин и пароль хранятся вне webview. Proxy применяется к дочернему процессу app-server и к загрузке управляемого `ripgrep`.
+
+### Документация
+
+Поле нормализованной документации принимает legacy JSONL, manifest-based corpus, generic JSONL и каталоги с Markdown или текстовыми файлами. Плагин читает corpus при запросе, а не при activation.
+
+### MCP-серверы
+
+Настройки MCP хранятся на уровне профиля. Для bearer token укажите имя переменной окружения процесса Element. Не вводите значение токена в настройки плагина.
+
+### Навыки
+
+Плагин получает список через `skills/list`. Переключатель задает доступность навыка. Composer прикрепляет выбранные навыки к следующему сообщению.
+
+### Ripgrep
+
+Плагин может найти существующий `rg`, принять путь к нему или установить managed-копию в `<configRoot>/server/tools/ripgrep/`. Каталог инструмента добавляется в окружение app-server. Плагин не меняет системный `PATH` и не требует `sudo`.
+
+## Данные и безопасность
+
+Плагин хранит данные вне каталога установки. Порядок выбора config root:
+
+1. `CODEX_ELEMENT_CONFIG_ROOT`.
+2. Настройка `codexElement.configRoot`.
+3. `%PROGRAMDATA%/CodexElement` на Windows.
+4. `XDG_STATE_HOME`, `~/.local/state/codex-element` или другой user-writable каталог на Unix.
+5. Global storage IDE.
+
+Профили, история, `CODEX_HOME`, вложения и настройки лежат внутри config root. Секреты proxy и авторизации не попадают в transcript. Плагин не пишет содержимое проекта, документации или диагностик в `Output: Codex`.
+
+Локальные файлы из браузерной части IDE передаются чанками и сохраняются в `<configRoot>/attachments/<chatId>/`. Плагин принимает до 10 вложений на сообщение, до 50 МБ на файл и до 20 МБ на изображение. Удаление чата очищает его managed-вложения.
+
+## Команды
+
+| Команда | Назначение |
+| --- | --- |
+| `Codex: Открыть` | Открыть панель Codex |
+| `Codex: Новый проектный чат` | Создать чат с проектным контекстом |
+| `Codex: Новый общий чат` | Создать чат без автоматического контекста проекта |
+| `Codex: Настройки` | Открыть настройки proxy, документации, MCP, навыков и инструментов |
+| `Codex: Открыть правила проекта` | Создать или открыть `.local-codex/rules.md` |
+| `Codex: Логи` | Открыть `Output: Codex` |
+| `Codex: Открыть папку логов` | Открыть каталог файловых логов |
+| `Codex: Экспортировать логи в workspace` | Скопировать логи в workspace для диагностики |
+| `Codex: Проверить возможности app-server` | Запустить capability probe |
+| `Объяснить файл` | Отправить активный файл в проектный чат |
+| `Объяснить выделенный фрагмент` | Отправить выделенный код в проектный чат |
+
+## Разработка
+
+Плагин использует TypeScript для extension host и JavaScript/CSS для webview.
+
+```bash
+npm install
+npm run check
+npm run build
+```
+
+Дополнительные проверки:
+
+```bash
+npm run check:markdown-links
+npm run check:transcript-window
+npm run eval:context
+node --check media/chat.js
+node --check media/sidebar.js
+node --check media/settings.js
+git diff --check
+```
+
+Основные каталоги:
+
+```text
+src/        extension host и сервисы
+media/      webview UI
+dist/       результат TypeScript build
+resources/  иконки и базовый контекст
+scripts/    preflight, staging, smoke и fixture checks
+docs/       протокол и эксплуатационные инструкции
+bin/        platform runtime
+```
+
+## Runtime и Git LFS
+
+Плагин ожидает Codex CLI/app-server `0.144.5` для каждой платформы:
 
 ```text
 bin/
@@ -33,118 +170,45 @@ bin/
   darwin-arm64/codex
 ```
 
-Legacy Windows layout `bin/windows-x86_64/codex.exe` поддерживается для обратной совместимости.
-Legacy Linux layout `bin/linux-x86_64/codex` также поддерживается как источник для staging, но canonical deploy layout остается `bin/linux-x64/codex`.
-Legacy macOS layout `bin/macos-aarch64/codex` также поддерживается как источник для staging, но canonical deploy layout остается `bin/darwin-arm64/codex`.
+Git хранит runtime через LFS. Рабочая копия без загруженного LFS-объекта содержит pointer длиной около 130 байт. Такой файл нельзя запускать или включать в release.
 
-Перед копированием в `/plugins`:
+Проверьте runtime перед поставкой:
 
 ```bash
 npm run preflight:runtime
-```
-
-Для release-пакета со всеми платформами:
-
-```bash
 npm run preflight:runtime:release
 ```
 
-Для проверки уже разложенного staging-каталога:
+Legacy layout для старых Windows, Linux и macOS сборок поддерживается как источник staging. Release использует canonical layout из списка выше.
 
-```bash
-node scripts/verify-runtime-binaries.js --platform linux-x64 --root /path/to/staged/plugin
-```
+## Сборка deploy-каталога
 
-Для dry-run проверки окружения без запуска `codex`:
-
-```bash
-node scripts/simulate-runtime-env.js --platform linux-x64 --service-user --empty-env --plugin-root /path/to/staged/plugin --config-root /var/lib/codex-element
-```
-
-Dry-run проверяет выбор runtime, config root, `CODEX_HOME`, `HOME/XDG_*`, `PATH`, `rg` patch и базовые права на каталоги. Script ничего не создает и не меняет.
-
-Для реальной Unix-проверки уже скопированного `/plugins` payload под системным пользователем Element используйте smoke-check:
-
-```bash
-node scripts/unix-smoke-check.js \
-  --platform linux-x64 \
-  --plugin-root /path/to/element/plugins/codex \
-  --config-root /var/lib/codex-element \
-  --workspace-root /path/to/workspace
-```
-
-Smoke-check запускает `codex --version`, проверяет executable bit, права на config root, `CODEX_HOME`, `HOME/XDG_*`, runtime cwd и наличие `rg`. Подробный checklist: `docs/unix-smoke-checklist.md`.
-
-## Deploy Payload Preflight
-
-Перед копированием каталога плагина в `/plugins` нужно проверять не только runtime-бинарник, но и сам deploy payload:
-
-```bash
-npm run preflight:deploy
-```
-
-Для проверки staging-каталога под конкретную платформу:
-
-```bash
-node scripts/verify-deploy-payload.js --root /path/to/staged/plugin --platform linux-x64 --strict
-```
-
-Для release-пакета со всей платформенной матрицей:
-
-```bash
-npm run preflight:deploy:release
-```
-
-Deploy preflight проверяет:
-
-- обязательные файлы плагина: `package.json`, `dist/extension.js`, `media/*`, базовый context и icon;
-- `package.json.main` и согласованность версий `package.json` / `package-lock.json`;
-- runtime-бинарники для выбранной платформы или всей матрицы;
-- отсутствие deploy-мусора: `node_modules`, `.git`, `.tmp`, `coverage`, `.DS_Store`, `Thumbs.db`, `*.log`, `*.tmp`, `*.vsix`.
-
-В dev-режиме `--allow-lfs-pointer` допускает Git LFS pointer как warning, чтобы можно было проверять текущую рабочую копию. В `--strict` pointer считается ошибкой: в реальной поставке в `/plugins` должны лежать настоящие executable-файлы.
-
-## Deploy Staging
-
-Рабочую git-копию не нужно копировать в `/plugins` напрямую. Сначала соберите чистый deploy-каталог:
-
-```bash
-npm run deploy:stage
-```
-
-По умолчанию payload собирается в соседний каталог:
-
-```text
-../codex-plugin-deploy
-```
-
-Script исключает `.git`, `node_modules`, `.DS_Store`, временные файлы, logs и VSIX-архивы. Если в deploy-каталоге уже лежали настоящие runtime-бинарники, script сохраняет их и не затирает Git LFS pointer из рабочей копии поверх валидного executable.
-
-Для strict-сборки Windows x64:
-
-```bash
-npm run deploy:stage:strict
-```
-
-Для release-сборки всей платформенной матрицы:
+Не копируйте рабочий Git-каталог в `/plugins`. Соберите payload без `.git`, `node_modules`, временных файлов и LFS pointers:
 
 ```bash
 npm run deploy:stage:release
+npm run preflight:deploy:release
 ```
 
-Если реальные runtime-бинарники хранятся отдельно, передайте каталог с таким же `bin/<platform>/...` layout:
+Плагин создаст соседний каталог `../codex-plugin-deploy`. Для одной платформы доступны команды:
+
+```bash
+npm run deploy:stage
+npm run deploy:stage:strict
+npm run preflight:deploy
+```
+
+Передать отдельный каталог runtime можно через `--runtime-root`:
 
 ```bash
 node scripts/stage-deploy-payload.js \
   --target ../codex-plugin-deploy \
-  --platform win32-x64 \
-  --runtime-root /path/to/real-runtime-root \
+  --platform linux-x64 \
+  --runtime-root /path/to/runtime-root \
   --strict
 ```
 
-До появления настоящего `codex.exe` dev-сборка может пройти только с warning про LFS pointer. Это не release-ready состояние.
-
-Unix-поставка должна сохранять executable bit:
+Unix runtime должен иметь executable bit:
 
 ```bash
 chmod 755 bin/linux-x64/codex
@@ -153,49 +217,58 @@ chmod 755 bin/darwin-x64/codex
 chmod 755 bin/darwin-arm64/codex
 ```
 
-Плагин не меняет системный `PATH` и не требует `sudo`: все пользовательские данные пишутся в user-writable config root, а tool paths добавляются только в окружение дочернего процесса `codex app-server`.
+## Проверка Unix-поставки
 
-## App-server 0.144.5
+Dry-run проверяет пути, переменные окружения и права без запуска runtime:
 
-- `model/list` является единственным источником доступных моделей для selector-а. Встроенный fallback содержит только `Авто` и не обещает наличие конкретной модели.
-- Плагин принимает runtime metadata: default model, поддерживаемые reasoning efforts и service tiers. Поэтому новые модели и уровни reasoning появляются без обновления жесткого списка в UI.
-- Значение `Быстрый` передается как выбранный runtime `serviceTier`; устаревшее поле `speed` в `turn/start` не используется.
-- Остановка выполняется методом `turn/interrupt` с `threadId` и `turnId`.
-- Сообщение во время активного turn можно поставить в локальную очередь или передать текущему turn методом `turn/steer`. Desktop-like composer использует очередь как действие по умолчанию: `Enter` ставит draft в очередь, `Ctrl/Cmd+Shift+Enter` отправляет его как рекомендацию. Способ отправки также выбирается из меню рядом с кнопкой, а queued messages можно редактировать, переставлять и удалять.
-- Rate limits читаются динамически из `account/rateLimits/read` и `account/rateLimits/updated`. UI не предполагает, что существует ровно пятичасовое и недельное окно, и показывает имена/длительности, возвращенные runtime.
-- `thread/start` использует строковый `sandbox`, а `turn/start` использует объект `sandboxPolicy`; эти формы нельзя взаимозаменять.
+```bash
+node scripts/simulate-runtime-env.js \
+  --platform linux-x64 \
+  --service-user \
+  --empty-env \
+  --plugin-root /path/to/staged/plugin \
+  --config-root /var/lib/codex-element
+```
 
-### MCP и навыки
+Smoke-check запускает runtime и проверяет config root, `CODEX_HOME`, `HOME`, `XDG_*`, cwd и `rg`:
 
-- MCP-серверы настраиваются глобально для текущего профиля через `Codex: Настройки`. Плагин использует штатные `codex mcp` и `mcpServerStatus/*`, а сами tools исполняет app-server.
-- Поддерживаются локальные STDIO и удаленные HTTP MCP-серверы, reload без перезапуска IDE, включение/выключение и OAuth.
-- Секрет bearer token не хранится в webview/settings: указывается только имя переменной окружения процесса Element.
-- Навыки загружаются через `skills/list`. В composer они прикрепляются к следующему сообщению как типизированные `skill` inputs и сохраняются вместе с локальной очередью.
-- Загрузка интеграций ленивая и не запускает runtime на activation.
+```bash
+node scripts/unix-smoke-check.js \
+  --platform linux-x64 \
+  --plugin-root /path/to/element/plugins/codex-plugins \
+  --config-root /var/lib/codex-element \
+  --workspace-root /path/to/workspace
+```
 
-### Вложения
+Checklist: [docs/unix-smoke-checklist.md](docs/unix-smoke-checklist.md).
 
-- Скрепка в composer предлагает два источника: файлы и папки открытого workspace либо файлы с компьютера пользователя.
-- Client-local файлы передаются из webview на сервер чанками и сохраняются в plugin-owned `<configRoot>/attachments/<chatId>/`; абсолютный клиентский путь не передается и не логируется.
-- Файлы и изображения можно вставлять из буфера или перетаскивать в composer. Обычная вставка текста остается обычным текстом.
-- Лимиты: 10 вложений на сообщение, 50 МБ на файл и 20 МБ на изображение. Отправка блокируется до завершения загрузки.
-- Папки доступны только через server-side picker workspace: браузерный API не дает безопасно прочитать произвольный локальный каталог.
+## Диагностика
 
-Подробная матрица протокола и smoke-проверки: `docs/app-server-0.144.5.md`.
+### `spawn UNKNOWN` или runtime не запускается
 
-## Ripgrep
+Проверьте размер и формат `bin/<platform>/codex`. Git LFS pointer не содержит executable-код. Запустите:
 
-`rg` является runtime tool, а не системной зависимостью плагина. Плагин поддерживает три сценария:
+```bash
+npm run preflight:runtime
+```
 
-- найти уже установленный `rg` в `PATH` или стандартных user-local каталогах;
-- принять ручной путь в `Codex: Настройки`;
-- установить managed `rg` в `<configRoot>/server/tools/ripgrep/...`.
+На Unix проверьте executable bit, writable config root и отсутствие `noexec` на mount.
 
-Managed install не пишет в `/usr`, `/opt`, `Program Files` или системный `PATH`. Каталог `rg` добавляется только в `PATH` дочернего процесса `codex app-server`, вместе с `RIPGREP_PATH`.
+### Авторизация пропала после перезапуска IDE
 
-Распаковка release-архивов выполняется внутри Node.js:
+Откройте sidebar Codex. Плагин запускает runtime для проверки account state при открытии sidebar или при отправке сообщения. Проверьте права системного пользователя на `<configRoot>/users/<profileId>/codex-home`.
 
-- `.zip` без PowerShell/`Expand-Archive`;
-- `.tar.gz` без внешнего `tar`.
+### Codex сообщает, что `rg` не установлен
 
-Это важно для закрытых контуров, сервисных пользователей Linux и Windows-инсталляций без полноценного shell окружения. Если download с GitHub недоступен, пользовательский fallback - вручную указать путь к уже установленному `rg`.
+Откройте `Codex: Настройки`, укажите путь к `rg` или нажмите `Установить`. После изменения плагин перезапустит app-server с обновленным `PATH`.
+
+### Нужны логи
+
+Используйте `Codex: Логи` или `Codex: Экспортировать логи в workspace`. Файловое логирование пишет в `<configRoot>/logs`.
+
+## Документация
+
+- [Контракт Codex app-server 0.144.5](docs/app-server-0.144.5.md)
+- [Unix smoke checklist](docs/unix-smoke-checklist.md)
+
+Проект распространяется без открытой лицензии. См. поле `license` в `package.json`.
