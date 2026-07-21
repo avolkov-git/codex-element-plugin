@@ -5,7 +5,7 @@
 Плагин для Theia IDE, который добавляет Codex в среду разработки 1C: Элемент. Runtime работает через поставляемый вместе с плагином [codex app-server](https://github.com/openai/codex).
 Подробнее про `codex app-server` [тут](https://developers.openai.com/codex/app-server) и [тут](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
-- Текущая версия плагина: `0.1.80`
+- Текущая версия плагина: `0.1.81`
 - Текущая версия Codex CLI/app-server: `0.144.5`
 - Готовые поставки: Windows x64 и Linux x64
 - Исходный проект также содержит runtime-матрицу для Windows, Linux и macOS на x64 и arm64
@@ -51,8 +51,8 @@
 
 1. Откройте страницу [Releases](https://github.com/avolkov-git/codex-element-plugin/releases).
 2. Выберите архив по операционной системе сервера Element:
-   - Windows x64: `codex-plugins-0.1.80-win32-x64.zip`;
-   - Linux x64: `codex-plugins-0.1.80-linux-x64.tar.gz`.
+   - Windows x64: `codex-plugins-0.1.81-win32-x64.zip`;
+   - Linux x64: `codex-plugins-0.1.81-linux-x64.tar.gz`.
 3. Сверьте SHA-256 с `SHA256SUMS.txt`.
 4. Распакуйте архив.
 5. Поместите каталог `codex-plugins` в каталог `/plugins` сервера Element.
@@ -83,6 +83,11 @@
 ### MCP-серверы
 
 Настройки MCP хранятся на уровне профиля. Для bearer token укажите имя переменной окружения процесса Element. Не вводите значение токена в настройки плагина. Наименование сервера не должно содержать пробелы.
+
+Если локальный 1C Element MCP доступен по `codexElement.elementMcpUrl`, плагин вне диалога передаёт ему временный
+контекст текущей IDE: параметры Console, открытые workspace folders и безопасную часть результата штатной команды
+`g5rt.team.status`. Репозиторные credentials и текст последнего commit не передаются. MCP сам находит
+`Project.yaml`/`Проект.yaml`; когда проектов несколько, окончательный корень выбирает пользователь.
 
 ### Навыки
 
@@ -209,8 +214,8 @@ npm run release:platforms
 Команда собирает и повторно распаковывает оба архива, запускает строгий preflight и создает в `../codex-plugin-release`:
 
 ```text
-codex-plugins-0.1.80-win32-x64.zip
-codex-plugins-0.1.80-linux-x64.tar.gz
+codex-plugins-0.1.81-win32-x64.zip
+codex-plugins-0.1.81-linux-x64.tar.gz
 SHA256SUMS.txt
 README_RELEASE.md
 ```
@@ -219,7 +224,7 @@ README_RELEASE.md
 
 ### Автоматический выпуск
 
-Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v0.1.80`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
+Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v0.1.81`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
 
 CI загружает из Git LFS только `win32-x64` и `linux-x64`. Остальная runtime-матрица не скачивается для этого релиза.
 
