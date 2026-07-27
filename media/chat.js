@@ -3943,7 +3943,8 @@
         { className: "constant", regex: new RegExp(wordPattern(["Истина", "Ложь", "Неопределено", "ничто", "неизвестно", "никогда", "Авто"]), "gu"), group: 2 },
         { className: "number", regex: /\b\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?\b/gu },
         { className: "type", regex: /(:\s*)([A-ZА-ЯЁa-zа-яё_][A-ZА-ЯЁa-zа-яё0-9_]*(?:(?:::|\.)[A-ZА-ЯЁa-zа-яё_][A-ZА-ЯЁa-zа-яё0-9_]*)*)/gu, group: 2 },
-        { className: "function", regex: /([A-ZА-ЯЁa-zа-яё_][A-ZА-ЯЁa-zа-яё0-9_]*)(?=\s*\()/gu }
+        { className: "function", regex: /([A-ZА-ЯЁa-zа-яё_][A-ZА-ЯЁa-zа-яё0-9_]*)(?=\s*\()/gu },
+        { className: "punctuation", regex: /[()[\]{},;]/gu }
       ];
     }
     if (lang === "yaml") {

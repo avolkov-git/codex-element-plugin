@@ -532,6 +532,96 @@ body.vscode-light .user-bubble {
   color: var(--vscode-symbolIcon-variableForeground, #6f42c1);
 }
 
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) code {
+  color: #111111;
+}
+
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-comment {
+  color: #0b8f14;
+}
+
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-keyword,
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-annotation {
+  color: #c400ff;
+}
+
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-declaration,
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-modifier,
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-punctuation {
+  color: #1838ff;
+}
+
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-function {
+  color: #8c6b2e;
+}
+
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-type {
+  color: #2e8db5;
+}
+
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-string {
+  color: #c11f16;
+}
+
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-constant {
+  color: #0000ff;
+}
+
+.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-number {
+  color: #138a3b;
+}
+
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) code,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) code {
+  color: #d4d4d4;
+}
+
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-comment,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-comment {
+  color: #5ebd6b;
+}
+
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-keyword,
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-annotation,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-keyword,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-annotation {
+  color: #d38cd3;
+}
+
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-declaration,
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-modifier,
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-punctuation,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-declaration,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-modifier,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-punctuation {
+  color: #66b3ff;
+}
+
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-function,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-function {
+  color: #d9d39a;
+}
+
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-type,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-type {
+  color: #4fd4c8;
+}
+
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-string,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-string {
+  color: #d7a07a;
+}
+
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-constant,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-constant {
+  color: #9ccffa;
+}
+
+body.vscode-dark .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-number,
+body.vscode-high-contrast .code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"]) .token-number {
+  color: #9fcb8f;
+}
+
 .code-block[data-highlight-engine="xbsl-io"] code,
 .code-block[data-highlight-engine="xbsl-io"] code span {
   color: var(--shiki-light, inherit);

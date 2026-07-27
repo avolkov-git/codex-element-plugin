@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.84",
+  "version": "0.1.85",
   "publisher": "element-ai",
   "license": "MIT",
   "private": true,
@@ -224,7 +224,7 @@
   },
   "devDependencies": {
     "@shikijs/core": "^4.3.1",
-    "@shikijs/engine-oniguruma": "^4.3.1",
+    "@shikijs/engine-javascript": "^4.3.1",
     "@shikijs/langs": "^4.3.1",
     "@types/node": "^20.11.30",
     "@types/vscode": "^1.97.0",
