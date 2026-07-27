@@ -122,6 +122,7 @@ class ChatPanelManager {
             extensionUri: this.context.extensionUri,
             webview: panel.webview,
             scriptPath: "media/chat.js",
+            preloadScriptPaths: ["media/xbsl-highlighter.js"],
             stylePath: "media/chat.css",
             title: panel.title,
             rootData: {

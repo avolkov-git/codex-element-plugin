@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.82",
+  "version": "0.1.83",
   "publisher": "element-ai",
   "license": "MIT",
   "private": true,
@@ -31,8 +31,11 @@
   ],
   "main": "./dist/extension.js",
   "scripts": {
-    "build": "tsc -p ./",
-    "check": "tsc -p ./ --noEmit",
+    "build": "npm run build:webview && tsc -p ./",
+    "build:webview": "node scripts/build-xbsl-highlighter.js",
+    "check": "npm run check:webview && npm run check:highlight && tsc -p ./ --noEmit",
+    "check:webview": "node scripts/build-xbsl-highlighter.js --check",
+    "check:highlight": "node scripts/xbsl-highlighter-check.js",
     "check:markdown-links": "node scripts/markdown-file-link-check.js",
     "check:transcript-window": "node scripts/transcript-window-check.js",
     "eval:context": "node scripts/context-acceptance-check.js",
@@ -220,8 +223,12 @@
     }
   },
   "devDependencies": {
+    "@shikijs/core": "^4.3.1",
+    "@shikijs/engine-oniguruma": "^4.3.1",
+    "@shikijs/langs": "^4.3.1",
     "@types/node": "^20.11.30",
     "@types/vscode": "^1.97.0",
+    "esbuild": "^0.25.12",
     "typescript": "^5.4.5"
   }
 }

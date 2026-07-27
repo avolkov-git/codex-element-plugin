@@ -63,6 +63,20 @@
     bindCommandButtons: null
   };
 
+  const syntaxHighlightObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node instanceof Element) {
+          enhanceSyntaxHighlighting(node);
+        }
+      }
+    }
+  });
+  syntaxHighlightObserver.observe(root, { childList: true, subtree: true });
+  window.addEventListener("codex-xbsl-highlighter-ready", () => {
+    enhanceSyntaxHighlighting(root);
+  });
+
   document.addEventListener("click", (event) => {
     if (event.target && event.target.closest && event.target.closest(".composer-selector")) {
       return;
@@ -4066,7 +4080,8 @@
     const flushCode = () => {
       const lang = normalizeCodeLanguage(codeLanguage);
       const languageClass = lang ? ` language-${escapeAttribute(lang)}` : "";
-      html.push(`<pre class="code-block${languageClass}"><code>${highlightCode(codeLines.join("\n"), lang)}</code></pre>`);
+      const highlightAttribute = lang ? ` data-highlight-language="${escapeAttribute(lang)}"` : "";
+      html.push(`<pre class="code-block${languageClass}"${highlightAttribute}><code>${highlightCode(codeLines.join("\n"), lang)}</code></pre>`);
       codeLines = [];
       codeLanguage = "";
     };
@@ -4129,6 +4144,46 @@
     flushList();
     flushTable();
     return html.join("");
+  }
+
+  function enhanceSyntaxHighlighting(scope) {
+    const highlighter = window.codexXbslHighlighter;
+    if (!highlighter || !scope || typeof scope.querySelectorAll !== "function") {
+      return;
+    }
+    const blocks = [];
+    if (scope.matches && scope.matches("pre.code-block[data-highlight-language]")) {
+      blocks.push(scope);
+    }
+    blocks.push(...scope.querySelectorAll("pre.code-block[data-highlight-language]"));
+    for (const block of blocks) {
+      if (block.dataset.highlightState) {
+        continue;
+      }
+      const language = block.dataset.highlightLanguage || "";
+      if (!highlighter.supports(language)) {
+        block.dataset.highlightState = "unsupported";
+        continue;
+      }
+      const code = block.querySelector("code");
+      if (!code) {
+        block.dataset.highlightState = "fallback";
+        continue;
+      }
+      const source = code.textContent || "";
+      block.dataset.highlightState = "pending";
+      highlighter.highlight(source, language).then((highlightedHtml) => {
+        if (!block.isConnected || !code.isConnected || (code.textContent || "") !== source) {
+          return;
+        }
+        code.innerHTML = highlightedHtml;
+        block.dataset.highlightEngine = "xbsl-io";
+        block.dataset.highlightState = "ready";
+      }).catch((error) => {
+        block.dataset.highlightState = "fallback";
+        console.warn("[codex-element] XBSL/YAML highlighting fallback", error);
+      });
+    }
   }
 
   function isPotentialMarkdownTableLine(line) {

@@ -532,6 +532,46 @@ body.vscode-light .user-bubble {
   color: var(--vscode-symbolIcon-variableForeground, #6f42c1);
 }
 
+.code-block[data-highlight-engine="xbsl-io"] code,
+.code-block[data-highlight-engine="xbsl-io"] code span {
+  color: var(--shiki-light, inherit);
+}
+
+body.vscode-dark .code-block[data-highlight-engine="xbsl-io"] code,
+body.vscode-dark .code-block[data-highlight-engine="xbsl-io"] code span,
+body.vscode-high-contrast .code-block[data-highlight-engine="xbsl-io"] code,
+body.vscode-high-contrast .code-block[data-highlight-engine="xbsl-io"] code span {
+  color: var(--shiki-dark, inherit);
+}
+
+.code-block[data-highlight-engine="xbsl-io"] .xbsl-semantic-kind-function {
+  --shiki-light: #8c6b2e !important;
+  --shiki-dark: #d9d39a !important;
+}
+
+.code-block[data-highlight-engine="xbsl-io"] .xbsl-semantic-kind-type {
+  --shiki-light: #2e8db5 !important;
+  --shiki-dark: #4fd4c8 !important;
+}
+
+.code-block[data-highlight-engine="xbsl-io"] .xbsl-semantic-kind-constant {
+  --shiki-light: #0000ff !important;
+  --shiki-dark: #9ccffa !important;
+}
+
+.code-block[data-highlight-engine="xbsl-io"] .xbsl-semantic-kind-variable,
+.code-block[data-highlight-engine="xbsl-io"] .xbsl-semantic-kind-parameter {
+  --shiki-light: #111111 !important;
+  --shiki-dark: #d4d4d4 !important;
+}
+
+body.vscode-high-contrast .code-block[data-highlight-engine="xbsl-io"] code,
+body.vscode-high-contrast .code-block[data-highlight-engine="xbsl-io"] code span,
+body.vscode-high-contrast-light .code-block[data-highlight-engine="xbsl-io"] code,
+body.vscode-high-contrast-light .code-block[data-highlight-engine="xbsl-io"] code span {
+  color: var(--vscode-editor-foreground) !important;
+}
+
 .activity-row {
   color: var(--muted);
   margin-top: 10px;

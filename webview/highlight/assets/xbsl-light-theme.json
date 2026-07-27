@@ -1,0 +1,229 @@
+{
+  "name": "XBSL Light",
+  "type": "light",
+  "semanticHighlighting": true,
+  "colors": {
+    "editor.background": "#ffffff",
+    "editor.foreground": "#111111"
+  },
+  "tokenColors": [
+    {
+      "scope": [
+        "comment.line.double-slash.xbsl",
+        "comment.block.xbsl"
+      ],
+      "settings": {
+        "foreground": "#0B8F14"
+      }
+    },
+    {
+      "scope": [
+        "keyword.codetag.todo.xbsl"
+      ],
+      "settings": {
+        "foreground": "#1838FF"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.annotation.xbsl"
+      ],
+      "settings": {
+        "foreground": "#C400FF"
+      }
+    },
+    {
+      "scope": [
+        "keyword.control.xbsl",
+        "keyword.control.import.xbsl",
+        "support.type.literal.xbsl"
+      ],
+      "settings": {
+        "foreground": "#C400FF"
+      }
+    },
+    {
+      "scope": [
+        "storage.modifier.xbsl",
+        "storage.modifier.constant.xbsl",
+        "keyword.declaration.method.xbsl",
+        "keyword.declaration.type.xbsl",
+        "keyword.declaration.xbsl",
+        "keyword.control.query.xbql",
+        "keyword.other.query.literal.xbsl"
+      ],
+      "settings": {
+        "foreground": "#1838FF"
+      }
+    },
+    {
+      "scope": [
+        "variable.other.definition.xbsl"
+      ],
+      "settings": {
+        "foreground": "#001080"
+      }
+    },
+    {
+      "scope": [
+        "constant.language.xbsl"
+      ],
+      "settings": {
+        "foreground": "#0000FF"
+      }
+    },
+    {
+      "scope": [
+        "constant.language.boolean.xbsl"
+      ],
+      "settings": {
+        "foreground": "#0000FF"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.virtual-table.xbql"
+      ],
+      "settings": {
+        "foreground": "#795E27"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.function.xbsl",
+        "support.function.aggregate.xbql"
+      ],
+      "settings": {
+        "foreground": "#8C6B2E"
+      }
+    },
+    {
+      "scope": [
+        "support.type.xbsl",
+        "entity.name.namespace.xbsl",
+        "entity.name.type.xbsl",
+        "entity.name.query.xbql"
+      ],
+      "settings": {
+        "foreground": "#2E8DB5"
+      }
+    },
+    {
+      "scope": [
+        "meta.arguments.virtual-table.xbql",
+        "meta.arguments.virtual-table.xbql variable.parameter.query.xbql",
+        "meta.arguments.virtual-table.xbql entity.name.query.xbql",
+        "meta.arguments.virtual-table.xbql constant.language.xbsl",
+        "meta.arguments.virtual-table.xbql constant.language.boolean.xbsl",
+        "meta.arguments.virtual-table.xbql constant.numeric.xbsl",
+        "meta.arguments.virtual-table.xbql constant.numeric.duration.xbsl",
+        "meta.arguments.virtual-table.xbql support.type.literal.xbsl"
+      ],
+      "settings": {
+        "foreground": "#277F99"
+      }
+    },
+    {
+      "scope": [
+        "string.quoted.single.xbsl",
+        "string.quoted.double.xbsl"
+      ],
+      "settings": {
+        "foreground": "#C11F16"
+      }
+    },
+    {
+      "scope": [
+        "variable.interpolation.xbsl",
+        "variable.parameter.query.xbql"
+      ],
+      "settings": {
+        "foreground": "#1B2FAD"
+      }
+    },
+    {
+      "scope": [
+        "constant.numeric.xbsl"
+      ],
+      "settings": {
+        "foreground": "#138A3B"
+      }
+    },
+    {
+      "scope": [
+        "constant.numeric.duration.xbsl"
+      ],
+      "settings": {
+        "foreground": "#0B8658"
+      }
+    },
+    {
+      "scope": [
+        "punctuation.section.group.xbsl"
+      ],
+      "settings": {
+        "foreground": "#315BFF"
+      }
+    },
+    {
+      "scope": [
+        "punctuation.terminator.statement.xbsl"
+      ],
+      "settings": {
+        "foreground": "#1838FF"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.tag.yaml"
+      ],
+      "settings": {
+        "foreground": "#800000"
+      }
+    },
+    {
+      "scope": [
+        "string.unquoted.plain.out.yaml",
+        "string.unquoted.plain.in.yaml",
+        "string.unquoted.block.yaml",
+        "string.quoted.single.yaml",
+        "string.quoted.double.yaml",
+        "constant.language.null.yaml",
+        "constant.language.boolean.yaml",
+        "constant.language.value.yaml",
+        "constant.language.merge.yaml",
+        "constant.numeric.integer.yaml",
+        "constant.numeric.float.yaml",
+        "constant.other.timestamp.yaml"
+      ],
+      "settings": {
+        "foreground": "#0000FF"
+      }
+    }
+  ],
+  "semanticTokenColors": {
+    "type": "#2E8DB5",
+    "class": "#2E8DB5",
+    "enum": "#2E8DB5",
+    "interface": "#2E8DB5",
+    "struct": "#2E8DB5",
+    "parameter": "#111111",
+    "variable": "#111111",
+    "variable.readonly": "#0000FF",
+    "property": "#111111",
+    "enumMember": "#111111",
+    "event": "#111111",
+    "function": "#8C6B2E",
+    "method": "#8C6B2E",
+    "type.defaultLibrary": "#2E8DB5",
+    "class.defaultLibrary": "#2E8DB5",
+    "enum.defaultLibrary": "#2E8DB5",
+    "interface.defaultLibrary": "#2E8DB5",
+    "struct.defaultLibrary": "#2E8DB5",
+    "property.defaultLibrary": "#111111",
+    "enumMember.defaultLibrary": "#111111",
+    "event.defaultLibrary": "#111111",
+    "function.defaultLibrary": "#8C6B2E",
+    "method.defaultLibrary": "#8C6B2E"
+  }
+}

@@ -5,6 +5,7 @@ export interface WebviewHtmlOptions {
   extensionUri: vscode.Uri;
   webview: vscode.Webview;
   scriptPath: string;
+  preloadScriptPaths?: string[];
   stylePath: string;
   title: string;
   rootData?: Record<string, string>;
@@ -13,6 +14,9 @@ export interface WebviewHtmlOptions {
 export function renderWebviewHtml(options: WebviewHtmlOptions): string {
   const nonce = createNonce();
   const scriptUri = options.webview.asWebviewUri(vscode.Uri.joinPath(options.extensionUri, options.scriptPath));
+  const preloadScriptUris = (options.preloadScriptPaths ?? []).map((scriptPath) =>
+    options.webview.asWebviewUri(vscode.Uri.joinPath(options.extensionUri, scriptPath))
+  );
   const styleUri = options.webview.asWebviewUri(vscode.Uri.joinPath(options.extensionUri, options.stylePath));
   const inlineScript = readExtensionFile(options.extensionUri, options.scriptPath);
   const inlineStyle = readExtensionFile(options.extensionUri, options.stylePath);
@@ -41,6 +45,7 @@ export function renderWebviewHtml(options: WebviewHtmlOptions): string {
 <body>
   <div id="root" ${rootData}>${renderFallback(options.title)}</div>
   ${fallbackBootstrap}
+  ${preloadScriptUris.map((uri) => `<script defer src="${uri}"></script>`).join("\n  ")}
   <script defer src="${scriptUri}"></script>
 </body>
 </html>`;

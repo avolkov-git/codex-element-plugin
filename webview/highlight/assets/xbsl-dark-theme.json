@@ -1,0 +1,208 @@
+{
+  "name": "XBSL Dark",
+  "type": "dark",
+  "semanticHighlighting": true,
+  "colors": {
+    "editor.background": "#1f1f1f",
+    "editor.foreground": "#d4d4d4"
+  },
+  "tokenColors": [
+    {
+      "scope": [
+        "comment.line.double-slash.xbsl",
+        "comment.block.xbsl"
+      ],
+      "settings": {
+        "foreground": "#6E995C"
+      }
+    },
+    {
+      "scope": [
+        "keyword.codetag.todo.xbsl"
+      ],
+      "settings": {
+        "foreground": "#66B3FF"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.annotation.xbsl"
+      ],
+      "settings": {
+        "foreground": "#D38CD3"
+      }
+    },
+    {
+      "scope": [
+        "keyword.control.xbsl",
+        "keyword.control.import.xbsl",
+        "support.type.literal.xbsl"
+      ],
+      "settings": {
+        "foreground": "#D38CD3"
+      }
+    },
+    {
+      "scope": [
+        "storage.modifier.xbsl",
+        "storage.modifier.constant.xbsl",
+        "keyword.declaration.method.xbsl",
+        "keyword.declaration.type.xbsl",
+        "keyword.declaration.xbsl",
+        "keyword.control.query.xbql",
+        "keyword.other.query.literal.xbsl"
+      ],
+      "settings": {
+        "foreground": "#66B3FF"
+      }
+    },
+    {
+      "scope": [
+        "variable.other.definition.xbsl",
+        "constant.language.xbsl",
+        "constant.language.boolean.xbsl"
+      ],
+      "settings": {
+        "foreground": "#9CCFFA"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.virtual-table.xbql"
+      ],
+      "settings": {
+        "foreground": "#DCDCAA"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.function.xbsl",
+        "support.function.aggregate.xbql"
+      ],
+      "settings": {
+        "foreground": "#D9D39A"
+      }
+    },
+    {
+      "scope": [
+        "support.type.xbsl",
+        "entity.name.namespace.xbsl",
+        "entity.name.type.xbsl",
+        "entity.name.query.xbql"
+      ],
+      "settings": {
+        "foreground": "#4FD4C8"
+      }
+    },
+    {
+      "scope": [
+        "meta.arguments.virtual-table.xbql",
+        "meta.arguments.virtual-table.xbql variable.parameter.query.xbql",
+        "meta.arguments.virtual-table.xbql entity.name.query.xbql",
+        "meta.arguments.virtual-table.xbql constant.language.xbsl",
+        "meta.arguments.virtual-table.xbql constant.language.boolean.xbsl",
+        "meta.arguments.virtual-table.xbql constant.numeric.xbsl",
+        "meta.arguments.virtual-table.xbql constant.numeric.duration.xbsl",
+        "meta.arguments.virtual-table.xbql support.type.literal.xbsl"
+      ],
+      "settings": {
+        "foreground": "#4FCAB0"
+      }
+    },
+    {
+      "scope": [
+        "string.quoted.single.xbsl",
+        "string.quoted.double.xbsl"
+      ],
+      "settings": {
+        "foreground": "#D7A07A"
+      }
+    },
+    {
+      "scope": [
+        "variable.interpolation.xbsl",
+        "variable.parameter.query.xbql"
+      ],
+      "settings": {
+        "foreground": "#9CCFFA"
+      }
+    },
+    {
+      "scope": [
+        "constant.numeric.xbsl",
+        "constant.numeric.duration.xbsl"
+      ],
+      "settings": {
+        "foreground": "#9FCB8F"
+      }
+    },
+    {
+      "scope": [
+        "punctuation.section.group.xbsl"
+      ],
+      "settings": {
+        "foreground": "#FFD84D"
+      }
+    },
+    {
+      "scope": [
+        "punctuation.terminator.statement.xbsl"
+      ],
+      "settings": {
+        "foreground": "#66B3FF"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.tag.yaml"
+      ],
+      "settings": {
+        "foreground": "#579ED6"
+      }
+    },
+    {
+      "scope": [
+        "string.unquoted.plain.out.yaml",
+        "string.unquoted.plain.in.yaml",
+        "string.unquoted.block.yaml",
+        "string.quoted.single.yaml",
+        "string.quoted.double.yaml",
+        "constant.language.null.yaml",
+        "constant.language.boolean.yaml",
+        "constant.language.value.yaml",
+        "constant.language.merge.yaml",
+        "constant.numeric.integer.yaml",
+        "constant.numeric.float.yaml",
+        "constant.other.timestamp.yaml"
+      ],
+      "settings": {
+        "foreground": "#CF9178"
+      }
+    }
+  ],
+  "semanticTokenColors": {
+    "type": "#4FD4C8",
+    "class": "#4FD4C8",
+    "enum": "#4FD4C8",
+    "interface": "#4FD4C8",
+    "struct": "#4FD4C8",
+    "parameter": "#d4d4d4",
+    "variable": "#d4d4d4",
+    "variable.readonly": "#9CCFFA",
+    "property": "#d4d4d4",
+    "enumMember": "#d4d4d4",
+    "event": "#d4d4d4",
+    "function": "#D9D39A",
+    "method": "#D9D39A",
+    "type.defaultLibrary": "#4FD4C8",
+    "class.defaultLibrary": "#4FD4C8",
+    "enum.defaultLibrary": "#4FD4C8",
+    "interface.defaultLibrary": "#4FD4C8",
+    "struct.defaultLibrary": "#4FD4C8",
+    "property.defaultLibrary": "#d4d4d4",
+    "enumMember.defaultLibrary": "#d4d4d4",
+    "event.defaultLibrary": "#d4d4d4",
+    "function.defaultLibrary": "#D9D39A",
+    "method.defaultLibrary": "#D9D39A"
+  }
+}
