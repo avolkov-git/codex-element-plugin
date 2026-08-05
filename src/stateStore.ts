@@ -633,6 +633,30 @@ export class StateStore {
     return updated;
   }
 
+  detachBackendThreads(): number {
+    let detachedCount = 0;
+    this.chats = this.chats.map((chat) => {
+      if (!chat.backendThreadId && !chat.backendThreadAccessMode) {
+        return chat;
+      }
+      detachedCount += 1;
+      return {
+        ...chat,
+        backendThreadId: null,
+        backendThreadAccessMode: null,
+        activeTurnId: null,
+        activeRunMode: null,
+        pendingApproval: null,
+        status: chat.status === "error" ? "error" : "idle"
+      };
+    });
+    if (detachedCount > 0) {
+      this.version += 1;
+      this.emitMutation("immediate");
+    }
+    return detachedCount;
+  }
+
   markChatRead(chatId: string): boolean {
     const chat = this.getChat(chatId);
     if (!chat || !chat.hasUnread) {

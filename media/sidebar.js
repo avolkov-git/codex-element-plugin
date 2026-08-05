@@ -199,7 +199,15 @@
 
   function authStatusStrip(snapshot) {
     if (snapshot.auth.status === "authenticated") {
-      return "";
+      return `
+        <section class="account-strip">
+          <div class="account-strip-copy">
+            <span class="account-strip-label">OpenAI</span>
+            <span class="account-strip-value" title="${escapeHtml(snapshot.auth.accountLabel || "Учетная запись подключена")}">${escapeHtml(snapshot.auth.accountLabel || "Учетная запись подключена")}</span>
+          </div>
+          <button class="link-button account-logout" data-command="auth.logout">Выйти</button>
+        </section>
+      `;
     }
     const hasKnownProfile = Boolean(snapshot.auth.profileLabel && snapshot.auth.profileLabel !== "-");
     const waitingForLazyCheck = hasKnownProfile
@@ -210,8 +218,7 @@
     }
 
     const message = snapshot.auth.message || "Codex не авторизован.";
-    const canStartLogin = snapshot.auth.status === "error"
-      || (snapshot.runtime.status === "running" && snapshot.auth.status === "notAuthenticated");
+    const canStartLogin = snapshot.auth.status === "error" || snapshot.auth.status === "notAuthenticated";
     return `
       <section class="auth-strip${snapshot.auth.status === "error" ? " error" : ""}">
         <div>${escapeHtml(message)}</div>

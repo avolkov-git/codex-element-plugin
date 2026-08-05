@@ -143,6 +143,7 @@ export class CodexRuntimeController implements vscode.Disposable {
   private cancelEpochByChat = new Map<string, number>();
   private suppressNextExitAsCancel = false;
   private suppressNextExitAsBackendRetry = false;
+  private suppressNextExitAsLogout = false;
   private latestChatId: string | undefined;
   private restoreAttempted = false;
 
@@ -263,6 +264,62 @@ export class CodexRuntimeController implements vscode.Disposable {
       });
       this.options.logger.warn(`API key login failed: ${message}`);
     }
+  }
+
+  async logoutAccount(): Promise<void> {
+    const blockingChat = this.options.state.getSidebarSnapshot().chats.find((chat) =>
+      chat.status === "running" || chat.status === "waitingApproval" || chat.status === "cancelling"
+    );
+    if (blockingChat) {
+      throw new Error(`Сначала остановите или завершите запрос в чате «${blockingChat.title}».`);
+    }
+
+    try {
+      await this.ensureBackendProcess();
+      this.updateAuth({
+        status: "checking",
+        message: "Выходим из учетной записи Codex..."
+      });
+      await this.requireRpcClient().request("account/logout", undefined, 15_000);
+    } catch (error) {
+      const message = normalizeAuthError(error);
+      this.updateAuth({
+        status: "error",
+        message: `Не удалось выйти из учетной записи: ${message}`
+      });
+      this.options.logger.warn(`account/logout failed: ${message}`);
+      throw error;
+    }
+
+    const detachedThreads = this.options.state.detachBackendThreads();
+    this.activeThreadChatId.clear();
+    this.activeTurnChatId.clear();
+    this.activeItemChatId.clear();
+    this.loadedThreadIds.clear();
+    this.latestChatId = undefined;
+    this.mcpStartupStatuses.clear();
+    this.options.state.setModelOptions([], "idle");
+    this.updateRateLimits({ status: "unknown", rows: [] });
+    this.updateAuth({
+      status: "notAuthenticated",
+      accountType: "none",
+      accountLabel: "Не авторизованы",
+      profileLabel: "-",
+      message: "Вы вышли из учетной записи Codex. Выберите способ авторизации.",
+      deviceCode: {
+        status: "idle",
+        loginId: "",
+        verificationUrl: "",
+        userCode: ""
+      },
+      apiKey: { status: "idle" }
+    });
+    this.restoreAttempted = true;
+    this.integrationsChangedEmitter.fire();
+    this.options.logger.info(`account/logout completed: detachedThreads=${detachedThreads}.`);
+
+    this.suppressNextExitAsLogout = true;
+    await this.stop();
   }
 
   async openDeviceCodeUrl(): Promise<void> {
@@ -2416,8 +2473,10 @@ export class CodexRuntimeController implements vscode.Disposable {
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
     const wasCancelFallback = this.suppressNextExitAsCancel;
     const wasBackendRetry = this.suppressNextExitAsBackendRetry;
+    const wasLogout = this.suppressNextExitAsLogout;
     this.suppressNextExitAsCancel = false;
     this.suppressNextExitAsBackendRetry = false;
+    this.suppressNextExitAsLogout = false;
     for (const pending of this.pendingApprovals.values()) {
       pending.resolve(false);
       this.options.state.setPendingApproval(pending.chatId, null);
@@ -2437,15 +2496,19 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.rpcClient?.dispose();
     this.rpcClient = undefined;
     this.options.state.setRuntime({
-      status: wasCancelFallback || wasBackendRetry ? "notStarted" : "error",
+      status: wasCancelFallback || wasBackendRetry || wasLogout ? "notStarted" : "error",
       label: wasCancelFallback
         ? "Backend остановлен после отмены запроса"
         : wasBackendRetry
           ? "Backend перезапускается с минимальным окружением"
-        : `Backend остановлен${code === null ? "" : `, код ${code}`}${signal ? `, ${signal}` : ""}`
+          : wasLogout
+            ? "Backend остановлен после выхода"
+            : `Backend остановлен${code === null ? "" : `, код ${code}`}${signal ? `, ${signal}` : ""}`
     });
     this.options.onDidChange();
-    if (wasCancelFallback) {
+    if (wasLogout) {
+      this.options.logger.info(`codex app-server stopped after logout: code=${code ?? "-"} signal=${signal ?? "-"}.`);
+    } else if (wasCancelFallback) {
       this.options.logger.info(`codex app-server stopped after cancel fallback: code=${code ?? "-"} signal=${signal ?? "-"}.`);
     } else if (wasBackendRetry) {
       this.options.logger.info(`codex app-server stopped before minimal-env retry: code=${code ?? "-"} signal=${signal ?? "-"}.`);

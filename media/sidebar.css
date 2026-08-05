@@ -243,6 +243,42 @@ input {
   margin-top: 7px;
 }
 
+.account-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 2px 0;
+  min-width: 0;
+  color: var(--codex-muted);
+  font-size: 12px;
+}
+
+.account-strip-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.account-strip-label {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.account-strip-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-logout {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
 .link-button {
   border: 0;
   padding: 0;

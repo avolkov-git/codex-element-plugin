@@ -323,6 +323,27 @@ async function activate(context) {
         restoreAuth: async () => runtime.restoreAccountIfAvailable(),
         startDeviceCodeLogin: async () => runtime.startDeviceCodeLogin(),
         loginWithApiKey: async (apiKey) => runtime.loginWithApiKey(apiKey),
+        logoutAccount: async () => {
+            const blockingChat = state.getSidebarSnapshot().chats.find((chat) => chat.status === "running" || chat.status === "waitingApproval" || chat.status === "cancelling");
+            if (blockingChat) {
+                await vscode.window.showWarningMessage(`Сначала остановите или завершите запрос в чате «${blockingChat.title}».`);
+                return;
+            }
+            const confirmation = await vscode.window.showWarningMessage("Выйти из учетной записи Codex?", {
+                modal: true,
+                detail: "Локальные чаты, вложения и настройки сохранятся. Связи с удаленными диалогами Codex будут сброшены, чтобы можно было безопасно войти под другим пользователем."
+            }, "Выйти");
+            if (confirmation !== "Выйти") {
+                return;
+            }
+            try {
+                await runtime.logoutAccount();
+                await vscode.window.showInformationMessage("Вы вышли из учетной записи Codex.");
+            }
+            catch (error) {
+                await vscode.window.showErrorMessage(error instanceof Error ? error.message : "Не удалось выйти из учетной записи Codex.");
+            }
+        },
         openDeviceCodeUrl: async () => runtime.openDeviceCodeUrl(),
         copyDeviceCode: async () => runtime.copyDeviceCode(),
         copyDeviceCodeUrl: async () => runtime.copyDeviceCodeUrl(),

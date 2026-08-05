@@ -90,6 +90,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           await this.handlers.loginWithApiKey(message.payload.apiKey);
         }
         return;
+      case "auth.logout":
+        await this.handlers.logoutAccount();
+        return;
       case "settings.proxy.open":
       case "settings.open":
         await this.handlers.openSettings();
@@ -146,6 +149,7 @@ export interface SidebarHandlers {
   restoreAuth(): Promise<void>;
   startDeviceCodeLogin(): Promise<void>;
   loginWithApiKey(apiKey: string): Promise<void>;
+  logoutAccount(): Promise<void>;
   openDeviceCodeUrl(): Promise<void>;
   copyDeviceCode(): Promise<void>;
   copyDeviceCodeUrl(): Promise<void>;

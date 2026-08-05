@@ -109,6 +109,9 @@ class SidebarProvider {
                     await this.handlers.loginWithApiKey(message.payload.apiKey);
                 }
                 return;
+            case "auth.logout":
+                await this.handlers.logoutAccount();
+                return;
             case "settings.proxy.open":
             case "settings.open":
                 await this.handlers.openSettings();
