@@ -57,6 +57,7 @@ function checkRequiredFiles(value) {
     "package.json",
     "dist/extension.js",
     "media/chat.js",
+    "media/xbsl-highlighter.js",
     "media/sidebar.js",
     "media/settings.js",
     "resources/context/codex-element-language-rules.md",
