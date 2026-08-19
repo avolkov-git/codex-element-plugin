@@ -27,8 +27,8 @@ const targetRoot = path.join(outputRoot, "browser", platformId);
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), `codex-element-browser-${platformId}.`));
 try {
   fs.writeFileSync(path.join(workspace, "package.json"), `${JSON.stringify({ private: true }, null, 2)}\n`, "utf8");
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  run(npm, ["install", "--omit=dev", "--ignore-scripts", `@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`], workspace, {
+  const npm = resolveNpmInvocation();
+  run(npm.command, [...npm.args, "install", "--omit=dev", "--ignore-scripts", `@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`], workspace, {
     ...process.env,
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
   });
@@ -156,6 +156,21 @@ function run(command, commandArgs, cwd, env) {
   if (result.status !== 0) {
     fail(`${command} exited with code ${result.status}`);
   }
+}
+
+function resolveNpmInvocation() {
+  if (process.platform !== "win32") {
+    return { command: "npm", args: [] };
+  }
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")
+  ].filter(Boolean);
+  const npmCli = candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+  if (!npmCli) {
+    fail(`cannot find npm-cli.js next to ${process.execPath}`);
+  }
+  return { command: process.execPath, args: [npmCli] };
 }
 
 function parseArgs(rawArgs) {
