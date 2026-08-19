@@ -38,8 +38,10 @@ const child_process_1 = require("child_process");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
+const codexIntegrationConstants_1 = require("./codexIntegrationConstants");
 const jsonRpcClient_1 = require("./jsonRpcClient");
 const logger_1 = require("./logger");
+const mcpElicitationPolicy_1 = require("./mcpElicitationPolicy");
 const platform_1 = require("./platform");
 const runtimeProcessManager_1 = require("./runtimeProcessManager");
 const worklogNormalizer_1 = require("./worklogNormalizer");
@@ -2138,6 +2140,9 @@ class CodexRuntimeController {
         }
     }
     async handleServerRequest(request) {
+        if (request.method === codexIntegrationConstants_1.MCP_SERVER_ELICITATION_REQUEST_METHOD) {
+            return this.handleMcpElicitationRequest(request);
+        }
         const normalized = normalizeApprovalRequest(request, this.itemPayloads);
         if (!normalized) {
             this.options.logger.warn(`Unsupported app-server request: ${request.method}; payload=${sanitizePayload(request.params)}.`);
@@ -2160,6 +2165,25 @@ class CodexRuntimeController {
                 resolve: (approved) => resolve(normalized.resolvePayload(approved))
             });
         });
+    }
+    handleMcpElicitationRequest(request) {
+        const chatId = this.findChatIdForNotification(request.params, { allowLatestFallback: false });
+        const chat = chatId ? this.options.state.getChat(chatId) : undefined;
+        const resolution = (0, mcpElicitationPolicy_1.resolveManagedMcpElicitation)(request, {
+            threadId: chat?.backendThreadId ?? null,
+            turnId: chat?.activeTurnId ?? null,
+            activeVisibleTurn: Boolean(chat && !chat.archivedAt && chat.status === "running")
+        });
+        if (!resolution) {
+            return {};
+        }
+        if (resolution.autoApproved) {
+            this.options.logger.info(`Managed MCP tool call auto-approved: server=${resolution.serverName}; chat=${chatId}; turn=${chat?.activeTurnId}.`);
+        }
+        else {
+            this.options.logger.warn(`MCP elicitation declined without UI: server=${resolution.serverName}; reason=${resolution.reason}; chat=${chatId ?? "-"}.`);
+        }
+        return resolution.response;
     }
     handleExit(code, signal) {
         const wasCancelFallback = this.suppressNextExitAsCancel;

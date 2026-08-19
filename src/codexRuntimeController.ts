@@ -3,12 +3,14 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { ChatAttachmentService } from "./chatAttachmentService";
+import { MCP_SERVER_ELICITATION_REQUEST_METHOD } from "./codexIntegrationConstants";
 import { ContextBlock } from "./contextRouterService";
 import { ContextTurnInput, ContextTurnOrchestrator, ContextTurnOrchestratorResult } from "./contextTurnOrchestrator";
 import { DiagnosticsContextService } from "./diagnosticsContextService";
 import { DocsPlannerRuntimeRequest, DocsRetrievalLoopService } from "./docsRetrievalLoopService";
 import { JsonRpcClient, JsonRpcNotification, JsonRpcServerRequest } from "./jsonRpcClient";
 import { Logger, redact } from "./logger";
+import { resolveManagedMcpElicitation } from "./mcpElicitationPolicy";
 import { NativeContextToolLoopService } from "./nativeContextToolLoopService";
 import {
   formatRuntimeExecutableSummary,
@@ -2441,6 +2443,10 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 
   private async handleServerRequest(request: JsonRpcServerRequest): Promise<unknown> {
+    if (request.method === MCP_SERVER_ELICITATION_REQUEST_METHOD) {
+      return this.handleMcpElicitationRequest(request);
+    }
+
     const normalized = normalizeApprovalRequest(request, this.itemPayloads);
     if (!normalized) {
       this.options.logger.warn(`Unsupported app-server request: ${request.method}; payload=${sanitizePayload(request.params)}.`);
@@ -2468,6 +2474,30 @@ export class CodexRuntimeController implements vscode.Disposable {
         resolve: (approved) => resolve(normalized.resolvePayload(approved))
       });
     });
+  }
+
+  private handleMcpElicitationRequest(request: JsonRpcServerRequest): unknown {
+    const chatId = this.findChatIdForNotification(request.params, { allowLatestFallback: false });
+    const chat = chatId ? this.options.state.getChat(chatId) : undefined;
+    const resolution = resolveManagedMcpElicitation(request, {
+      threadId: chat?.backendThreadId ?? null,
+      turnId: chat?.activeTurnId ?? null,
+      activeVisibleTurn: Boolean(chat && !chat.archivedAt && chat.status === "running")
+    });
+
+    if (!resolution) {
+      return {};
+    }
+    if (resolution.autoApproved) {
+      this.options.logger.info(
+        `Managed MCP tool call auto-approved: server=${resolution.serverName}; chat=${chatId}; turn=${chat?.activeTurnId}.`
+      );
+    } else {
+      this.options.logger.warn(
+        `MCP elicitation declined without UI: server=${resolution.serverName}; reason=${resolution.reason}; chat=${chatId ?? "-"}.`
+      );
+    }
+    return resolution.response;
   }
 
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {

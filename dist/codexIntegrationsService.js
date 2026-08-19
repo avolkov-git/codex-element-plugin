@@ -33,13 +33,13 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CodexIntegrationsService = exports.MANAGED_BROWSER_MCP_NAME = void 0;
+exports.CodexIntegrationsService = void 0;
 const child_process_1 = require("child_process");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
+const codexIntegrationConstants_1 = require("./codexIntegrationConstants");
 const platform_1 = require("./platform");
-exports.MANAGED_BROWSER_MCP_NAME = "codex-element-browser";
 class CodexIntegrationsService {
     constructor(context, settings, profiles, runtime, logger) {
         this.context = context;
@@ -441,7 +441,7 @@ function normalizeMcpCliRecord(value) {
             toolCount: 0,
             resourceCount: 0,
             error: record.disabled_reason || undefined,
-            managed: name === exports.MANAGED_BROWSER_MCP_NAME ? "browser" : undefined
+            managed: name === codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME ? "browser" : undefined
         }];
 }
 function normalizeCliAuthStatus(value) {

@@ -37,7 +37,7 @@ exports.BrowserRuntimeService = void 0;
 const child_process_1 = require("child_process");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
-const codexIntegrationsService_1 = require("./codexIntegrationsService");
+const codexIntegrationConstants_1 = require("./codexIntegrationConstants");
 class BrowserRuntimeService {
     constructor(context, settings, logger) {
         this.context = context;
@@ -55,7 +55,7 @@ class BrowserRuntimeService {
                 platformId: runtime.manifest.platformId,
                 playwrightMcpVersion: runtime.manifest.playwrightMcpVersion,
                 nodeVersion: runtime.manifest.nodeVersion,
-                managedServerName: codexIntegrationsService_1.MANAGED_BROWSER_MCP_NAME
+                managedServerName: codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME
             };
         }
         catch (error) {
@@ -67,7 +67,7 @@ class BrowserRuntimeService {
                 platformId: currentPlatformId(),
                 playwrightMcpVersion: "",
                 nodeVersion: "",
-                managedServerName: codexIntegrationsService_1.MANAGED_BROWSER_MCP_NAME
+                managedServerName: codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME
             };
         }
     }
@@ -125,8 +125,8 @@ class BrowserRuntimeService {
         fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
         this.logger.info(`Browser MCP prepared: platform=${runtime.manifest.platformId}; origins=${origins.size}; sandbox=${settings.disableSandbox ? "disabled" : "enabled"}.`);
         return {
-            originalName: codexIntegrationsService_1.MANAGED_BROWSER_MCP_NAME,
-            name: codexIntegrationsService_1.MANAGED_BROWSER_MCP_NAME,
+            originalName: codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME,
+            name: codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME,
             transport: "stdio",
             command: runtime.nodePath,
             args: [runtime.launcherPath, "--config", configPath],

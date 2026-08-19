@@ -2,7 +2,8 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { MANAGED_BROWSER_MCP_NAME, McpServerSaveInput } from "./codexIntegrationsService";
+import { MANAGED_BROWSER_MCP_NAME } from "./codexIntegrationConstants";
+import { McpServerSaveInput } from "./codexIntegrationsService";
 import { Logger } from "./logger";
 import { BrowserSettingsView, SettingsService } from "./settingsService";
 

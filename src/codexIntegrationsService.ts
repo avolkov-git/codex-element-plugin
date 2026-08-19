@@ -3,13 +3,12 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { CodexRuntimeController } from "./codexRuntimeController";
+import { MANAGED_BROWSER_MCP_NAME } from "./codexIntegrationConstants";
 import { Logger } from "./logger";
 import { resolveBundledRuntimeExecutable, validateRuntimeExecutable } from "./platform";
 import { SettingsService } from "./settingsService";
 import { McpRuntimeStatus, McpServerOption, SkillOption, SkillSelection } from "./types";
 import { UserProfileService } from "./userProfileService";
-
-export const MANAGED_BROWSER_MCP_NAME = "codex-element-browser";
 
 export interface McpServerSaveInput {
   originalName?: string;
