@@ -36,7 +36,11 @@ try {
   const packageJsonPath = require.resolve("@playwright/mcp/package.json", { paths: [workspace] });
   const packageRoot = path.dirname(packageJsonPath);
   const packageManifest = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-  const playwrightCli = require.resolve("playwright/cli", { paths: [packageRoot, workspace] });
+  const playwrightPackageJson = require.resolve("playwright/package.json", { paths: [packageRoot, workspace] });
+  const playwrightCli = path.join(path.dirname(playwrightPackageJson), "cli.js");
+  if (!fs.existsSync(playwrightCli)) {
+    fail(`cannot find Playwright CLI under ${path.dirname(playwrightPackageJson)}`);
+  }
   const browsersPath = path.join(workspace, "browsers");
   run(process.execPath, [playwrightCli, "install", "chromium"], workspace, {
     ...process.env,
