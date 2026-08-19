@@ -33,12 +33,13 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CodexIntegrationsService = void 0;
+exports.CodexIntegrationsService = exports.MANAGED_BROWSER_MCP_NAME = void 0;
 const child_process_1 = require("child_process");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const platform_1 = require("./platform");
+exports.MANAGED_BROWSER_MCP_NAME = "codex-element-browser";
 class CodexIntegrationsService {
     constructor(context, settings, profiles, runtime, logger) {
         this.context = context;
@@ -198,6 +199,10 @@ class CodexIntegrationsService {
         await this.refresh(true);
         this.logger.info(`MCP server saved: name=${normalized.name}; transport=${normalized.transport}; enabled=${normalized.enabled !== false}.`);
         return normalized.name;
+    }
+    async getConfiguredMcpServer(name) {
+        const normalizedName = validateMcpName(name);
+        return (await this.listConfiguredMcpServers()).find((server) => server.name === normalizedName);
     }
     async removeMcpServer(name) {
         const normalizedName = validateMcpName(name);
@@ -435,7 +440,8 @@ function normalizeMcpCliRecord(value) {
             runtimeStatus: "unknown",
             toolCount: 0,
             resourceCount: 0,
-            error: record.disabled_reason || undefined
+            error: record.disabled_reason || undefined,
+            managed: name === exports.MANAGED_BROWSER_MCP_NAME ? "browser" : undefined
         }];
 }
 function normalizeCliAuthStatus(value) {

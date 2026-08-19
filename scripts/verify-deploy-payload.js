@@ -25,6 +25,7 @@ checkRequiredFiles(root);
 checkForbiddenEntries(root);
 checkPackageMetadata(root);
 checkRuntimeBinaries(root);
+checkBrowserRuntime(root);
 
 if (warnings.length) {
   for (const warning of warnings) {
@@ -89,7 +90,7 @@ function checkForbiddenEntries(value) {
   ]);
 
   walk(value, (entryPath, entry, relativePath) => {
-    if (entry.isDirectory() && forbiddenDirs.has(entry.name)) {
+    if (entry.isDirectory() && forbiddenDirs.has(entry.name) && !isAllowedBrowserDependencyDirectory(relativePath, entry.name)) {
       const message = `forbidden directory in deploy payload: ${relativePath}`;
       strict ? errors.push(message) : warnings.push(message);
       return false;
@@ -104,6 +105,14 @@ function checkForbiddenEntries(value) {
     }
     return true;
   });
+}
+
+function isAllowedBrowserDependencyDirectory(relativePath, name) {
+  if (name !== "node_modules") {
+    return false;
+  }
+  const parts = relativePath.split(path.sep);
+  return parts.length >= 3 && parts[0] === "browser" && parts.includes("node_modules");
 }
 
 function checkPackageMetadata(value) {
@@ -177,6 +186,64 @@ function checkRuntimeBinaries(value) {
         errors.push(`unexpected runtime in platform-only payload: ${path.relative(value, candidatePath)}`);
       }
     }
+  }
+}
+
+function checkBrowserRuntime(value) {
+  if (!args.requireBrowser) {
+    return;
+  }
+  for (const target of requestedRuntimeTargets()) {
+    const runtimeRoot = path.join(value, "browser", target.platformId);
+    const manifestPath = path.join(runtimeRoot, "runtime.json");
+    if (!fs.existsSync(manifestPath)) {
+      errors.push(`missing browser runtime for ${target.platformId}: ${manifestPath}`);
+      continue;
+    }
+    let manifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    } catch (error) {
+      errors.push(`browser runtime manifest is invalid for ${target.platformId}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    if (manifest.schemaVersion !== 1 || manifest.platformId !== target.platformId) {
+      errors.push(`browser runtime manifest does not match ${target.platformId}.`);
+      continue;
+    }
+    for (const [field, executable] of [
+      ["nodePath", true],
+      ["launcherPath", false],
+      ["browserExecutablePath", true]
+    ]) {
+      validateBrowserRuntimeFile(runtimeRoot, manifest[field], `${target.platformId} ${field}`, executable && !target.platformId.startsWith("win32-"));
+    }
+  }
+}
+
+function validateBrowserRuntimeFile(runtimeRoot, relativePath, label, requireExecutable) {
+  if (typeof relativePath !== "string" || !relativePath || path.isAbsolute(relativePath)) {
+    errors.push(`${label} has an unsafe manifest path.`);
+    return;
+  }
+  const resolvedRoot = path.resolve(runtimeRoot);
+  const candidate = path.resolve(runtimeRoot, relativePath);
+  const relative = path.relative(resolvedRoot, candidate);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    errors.push(`${label} escapes the browser runtime root.`);
+    return;
+  }
+  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
+    errors.push(`${label} is missing: ${candidate}`);
+    return;
+  }
+  const stat = fs.statSync(candidate);
+  const head = fs.readFileSync(candidate).subarray(0, 128).toString("utf8");
+  if (head.startsWith("version https://git-lfs.github.com/spec/v1")) {
+    errors.push(`${label} is a Git LFS pointer instead of a real file.`);
+  }
+  if (requireExecutable && (stat.mode & 0o111) === 0) {
+    errors.push(`${label} has no executable bit.`);
   }
 }
 
@@ -257,6 +324,7 @@ function parseArgs(rawArgs) {
     allowLfsPointer: false,
     requireAll: false,
     platformOnly: false,
+    requireBrowser: false,
     help: false
   };
 
@@ -280,6 +348,10 @@ function parseArgs(rawArgs) {
     }
     if (arg === "--platform-only") {
       result.platformOnly = true;
+      continue;
+    }
+    if (arg === "--require-browser") {
+      result.requireBrowser = true;
       continue;
     }
     if (arg === "--root") {
@@ -336,6 +408,7 @@ Options:
   --platform <id>[,<id>]    Require runtime for one or more platform ids. Use "all" for full matrix.
   --platform-only           Fail if runtimes for non-requested platforms are present.
   --require-all             Require runtimes for every supported target.
+  --require-browser         Require a managed Playwright MCP runtime for requested platforms.
   --strict                  Treat deploy trash files and Git LFS pointers as errors.
   --allow-lfs-pointer       Treat Git LFS pointer runtime as warning in non-strict dev checks.
   --help                    Show this help.

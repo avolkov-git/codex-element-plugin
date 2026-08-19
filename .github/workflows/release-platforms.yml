@@ -15,9 +15,17 @@ concurrency:
 
 jobs:
   package:
-    name: Package Windows and Linux x64
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    name: Package ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: win32-x64
+            os: windows-latest
+          - platform: linux-x64
+            os: ubuntu-latest
 
     steps:
       - name: Check out source without the full LFS matrix
@@ -30,8 +38,8 @@ jobs:
         shell: bash
         run: |
           git lfs install --local
-          git lfs pull --include="bin/win32-x64/**,bin/linux-x64/**" --exclude=""
-          node scripts/verify-runtime-binaries.js --platform win32-x64,linux-x64
+          git lfs pull --include="bin/${{ matrix.platform }}/**" --exclude=""
+          node scripts/verify-runtime-binaries.js --platform "${{ matrix.platform }}"
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -65,19 +73,54 @@ jobs:
           node --check media/settings.js
           git diff --check
 
+      - name: Prepare managed Playwright MCP browser runtime
+        shell: bash
+        run: |
+          node scripts/prepare-browser-runtime.js \
+            --root "${RUNNER_TEMP}/codex-browser-runtime" \
+            --platform "${{ matrix.platform }}"
+
       - name: Build platform packages
-        run: node scripts/package-platform-releases.js --output "${RUNNER_TEMP}/codex-plugin-release"
+        shell: bash
+        run: |
+          node scripts/package-platform-releases.js \
+            --platform "${{ matrix.platform }}" \
+            --browser-runtime-root "${RUNNER_TEMP}/codex-browser-runtime" \
+            --output "${RUNNER_TEMP}/codex-plugin-release"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: codex-element-${{ github.ref_name }}
-          path: ${{ runner.temp }}/codex-plugin-release/*
+          name: codex-element-${{ matrix.platform }}-${{ github.ref_name }}
+          path: ${{ runner.temp }}/codex-plugin-release/codex-plugins-*
           if-no-files-found: error
           retention-days: 14
 
+  publish:
+    name: Publish platform release
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Check out release metadata source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          lfs: false
+
+      - name: Download platform archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: codex-element-*-${{ github.ref_name }}
+          path: ${{ runner.temp }}/codex-plugin-release
+          merge-multiple: true
+
+      - name: Finalize checksums and release notes
+        run: node scripts/finalize-platform-release.js --output "${RUNNER_TEMP}/codex-plugin-release"
+
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

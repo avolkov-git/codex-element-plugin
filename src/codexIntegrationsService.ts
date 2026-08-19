@@ -9,6 +9,8 @@ import { SettingsService } from "./settingsService";
 import { McpRuntimeStatus, McpServerOption, SkillOption, SkillSelection } from "./types";
 import { UserProfileService } from "./userProfileService";
 
+export const MANAGED_BROWSER_MCP_NAME = "codex-element-browser";
+
 export interface McpServerSaveInput {
   originalName?: string;
   name: string;
@@ -226,6 +228,11 @@ export class CodexIntegrationsService implements vscode.Disposable {
     await this.refresh(true);
     this.logger.info(`MCP server saved: name=${normalized.name}; transport=${normalized.transport}; enabled=${normalized.enabled !== false}.`);
     return normalized.name;
+  }
+
+  async getConfiguredMcpServer(name: string): Promise<McpServerOption | undefined> {
+    const normalizedName = validateMcpName(name);
+    return (await this.listConfiguredMcpServers()).find((server) => server.name === normalizedName);
   }
 
   async removeMcpServer(name: string): Promise<void> {
@@ -482,7 +489,8 @@ function normalizeMcpCliRecord(value: unknown): McpServerOption[] {
     runtimeStatus: "unknown",
     toolCount: 0,
     resourceCount: 0,
-    error: record.disabled_reason || undefined
+    error: record.disabled_reason || undefined,
+    managed: name === MANAGED_BROWSER_MCP_NAME ? "browser" : undefined
   }];
 }
 

@@ -15,11 +15,15 @@ const sourceRoot = path.resolve(__dirname, "..");
 const args = parseArgs(process.argv.slice(2));
 const outputRoot = path.resolve(args.output || path.resolve(sourceRoot, "..", "codex-plugin-release"));
 const fallbackRuntimeRoot = path.resolve(args.runtimeRoot || path.resolve(sourceRoot, "..", "codex-plugin-deploy"));
+const browserRuntimeRoot = path.resolve(args.browserRuntimeRoot || path.resolve(sourceRoot, "..", "codex-browser-runtime"));
 const manifest = JSON.parse(fs.readFileSync(path.join(sourceRoot, "package.json"), "utf8"));
-const releaseTargets = [
+const allReleaseTargets = [
   { platformId: "win32-x64", extension: "zip" },
   { platformId: "linux-x64", extension: "tar.gz" }
 ];
+const releaseTargets = args.platforms.length
+  ? allReleaseTargets.filter((target) => args.platforms.includes(target.platformId))
+  : allReleaseTargets;
 
 if (args.help) {
   printHelp();
@@ -30,9 +34,14 @@ main();
 
 function main() {
   validateOutputRoot();
-  requireTool("zip");
-  requireTool("unzip");
-  requireTool("tar");
+  validateTargets();
+  if (releaseTargets.some((target) => target.extension === "zip") && process.platform !== "win32") {
+    requireTool("zip");
+    requireTool("unzip");
+  }
+  if (releaseTargets.some((target) => target.extension === "tar.gz")) {
+    requireTool("tar");
+  }
 
   fs.mkdirSync(outputRoot, { recursive: true });
   const workingRoot = fs.mkdtempSync(path.join(os.tmpdir(), `codex-element-release-${manifest.version}.`));
@@ -66,13 +75,14 @@ function buildReleaseTarget(workingRoot, releaseTarget) {
     "--platform", releaseTarget.platformId,
     "--platform-only",
     "--runtime-root", runtimeRoot,
+    "--browser-runtime-root", browserRuntimeRoot,
     "--strict"
   ]);
   assertPayloadVersion(payloadRoot);
 
   fs.rmSync(archivePath, { force: true });
   if (releaseTarget.extension === "zip") {
-    runCommand("zip", ["-X", "-q", "-r", archivePath, "codex-plugins"], platformRoot);
+    createZip(platformRoot, payloadRoot, archivePath);
   } else {
     runCommand("tar", ["-czf", archivePath, "codex-plugins"], platformRoot);
   }
@@ -105,7 +115,7 @@ function verifyArchive(workingRoot, releaseTarget, archivePath) {
   const verificationRoot = path.join(workingRoot, `verify-${releaseTarget.platformId}`);
   fs.mkdirSync(verificationRoot, { recursive: true });
   if (releaseTarget.extension === "zip") {
-    runCommand("unzip", ["-q", archivePath, "-d", verificationRoot], sourceRoot);
+    extractZip(archivePath, verificationRoot);
   } else {
     runCommand("tar", ["-xzf", archivePath, "-C", verificationRoot], sourceRoot);
   }
@@ -113,6 +123,7 @@ function verifyArchive(workingRoot, releaseTarget, archivePath) {
     "--root", path.join(verificationRoot, "codex-plugins"),
     "--platform", releaseTarget.platformId,
     "--platform-only",
+    "--require-browser",
     "--strict"
   ]);
 }
@@ -139,6 +150,7 @@ function writeReleaseReadme(artifacts) {
     "",
     "Выбирайте архив по операционной системе сервера Element, а не компьютера с браузером.",
     "После распаковки скопируйте каталог `codex-plugins` в `/plugins` сервера Element.",
+    "Каждый архив содержит Codex app-server и управляемый Playwright MCP browser runtime для своей платформы.",
     "Проверяйте SHA-256 по `SHA256SUMS.txt`.",
     ""
   ];
@@ -152,6 +164,38 @@ function validateOutputRoot() {
   if (path.parse(outputRoot).root === outputRoot) {
     throw new Error(`Refusing to write release artifacts into filesystem root: ${outputRoot}`);
   }
+}
+
+function validateTargets() {
+  if (!releaseTargets.length) {
+    throw new Error(`No release target selected. Supported: ${allReleaseTargets.map((target) => target.platformId).join(", ")}.`);
+  }
+  for (const requested of args.platforms) {
+    if (!allReleaseTargets.some((target) => target.platformId === requested)) {
+      throw new Error(`Unsupported release platform: ${requested}.`);
+    }
+  }
+  if (!fs.existsSync(browserRuntimeRoot)) {
+    throw new Error(`Browser runtime root does not exist: ${browserRuntimeRoot}. Prepare it with scripts/prepare-browser-runtime.js.`);
+  }
+}
+
+function createZip(platformRoot, payloadRoot, archivePath) {
+  if (process.platform !== "win32") {
+    runCommand("zip", ["-X", "-q", "-r", archivePath, "codex-plugins"], platformRoot);
+    return;
+  }
+  const script = "& { param($source, $destination) Compress-Archive -LiteralPath $source -DestinationPath $destination -Force }";
+  runCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script, payloadRoot, archivePath], platformRoot);
+}
+
+function extractZip(archivePath, destinationPath) {
+  if (process.platform !== "win32") {
+    runCommand("unzip", ["-q", archivePath, "-d", destinationPath], sourceRoot);
+    return;
+  }
+  const script = "& { param($source, $destination) Expand-Archive -LiteralPath $source -DestinationPath $destination -Force }";
+  runCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script, archivePath, destinationPath], sourceRoot);
 }
 
 function runNodeScript(scriptName, scriptArgs) {
@@ -180,19 +224,23 @@ function requireTool(command) {
 }
 
 function parseArgs(rawArgs) {
-  const result = { output: "", runtimeRoot: "", help: false };
+  const result = { output: "", runtimeRoot: "", browserRuntimeRoot: "", platforms: [], help: false };
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
     if (arg === "--help" || arg === "-h") {
       result.help = true;
       continue;
     }
-    if (arg === "--output" || arg === "--runtime-root") {
+    if (arg === "--output" || arg === "--runtime-root" || arg === "--browser-runtime-root" || arg === "--platform") {
       const value = rawArgs[index + 1];
       if (!value || value.startsWith("--")) {
         throw new Error(`${arg} requires a path value.`);
       }
-      result[arg.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = value;
+      if (arg === "--platform") {
+        result.platforms.push(...splitPlatformList(value));
+      } else {
+        result[arg.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = value;
+      }
       index += 1;
       continue;
     }
@@ -204,9 +252,21 @@ function parseArgs(rawArgs) {
       result.runtimeRoot = arg.slice("--runtime-root=".length);
       continue;
     }
+    if (arg.startsWith("--browser-runtime-root=")) {
+      result.browserRuntimeRoot = arg.slice("--browser-runtime-root=".length);
+      continue;
+    }
+    if (arg.startsWith("--platform=")) {
+      result.platforms.push(...splitPlatformList(arg.slice("--platform=".length)));
+      continue;
+    }
     throw new Error(`Unknown option: ${arg}`);
   }
   return result;
+}
+
+function splitPlatformList(value) {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
 function isInside(candidate, parent) {
@@ -224,6 +284,9 @@ function printHelp() {
 Options:
   --output <path>        Artifact directory. Defaults to ../codex-plugin-release.
   --runtime-root <path>  Fallback root with real runtime binaries.
+  --browser-runtime-root <path>
+                         Root prepared by prepare-browser-runtime.js.
+  --platform <id>        Build one platform (win32-x64 or linux-x64). Repeatable.
   --help                 Show this help.
 `);
 }

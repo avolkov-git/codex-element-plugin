@@ -1,11 +1,12 @@
 import * as vscode from "vscode";
 import { BaseContextService } from "./baseContextService";
+import { BrowserRuntimeService, BrowserRuntimeTestResult } from "./browserRuntimeService";
 import { CodexIntegrationsService, McpServerSaveInput } from "./codexIntegrationsService";
 import { DocsNormalizerProgress, DocsNormalizerService } from "./docsNormalizerService";
 import { Logger } from "./logger";
 import { getCodexPanelIconPath } from "./panelIcon";
 import { RipgrepInstallProgress, RipgrepInstallerService } from "./ripgrepInstallerService";
-import { ProxySaveInput, SettingsService } from "./settingsService";
+import { BrowserSettingsInput, ProxySaveInput, SettingsService } from "./settingsService";
 import { SkillSelection, WebviewCommand } from "./types";
 import { renderWebviewHtml } from "./webviewHtml";
 
@@ -34,6 +35,7 @@ export class SettingsPanelManager {
     private readonly ripgrepInstaller: RipgrepInstallerService,
     private readonly baseContext: BaseContextService,
     private readonly integrations: CodexIntegrationsService,
+    private readonly browserRuntime: BrowserRuntimeService,
     private readonly logger: Logger,
     private readonly onSettingsChanged: (options?: { restartRuntime?: boolean; docsChanged?: boolean }) => Promise<void>
   ) {
@@ -201,6 +203,43 @@ export class SettingsPanelManager {
       return;
     }
 
+    if (message.command === "settings.browser.save") {
+      const input = parseBrowserSettingsInput(message.payload);
+      if (!input) {
+        await this.postError(panel, "Проверьте URL и разрешенные origins браузера.");
+        return;
+      }
+      const previous = this.settings.getBrowserSettingsView();
+      try {
+        this.settings.saveBrowserSettings(input);
+        const existing = await this.integrations.getConfiguredMcpServer(this.browserRuntime.getView().managedServerName);
+        if (input.enabled) {
+          const mcpInput = this.browserRuntime.prepareMcpServer();
+          if (!existing) {
+            delete mcpInput.originalName;
+          }
+          await this.integrations.saveMcpServer(mcpInput);
+        } else if (existing?.enabled) {
+          await this.integrations.setMcpEnabled(existing.name, false);
+        }
+        await this.postSaved(panel, input.enabled
+          ? "Браузерное тестирование включено. Codex получил Playwright MCP."
+          : "Браузерное тестирование выключено.");
+        await this.postSnapshot(panel);
+      } catch (error) {
+        this.settings.saveBrowserSettings(previous);
+        await this.postError(panel, error instanceof Error ? error.message : "Не удалось сохранить браузерное тестирование.");
+        await this.postSnapshot(panel);
+      }
+      return;
+    }
+
+    if (message.command === "settings.browser.test") {
+      const result: BrowserRuntimeTestResult = await this.browserRuntime.test();
+      await panel.webview.postMessage({ type: "event", event: "settings.browser.test.result", payload: result });
+      return;
+    }
+
     if (message.command === "settings.mcp.save") {
       const input = parseMcpServerInput(message.payload);
       if (!input) {
@@ -352,6 +391,7 @@ export class SettingsPanelManager {
         proxy: await this.settings.getProxySettingsView(),
         docs: this.settings.getDocsSettingsView(),
         tools: await this.settings.getToolsSettingsView(),
+        browser: this.browserRuntime.getView(),
         integrations: this.integrations.getSnapshot(),
         normalizer: this.normalizerProgress,
         ripgrepInstaller: this.ripgrepProgress
@@ -534,6 +574,23 @@ function parseRipgrepPath(payload: unknown): string | undefined {
   }
   const value = payload as Record<string, unknown>;
   return typeof value.ripgrepPath === "string" ? value.ripgrepPath : undefined;
+}
+
+function parseBrowserSettingsInput(payload: unknown): BrowserSettingsInput | undefined {
+  if (!isRecord(payload) || typeof payload.enabled !== "boolean" || typeof payload.baseUrl !== "string") {
+    return undefined;
+  }
+  const allowedOrigins = Array.isArray(payload.allowedOrigins)
+    ? payload.allowedOrigins.filter((value): value is string => typeof value === "string")
+    : typeof payload.allowedOrigins === "string"
+      ? payload.allowedOrigins.split(/[\r\n,]+/).map((value) => value.trim()).filter(Boolean)
+      : [];
+  return {
+    enabled: payload.enabled,
+    baseUrl: payload.baseUrl,
+    allowedOrigins,
+    disableSandbox: payload.disableSandbox === true
+  };
 }
 
 function parseMcpServerInput(payload: unknown): McpServerSaveInput | undefined {

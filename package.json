@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.86",
+  "version": "0.1.87",
   "publisher": "element-ai",
   "license": "MIT",
   "private": true,
@@ -47,6 +47,7 @@
     "deploy:stage": "node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy --platform win32-x64 --allow-lfs-pointer",
     "deploy:stage:strict": "node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy --platform win32-x64 --strict",
     "deploy:stage:release": "node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy --require-all --strict",
+    "browser:prepare": "node scripts/prepare-browser-runtime.js",
     "release:platforms": "npm run build && node scripts/package-platform-releases.js",
     "smoke:unix": "node scripts/unix-smoke-check.js --platform linux-x64"
   },

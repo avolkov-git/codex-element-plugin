@@ -115,6 +115,7 @@ export interface McpServerOption {
   resourceCount: number;
   description?: string;
   error?: string;
+  managed?: "browser";
 }
 
 export interface McpRuntimeStatus {

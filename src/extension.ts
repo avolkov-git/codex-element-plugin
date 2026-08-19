@@ -2,6 +2,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { ApprovalAttentionService } from "./approvalAttentionService";
 import { BaseContextService } from "./baseContextService";
+import { BrowserRuntimeService } from "./browserRuntimeService";
 import { ChatPanelManager } from "./chatPanelManager";
 import { ChatAttachmentService } from "./chatAttachmentService";
 import { ChatHistoryService } from "./chatHistoryService";
@@ -280,7 +281,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(runtime);
   integrations = new CodexIntegrationsService(context, settings, profiles, runtime, logger);
   context.subscriptions.push(integrations);
-  const settingsPanels = new SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, integrations, logger, async (options) => {
+  const browserRuntime = new BrowserRuntimeService(context, settings, logger);
+  const settingsPanels = new SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, integrations, browserRuntime, logger, async (options) => {
     if (options?.docsChanged) {
       docsContext.invalidate();
     }

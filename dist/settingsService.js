@@ -100,6 +100,37 @@ class SettingsService {
             validationMessage: probe.ok ? probe.message : probe.message || "Путь до rg недоступен."
         };
     }
+    getBrowserSettingsView() {
+        const browser = this.readSettings().browser;
+        const baseUrl = browser?.baseUrl?.trim() ?? "";
+        const allowedOrigins = normalizeOrigins(browser?.allowedOrigins ?? []);
+        return {
+            enabled: browser?.enabled === true,
+            baseUrl,
+            allowedOrigins,
+            disableSandbox: browser?.disableSandbox === true,
+            validationMessage: validateBrowserSettings(browser?.enabled === true, baseUrl, allowedOrigins)
+        };
+    }
+    saveBrowserSettings(input) {
+        const baseUrl = input.baseUrl.trim();
+        const allowedOrigins = normalizeOrigins(input.allowedOrigins);
+        const validationMessage = validateBrowserSettings(input.enabled, baseUrl, allowedOrigins);
+        if (validationMessage) {
+            throw new Error(validationMessage);
+        }
+        const current = this.readSettings();
+        this.writeSettings({
+            ...current,
+            browser: {
+                enabled: input.enabled,
+                baseUrl,
+                allowedOrigins,
+                disableSandbox: input.disableSandbox
+            }
+        });
+        return this.getBrowserSettingsView();
+    }
     getSidebarDocsStatus() {
         const docs = this.readSettings().docs;
         const normalizedPath = docs?.normalizedPath?.trim() ?? "";
@@ -424,6 +455,56 @@ function resolveUnixConfigRoot() {
     for (const candidate of candidates) {
         if (ensureWritable(candidate)) {
             return candidate;
+        }
+    }
+    return "";
+}
+function normalizeOrigins(values) {
+    const result = new Set();
+    for (const value of values) {
+        const candidate = value.trim();
+        if (!candidate) {
+            continue;
+        }
+        try {
+            const parsed = new URL(candidate);
+            if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+                result.add(parsed.origin);
+            }
+        }
+        catch {
+            result.add(candidate);
+        }
+    }
+    return [...result].slice(0, 20);
+}
+function validateBrowserSettings(enabled, baseUrl, allowedOrigins) {
+    if (!enabled && !baseUrl && !allowedOrigins.length) {
+        return "";
+    }
+    if (enabled && !baseUrl) {
+        return "Укажите URL приложения, которое Codex будет открывать для проверки.";
+    }
+    if (baseUrl) {
+        try {
+            const parsed = new URL(baseUrl);
+            if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+                return "URL приложения должен использовать http или https.";
+            }
+        }
+        catch {
+            return "Укажите корректный URL приложения.";
+        }
+    }
+    for (const origin of allowedOrigins) {
+        try {
+            const parsed = new URL(origin);
+            if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.origin !== origin) {
+                return `Недопустимый origin: ${origin}. Укажите только схему, хост и порт.`;
+            }
+        }
+        catch {
+            return `Недопустимый origin: ${origin}.`;
         }
     }
     return "";

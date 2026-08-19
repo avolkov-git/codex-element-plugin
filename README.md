@@ -5,7 +5,7 @@
 Плагин для Theia IDE, который добавляет Codex в среду разработки 1C: Элемент. Runtime работает через поставляемый вместе с плагином [codex app-server](https://github.com/openai/codex).
 Подробнее про `codex app-server` [тут](https://developers.openai.com/codex/app-server) и [тут](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
-- Текущая версия плагина: `0.1.86`
+- Текущая версия плагина: `0.1.87`
 - Текущая версия Codex CLI/app-server: `0.144.5`
 - Готовые поставки: Windows x64 и Linux x64
 - Исходный проект также содержит runtime-матрицу для Windows, Linux и macOS на x64 и arm64
@@ -46,13 +46,14 @@
 - OAuth и bearer token через переменную окружения.
 - Навыки Codex с включением на уровне профиля и прикреплением к сообщению.
 - Настраиваемый proxy для app-server и загрузки управляемых инструментов.
+- Управляемый Playwright MCP с собственными Node.js и Chromium для проверки web-приложений с сервера Element.
 
 ## Установка
 
 1. Откройте страницу [Releases](https://github.com/avolkov-git/codex-element-plugin/releases).
 2. Выберите архив по операционной системе сервера Element:
-   - Windows x64: `codex-plugins-0.1.86-win32-x64.zip`;
-   - Linux x64: `codex-plugins-0.1.86-linux-x64.tar.gz`.
+   - Windows x64: `codex-plugins-0.1.87-win32-x64.zip`;
+   - Linux x64: `codex-plugins-0.1.87-linux-x64.tar.gz`.
 3. Сверьте SHA-256 с `SHA256SUMS.txt`.
 4. Распакуйте архив.
 5. Поместите каталог `codex-plugins` в каталог `/plugins` сервера Element.
@@ -93,6 +94,12 @@
 ### Навыки
 
 Плагин получает список через `skills/list`. Переключатель задает доступность навыка. Composer прикрепляет выбранные навыки к следующему сообщению.
+
+### Браузерное тестирование
+
+Платформенная поставка включает официальный `@playwright/mcp`, Node.js и headless Chromium. В настройках укажите URL приложения, доступный именно с сервера Element, и разрешенные origins. После включения плагин регистрирует управляемый stdio MCP-сервер `codex-element-browser`; отдельный порт, `npx`, системный Node.js и `sudo` не требуются.
+
+Это серверный браузер, а не вкладка пользователя: он не наследует cookies открытой IDE. Для приложений с отдельной авторизацией нужен тестовый вход, доступный из browser-сессии. Origin allowlist снижает риск случайных переходов, но не является полноценной границей безопасности. В контейнере без Chromium sandbox опцию его отключения необходимо включать явно.
 
 ### Ripgrep
 
@@ -212,11 +219,22 @@ npm run preflight:deploy
 npm run release:platforms
 ```
 
+Перед локальной platform-specific упаковкой подготовьте browser runtime на целевой ОС. Кросс-компиляция browser runtime не поддерживается: Windows payload собирается на Windows, Linux payload — на Linux.
+
+```bash
+node scripts/prepare-browser-runtime.js --root ../codex-browser-runtime --platform linux-x64
+node scripts/package-platform-releases.js \
+  --platform linux-x64 \
+  --browser-runtime-root ../codex-browser-runtime
+```
+
+GitHub Actions делает это матрицей на `windows-latest` и `ubuntu-latest`, затем объединяет архивы, checksums и release notes.
+
 Команда собирает и повторно распаковывает оба архива, запускает строгий preflight и создает в `../codex-plugin-release`:
 
 ```text
-codex-plugins-0.1.86-win32-x64.zip
-codex-plugins-0.1.86-linux-x64.tar.gz
+codex-plugins-0.1.87-win32-x64.zip
+codex-plugins-0.1.87-linux-x64.tar.gz
 SHA256SUMS.txt
 README_RELEASE.md
 ```
@@ -225,7 +243,7 @@ README_RELEASE.md
 
 ### Автоматический выпуск
 
-Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v0.1.86`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
+Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v0.1.87`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
 
 CI загружает из Git LFS только `win32-x64` и `linux-x64`. Остальная runtime-матрица не скачивается для этого релиза.
 

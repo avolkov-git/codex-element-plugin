@@ -26,6 +26,12 @@ interface ServerSettingsFile {
     ripgrepManaged?: boolean;
     ripgrepVersion?: string;
   };
+  browser?: {
+    enabled?: boolean;
+    baseUrl?: string;
+    allowedOrigins?: string[];
+    disableSandbox?: boolean;
+  };
 }
 
 interface ConfigRootResolution {
@@ -68,6 +74,17 @@ export interface ToolsSettingsView {
   ripgrepManaged: boolean;
   ripgrepVersion: string;
   ripgrepStatus: "notConfigured" | "configured" | "error";
+  validationMessage: string;
+}
+
+export interface BrowserSettingsInput {
+  enabled: boolean;
+  baseUrl: string;
+  allowedOrigins: string[];
+  disableSandbox: boolean;
+}
+
+export interface BrowserSettingsView extends BrowserSettingsInput {
   validationMessage: string;
 }
 
@@ -142,6 +159,39 @@ export class SettingsService {
       ripgrepStatus: probe.ok ? "configured" : "error",
       validationMessage: probe.ok ? probe.message : probe.message || "Путь до rg недоступен."
     };
+  }
+
+  getBrowserSettingsView(): BrowserSettingsView {
+    const browser = this.readSettings().browser;
+    const baseUrl = browser?.baseUrl?.trim() ?? "";
+    const allowedOrigins = normalizeOrigins(browser?.allowedOrigins ?? []);
+    return {
+      enabled: browser?.enabled === true,
+      baseUrl,
+      allowedOrigins,
+      disableSandbox: browser?.disableSandbox === true,
+      validationMessage: validateBrowserSettings(browser?.enabled === true, baseUrl, allowedOrigins)
+    };
+  }
+
+  saveBrowserSettings(input: BrowserSettingsInput): BrowserSettingsView {
+    const baseUrl = input.baseUrl.trim();
+    const allowedOrigins = normalizeOrigins(input.allowedOrigins);
+    const validationMessage = validateBrowserSettings(input.enabled, baseUrl, allowedOrigins);
+    if (validationMessage) {
+      throw new Error(validationMessage);
+    }
+    const current = this.readSettings();
+    this.writeSettings({
+      ...current,
+      browser: {
+        enabled: input.enabled,
+        baseUrl,
+        allowedOrigins,
+        disableSandbox: input.disableSandbox
+      }
+    });
+    return this.getBrowserSettingsView();
   }
 
   getSidebarDocsStatus(): { status: "notConfigured" | "configured" | "error"; label: string } {
@@ -512,6 +562,55 @@ function resolveUnixConfigRoot(): string {
     }
   }
 
+  return "";
+}
+
+function normalizeOrigins(values: readonly string[]): string[] {
+  const result = new Set<string>();
+  for (const value of values) {
+    const candidate = value.trim();
+    if (!candidate) {
+      continue;
+    }
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        result.add(parsed.origin);
+      }
+    } catch {
+      result.add(candidate);
+    }
+  }
+  return [...result].slice(0, 20);
+}
+
+function validateBrowserSettings(enabled: boolean, baseUrl: string, allowedOrigins: readonly string[]): string {
+  if (!enabled && !baseUrl && !allowedOrigins.length) {
+    return "";
+  }
+  if (enabled && !baseUrl) {
+    return "Укажите URL приложения, которое Codex будет открывать для проверки.";
+  }
+  if (baseUrl) {
+    try {
+      const parsed = new URL(baseUrl);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return "URL приложения должен использовать http или https.";
+      }
+    } catch {
+      return "Укажите корректный URL приложения.";
+    }
+  }
+  for (const origin of allowedOrigins) {
+    try {
+      const parsed = new URL(origin);
+      if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.origin !== origin) {
+        return `Недопустимый origin: ${origin}. Укажите только схему, хост и порт.`;
+      }
+    } catch {
+      return `Недопустимый origin: ${origin}.`;
+    }
+  }
   return "";
 }
 

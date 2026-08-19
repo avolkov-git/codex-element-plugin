@@ -39,6 +39,7 @@ const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const approvalAttentionService_1 = require("./approvalAttentionService");
 const baseContextService_1 = require("./baseContextService");
+const browserRuntimeService_1 = require("./browserRuntimeService");
 const chatPanelManager_1 = require("./chatPanelManager");
 const chatAttachmentService_1 = require("./chatAttachmentService");
 const chatHistoryService_1 = require("./chatHistoryService");
@@ -299,7 +300,8 @@ async function activate(context) {
     context.subscriptions.push(runtime);
     integrations = new codexIntegrationsService_1.CodexIntegrationsService(context, settings, profiles, runtime, logger);
     context.subscriptions.push(integrations);
-    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, integrations, logger, async (options) => {
+    const browserRuntime = new browserRuntimeService_1.BrowserRuntimeService(context, settings, logger);
+    const settingsPanels = new settingsPanelManager_1.SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, integrations, browserRuntime, logger, async (options) => {
         if (options?.docsChanged) {
             docsContext.invalidate();
         }

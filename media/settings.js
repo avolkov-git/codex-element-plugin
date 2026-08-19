@@ -11,6 +11,9 @@
     proxyDraft: undefined,
     docsDraft: undefined,
     toolsDraft: undefined,
+    browserDraft: undefined,
+    browserDirty: false,
+    browserTest: null,
     mcpEditor: null,
     mcpSaving: false,
     mcpMessage: "",
@@ -34,8 +37,23 @@
   window.addEventListener("message", (event) => {
     const message = event.data;
     if (message.type === "settings.snapshot") {
-      captureVisibleDrafts();
+      const browserDraft = state.browserDirty && state.snapshot && document.querySelector("#browser-base-url")
+        ? captureBrowserDraft(false)
+        : undefined;
+      if (state.mcpEditor && document.querySelector("#mcp-name")) {
+        state.mcpEditor = captureMcpEditor();
+      }
       state.snapshot = message.snapshot;
+      state.browserDraft = browserDraft
+        ? {
+            ...(message.snapshot?.browser || {}),
+            enabled: browserDraft.enabled,
+            baseUrl: browserDraft.baseUrl,
+            allowedOrigins: browserDraft.allowedOrigins,
+            disableSandbox: browserDraft.disableSandbox,
+            validationMessage: ""
+          }
+        : undefined;
       render();
       return;
     }
@@ -46,6 +64,9 @@
         state.docsDraft = undefined;
       } else if (state.pendingSaveScope === "tools") {
         state.toolsDraft = undefined;
+      } else if (state.pendingSaveScope === "browser") {
+        state.browserDraft = undefined;
+        state.browserDirty = false;
       }
       state.pendingSaveScope = "";
       state.message = String(message.payload || "Настройки сохранены.");
@@ -88,6 +109,16 @@
       render();
       return;
     }
+    if (message.type === "event" && message.event === "settings.browser.test.result") {
+      const result = message.payload && typeof message.payload === "object" ? message.payload : {};
+      state.browserTest = {
+        status: String(result.status || "failed"),
+        message: String(result.message || "Не удалось проверить встроенный браузер."),
+        details: String(result.details || "")
+      };
+      render();
+      return;
+    }
     if (message.type === "event" && message.event === "settings.docs.normalize.progress") {
       state.normalizer = message.payload || { status: "running", percent: 0, stage: "running", message: "Нормализация выполняется" };
       state.message = "";
@@ -117,6 +148,18 @@
     };
     const snapshotNormalizer = state.snapshot && state.snapshot.normalizer ? state.snapshot.normalizer : { status: "idle", percent: 0, stage: "idle", message: "" };
     const snapshotRipgrepInstaller = state.snapshot && state.snapshot.ripgrepInstaller ? state.snapshot.ripgrepInstaller : { status: "idle", percent: 0, stage: "idle", message: "" };
+    const snapshotBrowser = state.snapshot && state.snapshot.browser ? state.snapshot.browser : {
+      enabled: false,
+      baseUrl: "",
+      allowedOrigins: [],
+      disableSandbox: false,
+      validationMessage: "",
+      status: "notInstalled",
+      statusMessage: "Browser runtime не установлен в поставке плагина.",
+      platformId: "",
+      playwrightMcpVersion: "",
+      nodeVersion: ""
+    };
     const integrations = state.snapshot && state.snapshot.integrations ? state.snapshot.integrations : {
       status: "idle",
       mcpStatus: "idle",
@@ -130,6 +173,7 @@
     const proxy = state.proxyDraft || snapshotProxy;
     const docs = state.docsDraft || snapshotDocs;
     const tools = state.toolsDraft || snapshotTools;
+    const browser = state.browserDraft || snapshotBrowser;
     const normalizer = state.normalizer || snapshotNormalizer;
     const ripgrepInstaller = state.ripgrepInstaller || snapshotRipgrepInstaller;
     const normalizerRunning = normalizer.status === "running";
@@ -178,6 +222,7 @@
             <button class="button secondary" id="open-base-context" type="button">Базовый контекст</button>
           </div>
         </section>
+        ${browserSection(browser)}
         ${mcpSection(integrations)}
         ${skillsSection(integrations)}
         <section class="settings-section" aria-label="Прочие настройки">
@@ -242,6 +287,25 @@
         ...(state.snapshot?.tools || {}),
         ripgrepPath: valueOf("#tools-ripgrep-path")
       };
+    });
+
+    root.querySelectorAll("#browser-enabled, #browser-base-url, #browser-origins, #browser-disable-sandbox").forEach((control) => {
+      control.addEventListener("input", captureBrowserDraft);
+      control.addEventListener("change", captureBrowserDraft);
+    });
+
+    root.querySelector("#save-browser")?.addEventListener("click", () => {
+      const browser = captureBrowserDraft();
+      state.pendingSaveScope = "browser";
+      state.browserTest = null;
+      state.message = "";
+      vscode.postMessage({ type: "command", command: "settings.browser.save", payload: browser });
+    });
+
+    root.querySelector("#test-browser")?.addEventListener("click", () => {
+      state.browserTest = { status: "testing", message: "Проверяем Node.js, Playwright MCP и Chromium...", details: "" };
+      render();
+      vscode.postMessage({ type: "command", command: "settings.browser.test" });
     });
 
     const saveDocsButton = root.querySelector("#save-docs");
@@ -365,6 +429,7 @@
     const toolCount = Number(server.toolCount || 0);
     const resourceCount = Number(server.resourceCount || 0);
     const testing = state.mcpAction?.type === "test" && state.mcpAction?.name === server.name && state.mcpAction?.status === "testing";
+    const managedBrowser = server.managed === "browser";
     const metrics = [
       `${toolCount} ${pluralRu(toolCount, "инструмент", "инструмента", "инструментов")}`,
       `${resourceCount} ${pluralRu(resourceCount, "ресурс", "ресурса", "ресурсов")}`,
@@ -377,6 +442,7 @@
           <div class="integration-title-line">
             <strong>${escapeHtml(server.name)}</strong>
             <span class="integration-badge">${server.transport === "stdio" ? "STDIO" : "HTTP"}</span>
+            ${managedBrowser ? `<span class="integration-badge">Встроенный браузер</span>` : ""}
             <span class="integration-runtime">${escapeHtml(runtime)}</span>
           </div>
           <div class="integration-endpoint" title="${escapeAttribute(endpoint)}">${escapeHtml(endpoint)}</div>
@@ -386,13 +452,13 @@
         </div>
         <div class="integration-actions">
           ${server.transport === "http" && server.authStatus === "notLoggedIn" ? `<button class="quiet-button" type="button" data-mcp-oauth="${escapeAttribute(server.name)}">Войти</button>` : ""}
-          <label class="toggle-control" title="${server.enabled === false ? "Включить сервер" : "Выключить сервер"}">
+          ${managedBrowser ? "" : `<label class="toggle-control" title="${server.enabled === false ? "Включить сервер" : "Выключить сервер"}">
             <input type="checkbox" role="switch" aria-label="${server.enabled === false ? "Включить" : "Выключить"} MCP-сервер ${escapeAttribute(server.name)}" data-focus-key="mcp-toggle:${escapeAttribute(server.name)}" data-mcp-toggle="${escapeAttribute(server.name)}" ${server.enabled === false ? "" : "checked"} />
             <span aria-hidden="true"></span>
-          </label>
+          </label>`}
           <button class="quiet-button" type="button" data-focus-key="mcp-test:${escapeAttribute(server.name)}" data-mcp-test="${escapeAttribute(server.name)}" ${server.enabled === false || testing ? "disabled" : ""}>${testing ? "Проверяем..." : "Проверить"}</button>
-          <button class="icon-button" type="button" data-mcp-edit="${escapeAttribute(server.name)}" title="Изменить" aria-label="Изменить MCP-сервер ${escapeAttribute(server.name)}">✎</button>
-          <button class="icon-button danger" type="button" data-mcp-delete="${escapeAttribute(server.name)}" title="Удалить" aria-label="Удалить MCP-сервер ${escapeAttribute(server.name)}">×</button>
+          ${managedBrowser ? "" : `<button class="icon-button" type="button" data-mcp-edit="${escapeAttribute(server.name)}" title="Изменить" aria-label="Изменить MCP-сервер ${escapeAttribute(server.name)}">✎</button>
+          <button class="icon-button danger" type="button" data-mcp-delete="${escapeAttribute(server.name)}" title="Удалить" aria-label="Удалить MCP-сервер ${escapeAttribute(server.name)}">×</button>`}
         </div>
       </div>
     `;
@@ -455,6 +521,64 @@
       return "";
     }
     return `<div class="editor-feedback ${escapeAttribute(state.mcpMessageKind)}" role="status" aria-live="polite">${escapeHtml(state.mcpMessage)}</div>`;
+  }
+
+  function browserSection(browser) {
+    const origins = Array.isArray(browser.allowedOrigins) ? browser.allowedOrigins.join("\n") : String(browser.allowedOrigins || "");
+    const ready = browser.status === "ready";
+    const previouslyEnabled = state.snapshot?.browser?.enabled === true;
+    const settingsActionAvailable = ready || previouslyEnabled;
+    const testing = state.browserTest?.status === "testing";
+    const statusKind = ready ? "success" : "error";
+    return `
+      <section class="settings-section browser-section" aria-label="Браузерное тестирование">
+        <div class="section-heading browser-heading">
+          <div>
+            <h2>Браузерное тестирование</h2>
+            <p>Codex управляет изолированным Chromium на сервере Element через встроенный Playwright MCP.</p>
+          </div>
+          <label class="toggle-control browser-master-toggle" title="Включить браузерное тестирование">
+            <input id="browser-enabled" type="checkbox" role="switch" aria-label="Включить браузерное тестирование" ${browser.enabled ? "checked" : ""} ${settingsActionAvailable ? "" : "disabled"} />
+            <span aria-hidden="true"></span>
+          </label>
+        </div>
+        <div class="browser-boundary-note">
+          <strong>Браузер работает на сервере, а не на компьютере пользователя.</strong>
+          <span>Он может открывать URL приложений, доступные из окружения сервера Element, нажимать кнопки, заполнять формы и делать снимки экрана.</span>
+        </div>
+        <label class="field">
+          <span>URL приложения</span>
+          <input id="browser-base-url" type="url" autocomplete="off" placeholder="http://127.0.0.1:9090/applications/..." value="${escapeAttribute(browser.baseUrl)}" />
+          <small>Эта страница открывается в начале новой изолированной browser-сессии.</small>
+        </label>
+        <label class="field">
+          <span>Разрешенные origins <small>по одному на строку</small></span>
+          <textarea id="browser-origins" spellcheck="false" placeholder="http://127.0.0.1:9090">${escapeHtml(origins)}</textarea>
+          <small>Origin URL приложения добавляется автоматически. Ограничение снижает риск случайных переходов, но не заменяет сетевую изоляцию.</small>
+        </label>
+        <label class="browser-checkbox-row">
+          <input id="browser-disable-sandbox" type="checkbox" ${browser.disableSandbox ? "checked" : ""} />
+          <span><strong>Отключить Chromium sandbox</strong><small>Только для контейнера, где sandbox не запускается. Это снижает безопасность браузера.</small></span>
+        </label>
+        <div class="browser-runtime-status ${escapeAttribute(statusKind)}" role="status">
+          <span class="status-dot ${ready ? "ready" : "failed"}" aria-hidden="true"></span>
+          <span><strong>${ready ? "Runtime готов" : "Runtime недоступен"}</strong>${escapeHtml(browser.statusMessage || "")}</span>
+          ${ready ? `<small>${escapeHtml(browser.platformId)} · Playwright MCP ${escapeHtml(browser.playwrightMcpVersion)} · Node.js ${escapeHtml(browser.nodeVersion)}</small>` : ""}
+        </div>
+        ${browser.validationMessage ? `<div class="hint error">${escapeHtml(browser.validationMessage)}</div>` : ""}
+        ${state.browserTest ? `
+          <div class="browser-test-result ${state.browserTest.status === "ready" ? "success" : state.browserTest.status === "testing" ? "loading" : "error"}" role="status">
+            ${state.browserTest.status === "testing" ? `<span class="inline-spinner" aria-hidden="true"></span>` : ""}
+            <span>${escapeHtml(state.browserTest.message)}</span>
+            ${state.browserTest.details ? `<small>${escapeHtml(state.browserTest.details)}</small>` : ""}
+          </div>
+        ` : ""}
+        <div class="button-row">
+          <button class="button" id="save-browser" type="button" ${settingsActionAvailable ? "" : "disabled"}>Сохранить</button>
+          <button class="button secondary" id="test-browser" type="button" ${ready && !testing ? "" : "disabled"}>${testing ? "Проверяем..." : "Проверить runtime"}</button>
+        </div>
+      </section>
+    `;
   }
 
   function skillsSection(integrations) {
@@ -820,6 +944,22 @@
     };
   }
 
+  function captureBrowserDraft(markDirty = true) {
+    const draft = {
+      ...(state.snapshot?.browser || {}),
+      enabled: Boolean(document.querySelector("#browser-enabled")?.checked),
+      baseUrl: valueOf("#browser-base-url"),
+      allowedOrigins: valueOf("#browser-origins").split(/[\r\n,]+/).map((value) => value.trim()).filter(Boolean),
+      disableSandbox: Boolean(document.querySelector("#browser-disable-sandbox")?.checked),
+      validationMessage: ""
+    };
+    state.browserDraft = draft;
+    if (markDirty) {
+      state.browserDirty = true;
+    }
+    return draft;
+  }
+
   function findMcpServer(name) {
     const integrations = state.snapshot && state.snapshot.integrations;
     return integrations && Array.isArray(integrations.mcpServers)
@@ -921,6 +1061,9 @@
   function captureVisibleDrafts() {
     if (state.mcpEditor && document.querySelector("#mcp-name")) {
       state.mcpEditor = captureMcpEditor();
+    }
+    if (state.browserDirty && state.snapshot && document.querySelector("#browser-base-url")) {
+      captureBrowserDraft(false);
     }
   }
 

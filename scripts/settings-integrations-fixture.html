@@ -59,10 +59,23 @@
         data: {
           type: "settings.snapshot",
           snapshot: {
-            extensionVersion: "0.1.74",
+            extensionVersion: "0.1.87",
             proxy: { url: "", username: "", passwordSaved: false },
             docs: { normalizedPath: "/srv/codex/docs", validationMessage: "" },
             tools: { ripgrepPath: "/srv/codex/tools/rg", ripgrepManaged: true, ripgrepVersion: "14.1.1", ripgrepStatus: "ready", validationMessage: "" },
+            browser: {
+              enabled: true,
+              baseUrl: "http://element.internal:9090/applications/demo",
+              allowedOrigins: ["http://element.internal:9090"],
+              disableSandbox: false,
+              validationMessage: "",
+              status: "ready",
+              statusMessage: "Playwright MCP 0.0.78 готов к запуску.",
+              platformId: "linux-x64",
+              playwrightMcpVersion: "0.0.78",
+              nodeVersion: "v20.19.4",
+              managedServerName: "codex-element-browser"
+            },
             normalizer: { status: "idle", percent: 0, stage: "idle", message: "" },
             ripgrepInstaller: { status: "idle", percent: 0, stage: "idle", message: "" },
             integrations: {
@@ -73,6 +86,7 @@
               skillsMessage: "",
               updatedAt: new Date().toISOString(),
               mcpServers: [
+                { name: "codex-element-browser", enabled: true, managed: "browser", transport: "stdio", command: "/plugins/codex-plugins/browser/linux-x64/node/node", args: ["cli.js"], authStatus: "unsupported", runtimeStatus: "ready", toolCount: 24, resourceCount: 0 },
                 { name: "element-docs", enabled: true, transport: "http", url: "http://127.0.0.1:9900/mcp", authStatus: "unsupported", runtimeStatus: "ready", toolCount: 12, resourceCount: 4 },
                 { name: "workspace-tools", enabled: true, transport: "stdio", command: "node", args: ["server.js"], authStatus: "notLoggedIn", runtimeStatus: "failed", toolCount: 0, resourceCount: 0, error: "Fixture handshake failed: authorization required." }
               ],

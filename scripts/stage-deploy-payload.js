@@ -19,6 +19,7 @@ if (args.help) {
 const sourceRoot = path.resolve(__dirname, "..");
 const targetRoot = path.resolve(args.target || path.resolve(sourceRoot, "..", "codex-plugin-deploy"));
 const runtimeRoot = args.runtimeRoot ? path.resolve(args.runtimeRoot) : "";
+const browserRuntimeRoot = args.browserRuntimeRoot ? path.resolve(args.browserRuntimeRoot) : "";
 const errors = [];
 const warnings = [];
 
@@ -28,6 +29,9 @@ function main() {
   validateTargetPath();
   if (runtimeRoot) {
     validateRuntimeRoot();
+  }
+  if (browserRuntimeRoot) {
+    validateBrowserRuntimeRoot();
   }
   if (errors.length) {
     finish();
@@ -42,7 +46,9 @@ function main() {
     copyPayload(sourceRoot, targetRoot);
     overlayPreservedRuntimes(backupBin);
     overlayRuntimeRoot();
+    overlayBrowserRuntimeRoot();
     pruneUnrequestedRuntimePlatforms();
+    pruneUnrequestedBrowserPlatforms();
     removeInvalidAlternativeRuntimeFiles();
     removeInvalidUnrequestedRuntimeFiles();
     runDeployPreflight();
@@ -78,6 +84,16 @@ function validateRuntimeRoot() {
   }
 }
 
+function validateBrowserRuntimeRoot() {
+  if (!fs.existsSync(browserRuntimeRoot)) {
+    errors.push(`browser runtime root does not exist: ${browserRuntimeRoot}`);
+    return;
+  }
+  if (!fs.statSync(browserRuntimeRoot).isDirectory()) {
+    errors.push(`browser runtime root is not a directory: ${browserRuntimeRoot}`);
+  }
+}
+
 function backupExistingBin(backupBin) {
   const currentBin = path.join(targetRoot, "bin");
   if (!fs.existsSync(currentBin)) {
@@ -99,6 +115,9 @@ function shouldCopyPayloadEntry(relativePath, entry) {
   const name = entry.name;
   if (entry.isDirectory()) {
     if (args.platformOnly && path.dirname(relativePath) === "bin") {
+      return requestedRuntimeDirectoryNames().has(name);
+    }
+    if (args.platformOnly && path.dirname(relativePath) === "browser") {
       return requestedRuntimeDirectoryNames().has(name);
     }
     return ![
@@ -183,6 +202,23 @@ function overlayRuntimeRoot() {
   }
 }
 
+function overlayBrowserRuntimeRoot() {
+  if (!browserRuntimeRoot) {
+    return;
+  }
+
+  for (const target of requestedRuntimeTargets()) {
+    const sourcePath = path.join(browserRuntimeRoot, "browser", target.platformId);
+    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isDirectory()) {
+      errors.push(`browser runtime root has no payload for ${target.platformId}: ${sourcePath}`);
+      continue;
+    }
+    const destinationPath = path.join(targetRoot, "browser", target.platformId);
+    fs.rmSync(destinationPath, { recursive: true, force: true });
+    copyDirectory(sourcePath, destinationPath);
+  }
+}
+
 function removeInvalidAlternativeRuntimeFiles() {
   for (const target of targets) {
     const canonicalPath = targetPaths(targetRoot, target)[0];
@@ -233,6 +269,25 @@ function pruneUnrequestedRuntimePlatforms() {
   }
 }
 
+function pruneUnrequestedBrowserPlatforms() {
+  if (!args.platformOnly) {
+    return;
+  }
+  const browserRoot = path.join(targetRoot, "browser");
+  if (!fs.existsSync(browserRoot)) {
+    return;
+  }
+  const requested = new Set(requestedRuntimeTargets().map((target) => target.platformId));
+  for (const entry of fs.readdirSync(browserRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || requested.has(entry.name)) {
+      continue;
+    }
+    const platformDirectory = path.join(browserRoot, entry.name);
+    fs.rmSync(platformDirectory, { recursive: true, force: true });
+    warnings.push(`removed unrequested browser runtime platform ${entry.name}: ${platformDirectory}`);
+  }
+}
+
 function removeInvalidUnrequestedRuntimeFiles() {
   const requested = new Set(requestedRuntimeTargets().map((target) => target.platformId));
   for (const target of targets) {
@@ -276,6 +331,9 @@ function runDeployPreflight() {
   }
   if (args.platformOnly) {
     preflightArgs.push("--platform-only");
+  }
+  if (browserRuntimeRoot) {
+    preflightArgs.push("--require-browser");
   }
 
   const result = childProcess.spawnSync(process.execPath, preflightArgs, {
@@ -359,6 +417,7 @@ function parseArgs(rawArgs) {
   const result = {
     target: "",
     runtimeRoot: "",
+    browserRuntimeRoot: "",
     platforms: ["win32-x64"],
     requireAll: false,
     platformOnly: false,
@@ -408,6 +467,16 @@ function parseArgs(rawArgs) {
     }
     if (arg.startsWith("--runtime-root=")) {
       result.runtimeRoot = arg.slice("--runtime-root=".length);
+      continue;
+    }
+    if (arg === "--browser-runtime-root") {
+      const value = readValue(rawArgs, index, "--browser-runtime-root");
+      result.browserRuntimeRoot = value.value;
+      index = value.index;
+      continue;
+    }
+    if (arg.startsWith("--browser-runtime-root=")) {
+      result.browserRuntimeRoot = arg.slice("--browser-runtime-root=".length);
       continue;
     }
     if (arg === "--platform") {
@@ -473,6 +542,8 @@ Options:
   --platform-only           Remove every runtime platform not requested by --platform.
   --require-all             Validate and optionally overlay every supported runtime target.
   --runtime-root <path>     Optional root with real runtime binaries in bin-compatible layout.
+  --browser-runtime-root <path>
+                            Optional root with browser/<platform> managed Playwright payloads.
   --strict                  Fail on deploy trash files and Git LFS pointers.
   --allow-lfs-pointer       Allow Git LFS pointer runtime as warning for dev staging.
   --help                    Show this help.
