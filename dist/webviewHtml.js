@@ -36,26 +36,27 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.renderWebviewHtml = renderWebviewHtml;
 const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
+const crypto_1 = require("crypto");
 function renderWebviewHtml(options) {
     const nonce = createNonce();
     const scriptUri = options.webview.asWebviewUri(vscode.Uri.joinPath(options.extensionUri, options.scriptPath));
     const preloadScriptUris = (options.preloadScriptPaths ?? []).map((scriptPath) => options.webview.asWebviewUri(vscode.Uri.joinPath(options.extensionUri, scriptPath)));
     const styleUri = options.webview.asWebviewUri(vscode.Uri.joinPath(options.extensionUri, options.stylePath));
     const inlineScript = readExtensionFile(options.extensionUri, options.scriptPath);
+    const inlinePreloads = (options.preloadScriptPaths ?? []).map((scriptPath) => readExtensionFile(options.extensionUri, scriptPath));
     const inlineStyle = readExtensionFile(options.extensionUri, options.stylePath);
     const rootData = Object.entries(options.rootData ?? {})
         .map(([key, value]) => `data-${escapeAttribute(key)}="${escapeAttribute(value)}"`)
         .join(" ");
-    const fallbackBootstrap = inlineScript
-        ? renderFallbackBootstrap(nonce, inlineScript, inlineStyle ?? "")
+    const fallbackBootstrap = inlineScript && inlinePreloads.every((source) => source !== undefined)
+        ? renderFallbackBootstrap(nonce, [...inlinePreloads, inlineScript], inlineStyle ?? "")
         : "";
     return `<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${options.webview.cspSource} data:; style-src ${options.webview.cspSource} 'unsafe-inline'; script-src ${options.webview.cspSource} 'nonce-${nonce}' 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${escapeAttribute(options.webview.cspSource)} data:; style-src ${escapeAttribute(options.webview.cspSource)} 'unsafe-inline'; script-src ${escapeAttribute(options.webview.cspSource)} 'nonce-${nonce}'; worker-src blob:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="${styleUri}">
   <style>
     body { margin: 0; }
     .webview-fallback { padding: 14px; color: #444; }
@@ -67,25 +68,28 @@ function renderWebviewHtml(options) {
 <body>
   <div id="root" ${rootData}>${renderFallback(options.title)}</div>
   ${fallbackBootstrap}
-  ${preloadScriptUris.map((uri) => `<script defer src="${uri}"></script>`).join("\n  ")}
-  <script defer src="${scriptUri}"></script>
+  <link rel="stylesheet" href="${escapeAttribute(styleUri.toString())}">
+  ${preloadScriptUris.map((uri) => `<script defer nonce="${nonce}" src="${escapeAttribute(uri.toString())}"></script>`).join("\n  ")}
+  <script defer nonce="${nonce}" src="${escapeAttribute(scriptUri.toString())}"></script>
 </body>
 </html>`;
 }
-function renderFallbackBootstrap(nonce, inlineScript, inlineStyle) {
+function renderFallbackBootstrap(nonce, inlineScripts, inlineStyle) {
     return `<script nonce="${nonce}">
-    window.__codexElementAppReady = false;
+    window.__codexElementAppReady = window.__codexElementAppReady === true;
     window.__codexElementWebviewAssetMode = "external";
+    var codexElementInlineStarted = false;
     window.__codexElementRunInlineFallback = function () {
-      if (window.__codexElementAppReady) {
+      if (window.__codexElementAppReady || codexElementInlineStarted) {
         return;
       }
+      codexElementInlineStarted = true;
       window.__codexElementWebviewAssetMode = "inline fallback";
       var style = document.createElement("style");
       style.setAttribute("data-codex-element-inline-fallback", "true");
-      style.textContent = ${JSON.stringify(inlineStyle)};
+      style.textContent = ${escapeScriptEnd(JSON.stringify(inlineStyle))};
       document.head.appendChild(style);
-      ${escapeScriptEnd(inlineScript)}
+      ${inlineScripts.map((source) => `(function () {\n${escapeScriptEnd(source)}\n})();`).join("\n")}
     };
     window.setTimeout(window.__codexElementRunInlineFallback, 700);
   </script>`;
@@ -112,12 +116,7 @@ function escapeScriptEnd(value) {
     return value.replace(/<\/script/gi, "<\\/script");
 }
 function createNonce() {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let value = "";
-    for (let i = 0; i < 32; i += 1) {
-        value += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return value;
+    return (0, crypto_1.randomBytes)(24).toString("base64");
 }
 function escapeHtml(value) {
     return value.replace(/[&<>"']/g, (char) => {

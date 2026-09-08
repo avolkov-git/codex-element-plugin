@@ -74,6 +74,7 @@ export class CodexIntegrationsService implements vscode.Disposable {
   };
   private readonly runtimeSubscription: vscode.Disposable;
   private refreshPromise: Promise<CodexIntegrationsSnapshot> | undefined;
+  private managedBrowserProvider: (() => McpServerSaveInput | undefined) | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -97,9 +98,13 @@ export class CodexIntegrationsService implements vscode.Disposable {
   getSnapshot(): CodexIntegrationsSnapshot {
     return {
       ...this.snapshot,
-      mcpServers: this.snapshot.mcpServers.map((server) => ({ ...server, args: server.args ? [...server.args] : undefined })),
+      mcpServers: this.withManagedBrowser(this.snapshot.mcpServers).map((server) => ({ ...server, args: server.args ? [...server.args] : undefined })),
       skills: this.snapshot.skills.map((skill) => ({ ...skill }))
     };
+  }
+
+  setManagedBrowserProvider(provider: () => McpServerSaveInput | undefined): void {
+    this.managedBrowserProvider = provider;
   }
 
   async refresh(forceSkills = false): Promise<CodexIntegrationsSnapshot> {
@@ -159,7 +164,7 @@ export class CodexIntegrationsService implements vscode.Disposable {
     }
 
     const statusesByName = new Map(runtimeStatuses.map((status) => [status.name, status]));
-    const mcpServers = configured.map((server) => {
+    const mcpServers = this.withManagedBrowser(configured).map((server) => {
       const runtimeStatus = statusesByName.get(server.name);
       return runtimeStatus ? {
         ...server,
@@ -199,12 +204,13 @@ export class CodexIntegrationsService implements vscode.Disposable {
 
   async saveMcpServer(input: McpServerSaveInput): Promise<string> {
     const normalized = normalizeMcpInput(input);
+    if (isReservedBrowserName(normalized.name) || (normalized.originalName && isReservedBrowserName(normalized.originalName))) {
+      throw new Error("Управляемый браузер настраивается в разделе браузерного тестирования, а не в общем MCP-профиле.");
+    }
     const codexHome = await this.getCodexHome();
-    const configPath = path.join(codexHome, "config.toml");
-    const previousConfig = await readOptionalFile(configPath);
-    try {
+    await editMcpConfig(codexHome, async (stagedHome) => {
       if (normalized.originalName) {
-        await this.runCli(["mcp", "remove", normalized.originalName]);
+        await this.runCli(["mcp", "remove", normalized.originalName], stagedHome);
       }
       const args = ["mcp", "add", normalized.name];
       if (normalized.transport === "http") {
@@ -215,14 +221,11 @@ export class CodexIntegrationsService implements vscode.Disposable {
       } else {
         args.push("--", normalized.command!, ...(normalized.args ?? []));
       }
-      await this.runCli(args);
+      await this.runCli(args, stagedHome);
       if (normalized.enabled === false) {
-        await setMcpEnabledInConfig(configPath, normalized.name, false);
+        await setMcpEnabledInConfig(path.join(stagedHome, "config.toml"), normalized.name, false);
       }
-    } catch (error) {
-      await restoreOptionalFile(configPath, previousConfig);
-      throw error;
-    }
+    });
     await this.reloadRuntimeMcpIfRunning();
     await this.refresh(true);
     this.logger.info(`MCP server saved: name=${normalized.name}; transport=${normalized.transport}; enabled=${normalized.enabled !== false}.`);
@@ -236,7 +239,10 @@ export class CodexIntegrationsService implements vscode.Disposable {
 
   async removeMcpServer(name: string): Promise<void> {
     const normalizedName = validateMcpName(name);
-    await this.runCli(["mcp", "remove", normalizedName]);
+    const codexHome = await this.getCodexHome();
+    await editMcpConfig(codexHome, async (stagedHome) => {
+      await this.runCli(["mcp", "remove", normalizedName], stagedHome);
+    });
     await this.reloadRuntimeMcpIfRunning();
     await this.refresh(true);
     this.logger.info(`MCP server removed: name=${normalizedName}.`);
@@ -244,8 +250,13 @@ export class CodexIntegrationsService implements vscode.Disposable {
 
   async setMcpEnabled(name: string, enabled: boolean): Promise<void> {
     const normalizedName = validateMcpName(name);
+    if (isReservedBrowserName(normalizedName)) {
+      throw new Error("Измените настройки браузерного тестирования текущего пользователя и проекта.");
+    }
     const codexHome = await this.getCodexHome();
-    await setMcpEnabledInConfig(path.join(codexHome, "config.toml"), normalizedName, enabled);
+    await editMcpConfig(codexHome, async (stagedHome) => {
+      await setMcpEnabledInConfig(path.join(stagedHome, "config.toml"), normalizedName, enabled);
+    });
     await this.reloadRuntimeMcpIfRunning();
     await this.refresh(true);
     this.logger.info(`MCP server ${enabled ? "enabled" : "disabled"}: name=${normalizedName}.`);
@@ -357,7 +368,23 @@ export class CodexIntegrationsService implements vscode.Disposable {
     if (!Array.isArray(records)) {
       throw new Error("Codex CLI вернул некорректный список MCP-серверов.");
     }
-    return records.flatMap((candidate) => normalizeMcpCliRecord(candidate)).sort((left, right) => left.name.localeCompare(right.name));
+    return this.withManagedBrowser(records.flatMap((candidate) => normalizeMcpCliRecord(candidate)))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  private withManagedBrowser(configured: McpServerOption[]): McpServerOption[] {
+    const servers = configured.filter((server) => !isReservedBrowserName(server.name));
+    const managed = this.managedBrowserProvider?.();
+    if (managed) {
+      const previous = configured.find((server) => server.name === managed.name);
+      servers.push({
+        authStatus: "unsupported", runtimeStatus: "unknown", toolCount: 0, resourceCount: 0,
+        ...previous,
+        name: managed.name, enabled: managed.enabled !== false, transport: "stdio", command: managed.command,
+        args: [...managed.args ?? []], managed: "browser"
+      });
+    }
+    return servers;
   }
 
   private async reloadRuntimeMcpIfRunning(): Promise<void> {
@@ -371,13 +398,13 @@ export class CodexIntegrationsService implements vscode.Disposable {
     return this.settings.ensureUserCodexHome(profileId);
   }
 
-  private async runCli(args: string[]): Promise<CliResult> {
+  private async runCli(args: string[], home?: string): Promise<CliResult> {
     const resolution = resolveBundledRuntimeExecutable(this.context.extensionUri.fsPath);
     const validation = validateRuntimeExecutable(resolution);
     if (!validation.ok) {
       throw new Error(validation.message);
     }
-    const codexHome = await this.getCodexHome();
+    const codexHome = home ?? await this.getCodexHome();
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       CODEX_HOME: codexHome
@@ -391,6 +418,10 @@ function replaceMcpServer(servers: readonly McpServerOption[], replacement: McpS
   return next.some((server) => server.name === replacement.name)
     ? next
     : [...next, replacement].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function isReservedBrowserName(name: string): boolean {
+  return name === MANAGED_BROWSER_MCP_NAME || name.startsWith(`${MANAGED_BROWSER_MCP_NAME}-`);
 }
 
 function pluralRu(value: number, one: string, few: string, many: string): string {
@@ -589,13 +620,85 @@ async function readOptionalFile(filePath: string): Promise<string | undefined> {
   }
 }
 
-async function restoreOptionalFile(filePath: string, content: string | undefined): Promise<void> {
-  if (content === undefined) {
-    await fs.promises.rm(filePath, { force: true });
-    return;
+// CLI edits run against a private CODEX_HOME. Failure never restores an old live
+// file over another IDE's edits. The lock coordinates extension hosts; the final
+// comparison also detects writers that do not participate in our lock protocol.
+async function editMcpConfig(home: string, edit: (stagedHome: string) => Promise<void>): Promise<void> {
+  await fs.promises.mkdir(home, { recursive: true, mode: 0o700 });
+  const realHome = await fs.promises.realpath(home);
+  const lockPath = path.join(realHome, ".codex-element-mcp.lock");
+  const deadline = Date.now() + 25_000;
+  let lock: fs.promises.FileHandle;
+  for (;;) {
+    try {
+      lock = await fs.promises.open(lockPath, "wx", 0o600);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error("Конфигурация MCP занята другим сеансом. Повторите операцию после его завершения.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
   }
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.promises.writeFile(filePath, content, "utf8");
+  let staging: string | undefined;
+  try {
+    const configPath = path.join(realHome, "config.toml");
+    const before = readConfigRevision(configPath);
+    staging = await fs.promises.mkdtemp(path.join(realHome, ".mcp-edit-"));
+    const stagedConfig = path.join(staging, "config.toml");
+    if (before.content !== undefined) {
+      await fs.promises.writeFile(stagedConfig, before.content, { mode: 0o600, flag: "wx" });
+    }
+    await edit(staging);
+    const next = await readOptionalFile(stagedConfig);
+    if (next === undefined) {
+      throw new Error("Codex CLI не создал конфигурацию MCP.");
+    }
+    const handle = await fs.promises.open(stagedConfig, "r+");
+    try {
+      await handle.chmod(0o600);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    // Keep comparison and rename in one event-loop turn. No async gap permits
+    // another in-process config writer to slip in after the conflict check.
+    const current = readConfigRevision(configPath);
+    if (before.signature !== current.signature || before.content !== current.content) {
+      throw new Error("Конфигурация MCP изменена другим процессом. Изменения сохранены; повторите операцию.");
+    }
+    fs.renameSync(stagedConfig, configPath);
+  } finally {
+    try {
+      if (staging) {
+        await fs.promises.rm(staging, { recursive: true, force: true });
+      }
+    } finally {
+      await lock.close();
+      await fs.promises.unlink(lockPath);
+    }
+  }
+}
+
+function readConfigRevision(filePath: string): { signature: string; content: string | undefined } {
+  try {
+    const stats = fs.lstatSync(filePath);
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+      throw new Error("config.toml должен быть обычным файлом, не символической ссылкой.");
+    }
+    return {
+      signature: `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`,
+      content: fs.readFileSync(filePath, "utf8")
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { signature: "missing", content: undefined };
+    }
+    throw error;
+  }
 }
 
 function errorMessage(error: unknown): string {

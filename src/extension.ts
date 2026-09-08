@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import * as path from "path";
 import * as vscode from "vscode";
 import { ApprovalAttentionService } from "./approvalAttentionService";
@@ -19,12 +20,15 @@ import { DocsNormalizerService } from "./docsNormalizerService";
 import { DocsToolsService } from "./docsToolsService";
 import { EditorContextKind, EditorContextService } from "./editorContextService";
 import { ElementMcpIdeBridgeService } from "./elementMcpIdeBridgeService";
+import { ElementIdentityService, identityScopeRoot } from "./elementIdentityService";
+import { searchHistory } from "./historySearch";
 import { Logger } from "./logger";
 import { ManagedContextToolLoopService } from "./managedContextToolLoopService";
 import { NativeContextToolLoopService } from "./nativeContextToolLoopService";
 import { PerfMarks } from "./performance";
 import { ProjectContextService } from "./projectContextService";
 import { ProjectToolsService } from "./projectToolsService";
+import { PluginFeatureService } from "./pluginFeatureService";
 import { RipgrepInstallerService } from "./ripgrepInstallerService";
 import { RulesContextService } from "./rulesContextService";
 import { SettingsPanelManager } from "./settingsPanelManager";
@@ -35,6 +39,7 @@ import { ChatAccessMode, ChatAttachment, ChatEffort, ChatHeaderMode, ChatKind, C
 import { UserProfileService } from "./userProfileService";
 
 const CHAT_HEADER_MODE_KEY = "codexElement.chatHeaderMode";
+let shutdown: () => Promise<void> = () => Promise.resolve();
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const perf = new PerfMarks();
@@ -47,17 +52,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   logger.enableFileLogging(path.join(settings.getConfigRoot(), "logs"));
   logger.info("ripgrep discovery deferred until settings/runtime usage.");
   const elementMcpIdeBridge = new ElementMcpIdeBridgeService(logger);
-  context.subscriptions.push(elementMcpIdeBridge);
+  const identity = new ElementIdentityService();
+  const getScopeRoot = (): string | undefined => {
+    const current = identity.getCurrent();
+    return current ? identityScopeRoot(settings.getConfigRoot(), current) : undefined;
+  };
+  context.subscriptions.push(elementMcpIdeBridge, identity);
   const contextRouter = new ContextRouterService();
   const baseContext = new BaseContextService(context, logger);
   const diagnosticsContext = new DiagnosticsContextService(logger);
-  const attachments = new ChatAttachmentService(logger, path.join(settings.getConfigRoot(), "attachments"));
+  const attachments = new ChatAttachmentService(logger, () => {
+    const root = getScopeRoot();
+    return root ? path.join(root, "attachments") : undefined;
+  });
   const diffArtifacts = new DiffArtifactService(logger);
   const docsCorpusContext = new DocsContextService(settings, logger);
   const nativeContextTools = new NativeContextToolLoopService(logger);
   const editorContext = new EditorContextService();
   const projectContext = new ProjectContextService(context, settings.getConfigRoot(), logger);
-  const profiles = new UserProfileService(context);
+  const profiles = new UserProfileService(context, identity);
   const docsTools = new DocsToolsService(docsCorpusContext, logger);
   const projectTools = new ProjectToolsService(projectContext, logger, () => profiles.getCurrentProfileId());
   const diagnosticsTools = new DiagnosticsToolsService(diagnosticsContext, logger);
@@ -70,13 +83,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const rulesContext = new RulesContextService(logger);
   const docsNormalizer = new DocsNormalizerService(context, settings, logger);
   const ripgrepInstaller = new RipgrepInstallerService(settings, logger);
-  const history = new ChatHistoryService(context, settings.getConfigRoot(), logger);
+  let lastHistoryError = "";
+  const reportHistoryError = (message: string): void => {
+    if (message === lastHistoryError) { return; }
+    lastHistoryError = message;
+    logger.error(message);
+    void vscode.window.showErrorMessage(message);
+  };
+  const history = new ChatHistoryService(context, settings.getConfigRoot(), logger, () => identity.getCurrent(), reportHistoryError);
   context.subscriptions.push(history, projectContext, diffArtifacts, attachments);
   let historyProfileId: string | undefined;
+  let historyScopeKey: string | undefined;
+  let historyLoadPromise: Promise<void> | undefined;
+  let identityTransition = Promise.resolve();
+  let identityEpoch = 0;
   let sidebar: SidebarProvider | undefined;
   let runtime: CodexRuntimeController;
   let integrations: CodexIntegrationsService;
   let chatPanels: ChatPanelManager;
+  let features: PluginFeatureService;
   let approvalAttention: ApprovalAttentionService | undefined;
   const docsContext = new DocsRetrievalLoopService(
     docsCorpusContext,
@@ -89,7 +114,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const snapshot = state.exportChatHistory();
     if (mode === "immediate") {
-      void history.saveNow(historyProfileId, snapshot);
+      void history.saveNow(historyProfileId, snapshot).catch((error) => reportHistoryError(error instanceof Error ? error.message : "Не удалось сохранить историю."));
       return;
     }
     history.scheduleSave(historyProfileId, snapshot);
@@ -98,6 +123,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   state.setProxy(await settings.getSidebarProxyStatus());
   state.setDocs(settings.getSidebarDocsStatus());
   chatPanels = new ChatPanelManager(context, state, logger, {
+    ensureHistoryLoaded: () => ensureHistoryLoaded(),
     sendPrompt: async (
       chatId: string,
       prompt: string,
@@ -105,9 +131,63 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       transcriptText?: string,
       skills?: readonly SkillSelection[],
       selectedAttachments?: readonly ChatAttachment[]
-    ) => runtime.sendPrompt(chatId, prompt, mode, transcriptText, [], skills, selectedAttachments),
-    queuePrompt: (chatId: string, prompt: string, mode?: ChatRunMode, skills?: readonly SkillSelection[], selectedAttachments?: readonly ChatAttachment[]) => runtime.queuePrompt(chatId, prompt, mode, skills, selectedAttachments),
-    steerTurn: async (chatId: string, prompt: string, selectedAttachments?: readonly ChatAttachment[]) => runtime.steerTurn(chatId, prompt, selectedAttachments),
+    ) => { await ensureHistoryLoaded(); await runtime.sendPrompt(chatId, prompt, mode, transcriptText, [], skills, selectedAttachments); },
+    queuePrompt: async (chatId: string, prompt: string, mode?: ChatRunMode, skills?: readonly SkillSelection[], selectedAttachments?: readonly ChatAttachment[]) => { await ensureHistoryLoaded(); return runtime.queuePrompt(chatId, prompt, mode, skills, selectedAttachments); },
+    steerTurn: async (chatId: string, prompt: string, selectedAttachments?: readonly ChatAttachment[]) => { await ensureHistoryLoaded(); await runtime.steerTurn(chatId, prompt, selectedAttachments); },
+    resolveUserInput: (chatId, id, response) => runtime.resolveUserInput(chatId, id, response),
+    retryQueuedPrompt: (chatId, messageId) => runtime.retryQueuedPrompt(chatId, messageId),
+    featureRequest: async (command, value, chatId) => {
+      await ensureHistoryLoaded();
+      const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
+      if (command === "history.search") { return { ok: true, command, status: "ready", ...await searchHistory(state.exportChatHistory(), payload.query, payload.offset) }; }
+      if (command === "history.jump") {
+        const targetChat = typeof payload.chatId === "string" ? payload.chatId : chatId;
+        const transcript = state.exportChatHistory().transcripts[targetChat] ?? [];
+        const index = transcript.findIndex((item) => item.id === payload.itemId);
+        if (index < 0) { throw new Error("Сообщение больше не существует в истории текущего проекта."); }
+        state.setActiveChat(targetChat);
+        chatPanels.openChat(targetChat);
+        sidebar?.postSnapshot();
+        return { ok: true, command, status: "ready", chatId: targetChat, itemId: payload.itemId, index, window: state.getTranscriptBefore(targetChat, "", 120, Math.min(transcript.length, index + 61)) };
+      }
+      if (command === "history.migration.help") {
+        await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(context.extensionPath, "docs", "1.0.0-rc-testing.md"))));
+        return { ok: true, command, status: "ready" };
+      }
+      if (command === "history.migration.list") {
+        const items = await history.listLegacy();
+        return { ok: true, command, status: "ready", items: items.map((item) => ({ ...item, title: identity.getCurrent()?.projectName })), message: items.length ? undefined : "Подготовленных архивов для этого пользователя и проекта нет.", projectName: identity.getCurrent()?.projectName, userLabel: profiles.getCurrentProfileLabel() };
+      }
+      if (command === "history.migration.import") {
+        if (state.getSidebarSnapshot().chats.some((chat) => ["running", "waitingApproval", "cancelling"].includes(chat.status))) { throw new Error("Завершите текущие запросы перед переносом истории."); }
+        const epoch = identityEpoch;
+        const scopeKey = historyScopeKey;
+        const current = identity.getCurrent();
+        const assertImportScope = (): void => {
+          const active = identity.getCurrent();
+          if (!current || epoch !== identityEpoch || scopeKey !== historyScopeKey || current.userKey !== active?.userKey || current.projectKey !== active.projectKey) { throw new Error("Пользователь или проект IDE изменился. Перенос не применен к открытому чату."); }
+        };
+        const confirmed = await vscode.window.showWarningMessage(`Перенести выбранную историю в проект «${current?.projectName}»?`, { modal: true, detail: `Подтвердите, что эти диалоги принадлежат вам (${profiles.getCurrentProfileLabel()}) и этому проекту. Старая история останется на месте. Учетные данные и активные запросы не переносятся.` }, "Перенести");
+        if (confirmed !== "Перенести") { return { ok: false, command, status: "cancelled" }; }
+        assertImportScope();
+        const snapshot = state.exportChatHistory();
+        const originalIds = new Set(snapshot.chats.map((chat) => chat.id));
+        const migrated = await history.importLegacy(String(payload.id ?? ""), snapshot);
+        assertImportScope();
+        const imported = migrated.chats.filter((chat) => !originalIds.has(chat.id));
+        state.addImportedChatHistory({ version: 1, chats: imported, transcripts: Object.fromEntries(imported.map((chat) => [chat.id, migrated.transcripts[chat.id] ?? []])) });
+        await history.saveNow(current!.userKey, state.exportChatHistory());
+        assertImportScope();
+        sidebar?.postSnapshot(); chatPanels.postAllSnapshots();
+        return { ok: true, command, status: "ready", chatCount: migrated.chats.length };
+      }
+      if (command === "chat.fork") {
+        const fork = await runtime.forkChat(chatId, typeof payload.title === "string" ? payload.title : undefined);
+        sidebar?.postSnapshot(); chatPanels.openChat(fork.id);
+        return { ok: true, command, status: "ready", chatId: fork.id };
+      }
+      return features.handle(command, payload, chatId);
+    },
     pickAttachments: (existing: unknown) => attachments.pick(existing),
     resolveAttachments: (value: unknown) => attachments.resolve(value),
     openAttachment: (value: unknown) => attachments.open(value),
@@ -207,33 +287,59 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     resolveApproval: (chatId: string, approvalId: string, approved: boolean) => runtime.resolveApproval(chatId, approvalId, approved)
   });
   const ensureHistoryLoaded = async (profileId?: string): Promise<void> => {
-    const resolvedProfileId = profileId ?? await profiles.getKnownProfileId(settings.listExistingProfileIds());
-    if (!resolvedProfileId || historyProfileId === resolvedProfileId) {
-      return;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const epoch = identityEpoch;
+      const transition = identityTransition;
+      await transition;
+      let verified;
+      try { verified = await identity.resolve(); }
+      catch (error) { if (epoch !== identityEpoch) { continue; } throw error; }
+      // resolve/getCurrent can themselves detect changed credentials and enqueue cleanup.
+      await identityTransition;
+      if (epoch !== identityEpoch || transition !== identityTransition) { continue; }
+      if (profileId && profileId !== verified.userKey) { throw new Error("Пользователь IDE изменился во время подключения Codex."); }
+      const scopeKey = `${verified.userKey}/${verified.projectKey}/${vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ""}`;
+      if (historyProfileId === verified.userKey && historyScopeKey === scopeKey) { return; }
+      if (historyLoadPromise) { await historyLoadPromise.catch(() => undefined); continue; }
+      const assertCurrentEpoch = (): void => {
+        if (epoch !== identityEpoch) { throw new Error("Область истории изменилась во время загрузки."); }
+      };
+      const loading = (async () => {
+        const previousProfile = historyProfileId;
+        if (previousProfile) {
+          await runtime?.stopForIdentityChange();
+          assertCurrentEpoch();
+          await history.saveNow(previousProfile, state.exportChatHistory());
+          assertCurrentEpoch();
+        }
+        await history.flush();
+        assertCurrentEpoch();
+        for (const chat of state.getSidebarSnapshot().chats) { chatPanels.closeIfActiveChat(chat.id); }
+        historyProfileId = undefined;
+        historyScopeKey = undefined;
+        state.replaceChatHistory(undefined);
+        const persisted = await history.load(verified.userKey);
+        assertCurrentEpoch();
+        const current = identity.getCurrent();
+        assertCurrentEpoch();
+        if (current?.userKey !== verified.userKey || current.projectKey !== verified.projectKey) { throw new Error("Пользователь IDE изменился при загрузке истории."); }
+        state.replaceChatHistory(persisted);
+        refreshRulesContext(state, rulesContext);
+        historyProfileId = verified.userKey;
+        historyScopeKey = scopeKey;
+        lastHistoryError = "";
+        state.setAuth({ profileLabel: verified.userLabel, message: "История проекта загружена. Проверяем учетную запись Codex." });
+        logger.info(`IDE project history active: user=${verified.userKey}; project=${verified.projectKey}.`);
+        sidebar?.postSnapshot(); chatPanels.postAllSnapshots();
+      })();
+      historyLoadPromise = loading;
+      try { await loading; }
+      catch (error) { if (epoch === identityEpoch) { throw error; } }
+      finally { if (historyLoadPromise === loading) { historyLoadPromise = undefined; } }
+      if (epoch === identityEpoch) { return; }
     }
-
-    if (state.getSidebarSnapshot().auth.profileLabel !== resolvedProfileId) {
-      state.setAuth({
-        profileLabel: resolvedProfileId,
-        message: "Сохраненная авторизация будет проверена при отправке или входе."
-      });
-    }
-
-    if (state.hasChats()) {
-      historyProfileId = resolvedProfileId;
-      await history.saveNow(historyProfileId, state.exportChatHistory());
-      return;
-    }
-
-    const persistedHistory = await history.load(resolvedProfileId);
-    state.replaceChatHistory(persistedHistory);
-    refreshRulesContext(state, rulesContext);
-    historyProfileId = resolvedProfileId;
-    logger.info(`Chat history profile active: ${resolvedProfileId}.`);
-    sidebar?.postSnapshot();
-    chatPanels.postAllSnapshots();
+    throw new Error("Пользователь или проект IDE меняется во время подключения. Дождитесь завершения переключения и повторите действие.");
   };
-  await ensureHistoryLoaded();
   const contextOrchestrator = new ContextTurnOrchestrator({
     contextRouter,
     baseContext,
@@ -270,12 +376,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       approvalAttention?.sync();
     },
     onDidChangeChat: (chatId: string) => chatPanels.postSnapshot(chatId),
-    onDidResolveProfile: ensureHistoryLoaded
+    onDidResolveProfile: ensureHistoryLoaded,
+    getManagedBrowserLaunch: () => browserRuntime.prepareRuntimeLaunch(),
+    beforeQueuedDispatch: async () => {
+      await ensureHistoryLoaded();
+      if (!historyProfileId) { throw new Error("История проекта не открыта."); }
+      await history.saveNow(historyProfileId, state.exportChatHistory());
+    }
   });
   context.subscriptions.push(runtime);
+  shutdown = async () => { await runtime.stop(); await history.flush(); };
   integrations = new CodexIntegrationsService(context, settings, profiles, runtime, logger);
   context.subscriptions.push(integrations);
-  const browserRuntime = new BrowserRuntimeService(context, settings, logger);
+  const browserSessionId = crypto.randomUUID();
+  const browserRuntime = new BrowserRuntimeService(context, settings, logger, () => {
+    const root = getScopeRoot();
+    return root ? path.join(root, "sessions", browserSessionId) : undefined;
+  }, getScopeRoot);
+  features = new PluginFeatureService({
+    getWorkspaceRoot: (chatId) => state.getChat(chatId) ? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath : undefined,
+    getScopeRoot,
+    getBrowserArtifactsRoot: () => browserRuntime.getBrowserArtifactsRoot(),
+    diffArtifacts,
+    onReviewComment: async (chatId, text) => {
+      await ensureHistoryLoaded();
+      if (state.getChat(chatId)?.status === "running") { await runtime.queuePrompt(chatId, text, "normal"); }
+      else { await runtime.sendPrompt(chatId, text); }
+    }
+  });
+  context.subscriptions.push(features);
+  integrations.setManagedBrowserProvider(() => browserRuntime.getManagedServer());
   const settingsPanels = new SettingsPanelManager(context, settings, docsNormalizer, ripgrepInstaller, baseContext, integrations, browserRuntime, logger, async (options) => {
     if (options?.docsChanged) {
       docsContext.invalidate();
@@ -297,9 +427,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     deleteChat: async (chatId: string): Promise<void> => deleteChat(chatId, state, sidebar, chatPanels, attachments, logger, ensureHistoryLoaded),
     openSettings: async () => settingsPanels.open(),
     openLogs: () => logger.show(),
-    restoreAuth: async () => runtime.restoreAccountIfAvailable(),
-    startDeviceCodeLogin: async () => runtime.startDeviceCodeLogin(),
-    loginWithApiKey: async (apiKey: string) => runtime.loginWithApiKey(apiKey),
+    restoreAuth: async () => {
+      try { await ensureHistoryLoaded(); await runtime.restoreAccountIfAvailable(); }
+      catch (error) { state.setAuth({ status: "error", message: error instanceof Error ? error.message : "Не удалось подтвердить пользователя IDE." }); sidebar?.postSnapshot(); }
+    },
+    startDeviceCodeLogin: async () => { await ensureHistoryLoaded(); await runtime.startDeviceCodeLogin(); },
+    loginWithApiKey: async (apiKey: string) => { await ensureHistoryLoaded(); await runtime.loginWithApiKey(apiKey); },
     logoutAccount: async () => {
       const blockingChat = state.getSidebarSnapshot().chats.find((chat) =>
         chat.status === "running" || chat.status === "waitingApproval" || chat.status === "cancelling"
@@ -339,6 +472,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await openChat(pendingChat.id, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded);
   });
   approvalAttention.sync();
+  const invalidateIdentity = (): void => {
+    const epoch = ++identityEpoch;
+    const previous = historyProfileId;
+    const snapshot = state.exportChatHistory();
+    historyProfileId = undefined;
+    historyScopeKey = undefined;
+    for (const chat of snapshot.chats) { chatPanels.closeIfActiveChat(chat.id); }
+    identityTransition = identityTransition.then(async () => {
+      await runtime.stopForIdentityChange();
+      if (previous) { await history.saveNow(previous, snapshot); }
+      await history.flush();
+    }).catch((error) => reportHistoryError(error instanceof Error ? error.message : "Ошибка при смене пользователя IDE.")).finally(() => {
+      if (epoch !== identityEpoch) { return; }
+      historyProfileId = undefined;
+      historyScopeKey = undefined;
+      state.replaceChatHistory(undefined);
+      state.setAuth({ status: "notAuthenticated", profileLabel: "-", message: "Пользователь или проект IDE изменился. Откройте Codex повторно." });
+      sidebar?.postSnapshot(); chatPanels.postAllSnapshots();
+    });
+  };
+  context.subscriptions.push(identity.onDidInvalidate(invalidateIdentity), vscode.workspace.onDidChangeWorkspaceFolders(() => { identity.invalidate(); }));
   perf.mark("services");
 
   context.subscriptions.push(
@@ -408,8 +562,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   perf.flush(logger, "Codex activation");
 }
 
-export function deactivate(): void {
-  // All disposables are owned by the extension context.
+export async function deactivate(): Promise<void> {
+  await shutdown();
 }
 
 function readChatHeaderMode(context: vscode.ExtensionContext): ChatHeaderMode {

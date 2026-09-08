@@ -81,6 +81,7 @@ function checkForbiddenEntries(value) {
     "coverage"
   ]);
   const forbiddenFileNames = new Set([
+    ".git",
     ".DS_Store",
     "Thumbs.db"
   ]);

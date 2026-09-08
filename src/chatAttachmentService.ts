@@ -42,8 +42,14 @@ export class ChatAttachmentService implements vscode.Disposable {
 
   constructor(
     private readonly logger: Logger,
-    private readonly managedRoot: string
+    private readonly managedRootSource: string | (() => string | undefined)
   ) {}
+
+  private get managedRoot(): string {
+    const root = typeof this.managedRootSource === "function" ? this.managedRootSource() : this.managedRootSource;
+    if (!root || !path.isAbsolute(root)) { throw new Error("Сначала подтвердите пользователя и проект IDE."); }
+    return root;
+  }
 
   async pick(existing: unknown): Promise<ChatAttachment[]> {
     const current = await this.resolve(existing);
@@ -153,6 +159,7 @@ export class ChatAttachmentService implements vscode.Disposable {
     if (!upload) {
       throw new Error("Сессия загрузки не найдена или уже завершена.");
     }
+    if (!isPathInside(this.managedRoot, upload.directoryPath)) { throw new Error("Пользователь или проект загрузки изменился."); }
     const chunkIndex = Number(payload.chunkIndex);
     if (!Number.isInteger(chunkIndex) || chunkIndex !== upload.nextChunkIndex) {
       throw new Error("Нарушен порядок частей загружаемого файла.");
@@ -178,6 +185,7 @@ export class ChatAttachmentService implements vscode.Disposable {
     if (!upload) {
       throw new Error("Сессия загрузки не найдена или уже завершена.");
     }
+    if (!isPathInside(this.managedRoot, upload.directoryPath)) { throw new Error("Пользователь или проект загрузки изменился."); }
     if (upload.receivedBytes !== upload.expectedBytes) {
       throw new Error("Файл загружен не полностью.");
     }

@@ -2,134 +2,100 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { Logger } from "./logger";
 import { ChatDiffFileSummary, ChatDiffTranscriptItem } from "./types";
+import { opaqueId } from "./featureSafety";
 
 const BEFORE_SCHEME = "codex-diff-before";
 const AFTER_SCHEME = "codex-diff-after";
+const PATCH_SCHEME = "codex-diff-patch";
 const MAX_VIRTUAL_DIFF_CHARS = 2_000_000;
+const MAX_CACHE_CHARS = 8_000_000;
+
+export interface FullDiffSnapshot {
+  path: string;
+  beforeText: string;
+  afterText: string;
+  beforeLabel?: string;
+  afterLabel?: string;
+  revision?: string;
+}
+
+export interface OpenedDiffSnapshot { beforeUri: vscode.Uri; afterUri: vscode.Uri }
+export type DiffSnapshotResolver = (item: ChatDiffTranscriptItem, file: ChatDiffFileSummary) => Promise<FullDiffSnapshot | undefined>;
 
 interface DiffArtifact {
   beforeText: string;
   afterText: string;
+  patch?: string;
 }
 
 export class DiffArtifactService implements vscode.TextDocumentContentProvider, vscode.Disposable {
   private readonly artifacts = new Map<string, DiffArtifact>();
   private readonly disposables: vscode.Disposable[];
-  private sequence = 0;
+  private chars = 0;
 
-  constructor(private readonly logger: Logger) {
-    this.disposables = [
-      vscode.workspace.registerTextDocumentContentProvider(BEFORE_SCHEME, this),
-      vscode.workspace.registerTextDocumentContentProvider(AFTER_SCHEME, this)
-    ];
+  constructor(private readonly logger: Logger, private readonly resolveSnapshot?: DiffSnapshotResolver) {
+    this.disposables = [BEFORE_SCHEME, AFTER_SCHEME, PATCH_SCHEME].map((scheme) => vscode.workspace.registerTextDocumentContentProvider(scheme, this));
   }
 
   provideTextDocumentContent(uri: vscode.Uri): string {
-    const artifact = this.artifacts.get(getArtifactId(uri));
+    const artifact = this.artifacts.get(uri.path.split("/").filter(Boolean)[0] ?? "");
     if (!artifact) {
-      return "";
+      return "This review snapshot has expired. Reopen the review to obtain a current snapshot.";
     }
-    return uri.scheme === BEFORE_SCHEME ? artifact.beforeText : artifact.afterText;
+    return uri.scheme === PATCH_SCHEME ? artifact.patch ?? "" : uri.scheme === BEFORE_SCHEME ? artifact.beforeText : artifact.afterText;
+  }
+
+  async openSnapshots(snapshot: FullDiffSnapshot): Promise<OpenedDiffSnapshot> {
+    if (snapshot.beforeText.length + snapshot.afterText.length > MAX_VIRTUAL_DIFF_CHARS) throw new Error("Full review exceeds the native snapshot limit.");
+    const id = this.store({ beforeText: snapshot.beforeText, afterText: snapshot.afterText });
+    const fileName = sanitizeFileName(snapshot.path);
+    const beforeUri = vscode.Uri.from({ scheme: BEFORE_SCHEME, path: `/${id}/${fileName}` });
+    const afterUri = vscode.Uri.from({ scheme: AFTER_SCHEME, path: `/${id}/${fileName}` });
+    const title = `${snapshot.path} (${snapshot.beforeLabel ?? "Before"} -> ${snapshot.afterLabel ?? "After"}) - Codex`;
+    await vscode.commands.executeCommand("vscode.diff", beforeUri, afterUri, title, { preview: false });
+    return { beforeUri, afterUri };
   }
 
   async openDiff(item: ChatDiffTranscriptItem, file: ChatDiffFileSummary): Promise<void> {
-    const artifact = buildArtifact(file);
-    if (!artifact) {
-      vscode.window.showWarningMessage("Diff недоступен для открытия в редакторе.");
+    const full = await this.resolveSnapshot?.(item, file);
+    if (full) { await this.openSnapshots(full); return; }
+    const patch = file.diff;
+    if (!patch?.trim() || patch.length > MAX_VIRTUAL_DIFF_CHARS) {
+      await vscode.window.showWarningMessage("The recorded patch is unavailable or exceeds the preview limit.");
       return;
     }
-
-    const id = `${Date.now()}-${this.sequence++}`;
-    this.artifacts.set(id, artifact);
-    const fileName = sanitizeFileName(file.path || "changes.patch");
-    const beforeUri = vscode.Uri.from({ scheme: BEFORE_SCHEME, path: `/${id}/${fileName}` });
-    const afterUri = vscode.Uri.from({ scheme: AFTER_SCHEME, path: `/${id}/${fileName}` });
-    const title = `${file.path || item.title || "Изменения"} — Codex`;
-
-    this.logger.info(`Opening native diff editor: diff=${item.id}; file=${file.path || "<unknown>"}.`);
-    await vscode.commands.executeCommand("vscode.diff", beforeUri, afterUri, title, { preview: false });
+    // Hunk fragments cannot establish either full file revision. Keep them as a patch.
+    const id = this.store({ beforeText: "", afterText: "", patch: `# Recorded patch fragment; not full-file revisions${file.truncated ? " (truncated)" : ""}.\n${patch}` });
+    const uri = vscode.Uri.from({ scheme: PATCH_SCHEME, path: `/${id}/${sanitizeFileName(file.path)}.patch` });
+    const document = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(document, { preview: false });
+    this.logger.info("Opened recorded patch fragment; full revisions were not available.");
   }
+
+  clear(): void { this.artifacts.clear(); this.chars = 0; }
 
   dispose(): void {
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
-    this.artifacts.clear();
-  }
-}
-
-function buildArtifact(file: ChatDiffFileSummary): DiffArtifact | undefined {
-  const diff = typeof file.diff === "string" ? file.diff : "";
-  if (!diff.trim() || diff.length > MAX_VIRTUAL_DIFF_CHARS) {
-    return undefined;
+    this.clear();
   }
 
-  const beforeLines: string[] = [];
-  const afterLines: string[] = [];
-  let sawContent = false;
-
-  for (const line of diff.split(/\r?\n/)) {
-    if (isMetadataLine(line)) {
-      continue;
+  private store(artifact: DiffArtifact): string {
+    const id = opaqueId();
+    this.artifacts.set(id, artifact);
+    this.chars += artifact.beforeText.length + artifact.afterText.length + (artifact.patch?.length ?? 0);
+    while (this.chars > MAX_CACHE_CHARS || this.artifacts.size > 32) {
+      const oldest = this.artifacts.keys().next().value as string;
+      const entry = this.artifacts.get(oldest)!;
+      this.chars -= entry.beforeText.length + entry.afterText.length + (entry.patch?.length ?? 0);
+      this.artifacts.delete(oldest);
     }
-    if (line.startsWith("@@")) {
-      beforeLines.push(line);
-      afterLines.push(line);
-      continue;
-    }
-    if (line.startsWith("+") && !line.startsWith("+++")) {
-      afterLines.push(line.slice(1));
-      sawContent = true;
-      continue;
-    }
-    if (line.startsWith("-") && !line.startsWith("---")) {
-      beforeLines.push(line.slice(1));
-      sawContent = true;
-      continue;
-    }
-    if (line.startsWith(" ")) {
-      const text = line.slice(1);
-      beforeLines.push(text);
-      afterLines.push(text);
-      sawContent = true;
-      continue;
-    }
-    if (line.trim() && !line.startsWith("\\")) {
-      beforeLines.push(line);
-      afterLines.push(line);
-    }
+    return id;
   }
-
-  if (!sawContent) {
-    return undefined;
-  }
-  return {
-    beforeText: beforeLines.join("\n"),
-    afterText: afterLines.join("\n")
-  };
-}
-
-function isMetadataLine(line: string): boolean {
-  return (
-    line.startsWith("diff --git ")
-    || line.startsWith("index ")
-    || line.startsWith("--- ")
-    || line.startsWith("+++ ")
-    || line.startsWith("new file mode ")
-    || line.startsWith("deleted file mode ")
-    || line.startsWith("old mode ")
-    || line.startsWith("new mode ")
-    || line.startsWith("similarity index ")
-    || line.startsWith("rename from ")
-    || line.startsWith("rename to ")
-  );
-}
-
-function getArtifactId(uri: vscode.Uri): string {
-  return uri.path.split("/").filter(Boolean)[0] ?? "";
 }
 
 function sanitizeFileName(value: string): string {
   const base = path.basename(value.replace(/\\/g, "/")) || "changes.patch";
-  return base.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return base.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
 }

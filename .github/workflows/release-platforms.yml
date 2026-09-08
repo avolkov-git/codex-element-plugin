@@ -70,11 +70,19 @@ jobs:
           npm run check:mcp-elicitation
           npm run check:markdown-links
           npm run check:transcript-window
+          npm run check:runtime
+          npm run check:features
           npm run eval:context
           node --check media/chat.js
           node --check media/sidebar.js
           node --check media/settings.js
           git diff --check
+
+      - name: Check history isolation and migration
+        if: matrix.platform == 'linux-x64'
+        run: |
+          npm run check:history
+          npm run check:identity
 
       - name: Smoke test the target Codex app-server
         shell: bash
@@ -136,13 +144,17 @@ jobs:
         shell: bash
         run: |
           RELEASE_DIR="${RUNNER_TEMP}/codex-plugin-release"
+          PRERELEASE=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then PRERELEASE=(--prerelease); fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" "${RELEASE_DIR}"/* --clobber
             gh release edit "${GITHUB_REF_NAME}" \
               --title "Codex for 1C: Element ${GITHUB_REF_NAME#v}" \
+              "${PRERELEASE[@]}" \
               --notes-file "${RELEASE_DIR}/README_RELEASE.md"
           else
             gh release create "${GITHUB_REF_NAME}" "${RELEASE_DIR}"/* \
               --title "Codex for 1C: Element ${GITHUB_REF_NAME#v}" \
+              "${PRERELEASE[@]}" \
               --notes-file "${RELEASE_DIR}/README_RELEASE.md"
           fi

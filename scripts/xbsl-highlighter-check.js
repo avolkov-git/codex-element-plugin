@@ -3,10 +3,22 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
+const ts = require("typescript");
+const { buildHighlighter } = require("./build-xbsl-highlighter");
 
-global.window = {};
-const bundlePath = path.resolve(__dirname, "..", "media", "xbsl-highlighter.js");
-require(bundlePath);
+function assertNoCodeLoading(source) {
+  const ast = ts.createSourceFile("bundle.js", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  function visit(node) {
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      const callee = node.expression.getText(ast);
+      assert(!/(^|\.)(eval|Function|importScripts|fetch|XMLHttpRequest|WebSocket)$/.test(callee), `Forbidden code/network loading: ${callee}`);
+      assert(node.expression.kind !== ts.SyntaxKind.ImportKeyword, "Dynamic imports are forbidden");
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+}
 
 async function main() {
   const webviewHtmlSource = fs.readFileSync(
@@ -14,12 +26,18 @@ async function main() {
     "utf8"
   );
   const highlighterSource = fs.readFileSync(
-    path.resolve(__dirname, "..", "webview", "highlight", "index.ts"),
+    path.resolve(__dirname, "..", "webview", "highlight", "engine.ts"),
     "utf8"
   );
-  const highlighterBundle = fs.readFileSync(bundlePath, "utf8");
+  const build = await buildHighlighter();
+  const highlighterBundle = build.outputFiles[0].text;
+  assertNoCodeLoading(build.workerSource);
+  assertNoCodeLoading(highlighterBundle);
+  const sandbox = { window: {}, Blob, URL, TextEncoder, performance, setTimeout, clearTimeout, queueMicrotask };
+  vm.runInNewContext(highlighterBundle, sandbox);
   const chatStyles = fs.readFileSync(path.resolve(__dirname, "..", "media", "chat.css"), "utf8");
   assert(!webviewHtmlSource.includes("'wasm-unsafe-eval'"), "Chat webview must not require WASM execution");
+  assert(webviewHtmlSource.includes("worker-src blob:"), "Blob worker CSP is missing");
   assert(
     highlighterSource.includes("createJavaScriptRegexEngine"),
     "XBSL highlighter must use the CSP-safe JavaScript regex engine"
@@ -27,11 +45,11 @@ async function main() {
   assert(!highlighterSource.includes("createOnigurumaEngine"), "XBSL highlighter still depends on Oniguruma WASM");
   assert(!/WebAssembly|wasm/i.test(highlighterBundle), "Built highlighter still contains a WASM dependency");
   assert(
-    chatStyles.includes('.code-block[data-highlight-language="xbsl"]:not([data-highlight-engine="xbsl-io"])'),
-    "XBSL fallback palette is missing"
+    chatStyles.includes("var(--shiki-light") && chatStyles.includes("var(--shiki-dark"),
+    "XBSL/YAML light and dark theme token bindings are missing"
   );
 
-  const highlighter = global.window.codexXbslHighlighter;
+  const highlighter = sandbox.window.codexXbslHighlighter;
   assert(highlighter, "XBSL highlighter API is not exposed");
   assert(highlighter.supports("xbsl"), "XBSL alias is not supported");
   assert(highlighter.supports("yaml"), "YAML alias is not supported");
@@ -72,6 +90,17 @@ async function main() {
   const yaml = await highlighter.highlight("name: demo\nenabled: true\nitems:\n  - one", "yaml");
   assert(yaml.includes("--shiki-light"), "YAML output has no light theme tokens");
   assert(yaml.includes("--shiki-dark"), "YAML output has no dark theme tokens");
+  assert.equal(highlighter.getStats().mode, "fallback", "Node check must exercise the worker-unavailable fallback");
+  await assert.rejects(highlighter.highlight("x".repeat(10000), "xbsl"));
+  const stale = highlighter.highlight("пер A = 1", "xbsl", { blockId: "stream", version: 1 }).catch((error) => error.name);
+  const current = highlighter.highlight("пер A = 2", "xbsl", { blockId: "stream", version: 2 });
+  assert.equal(await stale, "AbortError");
+  assert((await current).includes("2"));
+  await assert.rejects(highlighter.highlight("пер A = 0", "xbsl", { blockId: "stream", version: 0 }), { name: "AbortError" });
+  highlighter.dispose();
+  assert.equal(highlighter.getStats().pendingBytes, 0);
+  assert.equal(highlighter.getStats().cacheBytes, 0);
+  console.log("XBSL/YAML palette, semantic grammar, bundled-code policy, bounded fallback and stale versions: passed");
 }
 
 main().catch((error) => {

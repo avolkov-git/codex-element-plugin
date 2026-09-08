@@ -113,6 +113,8 @@ function copyPayload(fromRoot, toRoot) {
 
 function shouldCopyPayloadEntry(relativePath, entry) {
   const name = entry.name;
+  // Linked Git worktrees store .git as a file, not a directory.
+  if (name === ".git") { return false; }
   if (entry.isDirectory()) {
     if (args.platformOnly && path.dirname(relativePath) === "bin") {
       return requestedRuntimeDirectoryNames().has(name);

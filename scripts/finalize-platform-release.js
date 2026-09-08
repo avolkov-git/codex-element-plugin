@@ -40,6 +40,7 @@ fs.writeFileSync(path.join(outputRoot, "README_RELEASE.md"), [
   "Выбирайте архив по операционной системе сервера Element, а не компьютера с браузером.",
   "После распаковки скопируйте каталог `codex-plugins` в `/plugins` сервера Element.",
   "Проверяйте SHA-256 по `SHA256SUMS.txt`.",
+  ...(manifest.version.includes("-") ? ["", "Это предварительная сборка для проверки. Сохраните предыдущий плагин и config root перед установкой.", "Приемочные сценарии, перенос истории и откат: `codex-plugins/docs/1.0.0-rc-testing.md`."] : []),
   ""
 ].join("\n"), "utf8");
 

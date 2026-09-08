@@ -71,6 +71,39 @@ export interface ChatQueuedMessage {
   skills?: SkillSelection[];
   attachments?: ChatAttachment[];
   createdAt: string;
+  dispatchState?: "queued" | "dispatching" | "accepted" | "failed";
+  dispatchError?: string;
+  dispatchAttempt?: number;
+  acceptedTurnId?: string;
+  transcriptMessageId?: string;
+}
+
+export interface NativeUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options: Array<{ label: string; description: string }> | null;
+}
+
+export interface NativeUserInputRequest {
+  /** Opaque UI token; distinct from the backend's reusable JSON-RPC ID. */
+  id: string;
+  requestId: string | number;
+  chatId: string;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  questions: NativeUserInputQuestion[];
+  isBlocking: boolean;
+  createdAt: string;
+  expiresAt: string;
+}
+
+/** app-server 0.153.4 ToolRequestUserInputResponse. Never persist secret answers. */
+export interface NativeUserInputResponse {
+  answers: Record<string, { answers: string[] }>;
 }
 
 export type ChatAttachmentKind = "file" | "folder" | "image";
@@ -146,8 +179,11 @@ export interface ChatSummary {
   queuedMessages: ChatQueuedMessage[];
   rulesEnabled: boolean;
   pendingApproval: ApprovalRequest | null;
+  pendingUserInput?: NativeUserInputRequest | null;
   backendThreadAccessMode: ChatAccessMode | null;
   backendThreadId: string | null;
+  backendContextRestored?: boolean;
+  backendWorkspacePath?: string;
   activeTurnId: string | null;
   activeRunMode: ChatRunMode | null;
 }
@@ -236,9 +272,17 @@ export interface ChatPanelSnapshot {
   modelOptionsStatus: "idle" | "loading" | "ready" | "error";
   transcriptWindow: ChatTranscriptWindow;
   activeClarification?: ChatClarificationTranscriptItem;
+  pendingUserInput: NativeUserInputRequest | null;
+  pendingUserInputs: NativeUserInputRequest[];
 }
 
 export interface ChatTranscriptWindow {
+  chatId: string;
+  revision: number;
+  /** Full parents for this page, including parents outside the item window. */
+  turns: ChatTurnRunTranscriptItem[];
+  /** Present for a child-only window; offsets/count refer to that turn's items. */
+  turnId?: string;
   items: ChatTranscriptItem[];
   offset: number;
   totalCount: number;

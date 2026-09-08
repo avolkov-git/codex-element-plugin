@@ -35,17 +35,22 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BrowserRuntimeService = void 0;
 const child_process_1 = require("child_process");
+const crypto_1 = require("crypto");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const codexIntegrationConstants_1 = require("./codexIntegrationConstants");
 class BrowserRuntimeService {
-    constructor(context, settings, logger) {
+    // Scope callbacks supply authenticated namespaces, never guessed profile paths.
+    constructor(context, settings, logger, getScopeRoot, getPersistentScopeRoot) {
         this.context = context;
         this.settings = settings;
         this.logger = logger;
+        this.getScopeRoot = getScopeRoot;
+        this.getPersistentScopeRoot = getPersistentScopeRoot;
+        this.fileChecks = new Map();
     }
     getView() {
-        const settings = this.settings.getBrowserSettingsView();
+        const settings = this.getSettingsView();
         try {
             const runtime = this.resolveRuntime();
             return {
@@ -55,7 +60,7 @@ class BrowserRuntimeService {
                 platformId: runtime.manifest.platformId,
                 playwrightMcpVersion: runtime.manifest.playwrightMcpVersion,
                 nodeVersion: runtime.manifest.nodeVersion,
-                managedServerName: codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME
+                managedServerName: this.getManagedServer()?.name ?? codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME
             };
         }
         catch (error) {
@@ -72,19 +77,57 @@ class BrowserRuntimeService {
         }
     }
     prepareMcpServer() {
-        const settings = this.settings.getBrowserSettingsView();
-        if (!settings.enabled) {
-            throw new Error("Браузерное тестирование выключено.");
+        const scopeRoot = this.resolveScopeRoot();
+        if (!scopeRoot) {
+            throw new Error("Для браузерного тестирования требуется подтвержденная область пользователя, проекта и сеанса.");
         }
+        return this.prepareForScope(scopeRoot);
+    }
+    // Every app-server launch must supply this override, including disabled and
+    // unauthenticated launches. Never inherit a managed entry from user config.
+    prepareRuntimeLaunch() {
+        this.managedServer = undefined;
+        const scopeRoot = this.resolveScopeRoot();
+        const disabled = managedBrowserOverride(codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME, "codex-element-browser-disabled", [], false);
+        try {
+            if (!scopeRoot) {
+                throw new Error("Область browser runtime не подтверждена.");
+            }
+            const server = this.prepareForScope(scopeRoot);
+            // Config overrides deep-merge TOML tables. A never-persisted, unpredictable
+            // name prevents foreign env/cwd/transport fields surviving that merge.
+            server.name = `${codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME}-${(0, crypto_1.randomBytes)(16).toString("hex")}`;
+            delete server.originalName;
+            this.managedServer = { scopeRoot, server };
+            return {
+                args: [...disabled, ...managedBrowserOverride(server.name, server.command, server.args ?? [], true)],
+                managedServerName: server.name,
+                scopeRoot,
+                artifactsRoot: path.join(scopeRoot, "browser", "artifacts")
+            };
+        }
+        catch (error) {
+            return {
+                args: disabled,
+                disabledReason: errorMessage(error)
+            };
+        }
+    }
+    prepareForScope(scopeRoot) {
+        const settings = this.getSettingsView();
         if (settings.validationMessage) {
             throw new Error(settings.validationMessage);
         }
+        if (!settings.enabled) {
+            throw new Error("Браузерное тестирование выключено.");
+        }
         const runtime = this.resolveRuntime();
-        const runtimeStateRoot = path.join(this.settings.getConfigRoot(), "browser");
+        const runtimeStateRoot = path.join(scopeRoot, "browser");
         const outputDir = path.join(runtimeStateRoot, "artifacts");
         const configPath = path.join(runtimeStateRoot, "playwright-mcp.config.json");
         const initPagePath = path.join(runtimeStateRoot, "init-page.ts");
-        fs.mkdirSync(outputDir, { recursive: true });
+        ensurePrivateDirectory(runtimeStateRoot);
+        ensurePrivateDirectory(outputDir);
         const baseUrl = new URL(settings.baseUrl).toString();
         const origins = new Set(settings.allowedOrigins);
         origins.add(new URL(baseUrl).origin);
@@ -95,7 +138,7 @@ class BrowserRuntimeService {
             "};",
             ""
         ].join("\n");
-        fs.writeFileSync(initPagePath, initPage, "utf8");
+        writePrivateFile(initPagePath, initPage);
         const launchArgs = settings.disableSandbox ? ["--no-sandbox", "--disable-setuid-sandbox"] : [];
         const config = {
             browser: {
@@ -122,7 +165,7 @@ class BrowserRuntimeService {
                 navigation: 30000
             }
         };
-        fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+        writePrivateFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
         this.logger.info(`Browser MCP prepared: platform=${runtime.manifest.platformId}; origins=${origins.size}; sandbox=${settings.disableSandbox ? "disabled" : "enabled"}.`);
         return {
             originalName: codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME,
@@ -133,10 +176,80 @@ class BrowserRuntimeService {
             enabled: true
         };
     }
+    getBrowserArtifactsRoot() {
+        const root = this.resolveScopeRoot();
+        return root ? path.join(root, "browser", "artifacts") : undefined;
+    }
+    getManagedServer() {
+        const managed = this.managedServer;
+        if (!managed || managed.scopeRoot !== this.resolveScopeRoot()) {
+            return undefined;
+        }
+        return { ...managed.server, args: [...managed.server.args ?? []] };
+    }
+    getSettingsView() {
+        const empty = { enabled: false, baseUrl: "", allowedOrigins: [], disableSandbox: false, validationMessage: "" };
+        const root = this.resolvePersistentScopeRoot();
+        if (!root) {
+            return { ...empty, validationMessage: "Область пользователя и проекта для настроек браузера не подтверждена." };
+        }
+        const filePath = path.join(root, "browser-settings.json");
+        try {
+            const stats = fs.lstatSync(filePath);
+            if (!stats.isFile() || stats.isSymbolicLink() || stats.size > 32 * 1024) {
+                throw new Error("Некорректный файл настроек браузера.");
+            }
+            const signature = fileSignature(filePath, stats);
+            if (this.preferenceCache?.signature === signature) {
+                return { ...this.preferenceCache.view, allowedOrigins: [...this.preferenceCache.view.allowedOrigins] };
+            }
+            const input = JSON.parse(fs.readFileSync(filePath, "utf8"));
+            if (input?.schemaVersion !== 1)
+                throw new Error("Неизвестная версия настроек браузера.");
+            const view = normalizeBrowserPreferences(input);
+            this.preferenceCache = { signature, view };
+            return { ...view, allowedOrigins: [...view.allowedOrigins] };
+        }
+        catch (error) {
+            if (error.code === "ENOENT")
+                return empty;
+            return { ...empty, validationMessage: errorMessage(error) };
+        }
+    }
+    saveSettings(input) {
+        const root = this.resolvePersistentScopeRoot();
+        if (!root)
+            throw new Error("Область пользователя и проекта для настроек браузера не подтверждена.");
+        const view = normalizeBrowserPreferences(input);
+        ensurePrivateDirectory(root);
+        writePrivateFile(path.join(root, "browser-settings.json"), `${JSON.stringify({ schemaVersion: 1, ...view }, null, 2)}\n`);
+        this.preferenceCache = undefined;
+        return view;
+    }
+    resolvePersistentScopeRoot() {
+        // No migration from server-global preferences: they may belong to another user.
+        if (!this.resolveScopeRoot())
+            return undefined;
+        return this.validateScopeRoot(this.getPersistentScopeRoot?.());
+    }
+    resolveScopeRoot() {
+        return this.validateScopeRoot(this.getScopeRoot?.());
+    }
+    validateScopeRoot(root) {
+        if (!root || !path.isAbsolute(root) || root.includes("\0")) {
+            return undefined;
+        }
+        const resolved = path.resolve(root);
+        const shared = path.resolve(this.settings.getConfigRoot());
+        if (resolved === shared || resolved === path.join(shared, "browser")) {
+            return undefined;
+        }
+        return resolved;
+    }
     async test() {
         try {
             const runtime = this.resolveRuntime();
-            const settings = this.settings.getBrowserSettingsView();
+            const settings = this.getSettingsView();
             const [node, launcher, browser] = await Promise.all([
                 runProcess(runtime.nodePath, ["--version"], 8000),
                 runProcess(runtime.nodePath, [runtime.launcherPath, "--help"], 12000),
@@ -166,17 +279,28 @@ class BrowserRuntimeService {
         }
         let manifest;
         try {
-            manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+            const stats = fs.statSync(manifestPath);
+            const signature = fileSignature(manifestPath, stats);
+            if (!stats.isFile() || stats.size > 64 * 1024) {
+                throw new Error("Invalid runtime manifest size");
+            }
+            if (this.manifestCache?.signature === signature) {
+                manifest = this.manifestCache.manifest;
+            }
+            else {
+                manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+                this.manifestCache = { signature, manifest };
+            }
         }
         catch {
             throw new Error("Manifest встроенного browser runtime поврежден.");
         }
-        if (manifest.schemaVersion !== 1 || manifest.platformId !== platformId) {
+        if (!manifest || manifest.schemaVersion !== 1 || manifest.platformId !== platformId) {
             throw new Error(`Browser runtime не соответствует платформе ${platformId}.`);
         }
-        const nodePath = resolveContainedFile(root, manifest.nodePath, "Node.js");
-        const launcherPath = resolveContainedFile(root, manifest.launcherPath, "Playwright MCP launcher");
-        const browserExecutablePath = resolveContainedFile(root, manifest.browserExecutablePath, "Chromium");
+        const nodePath = resolveContainedFile(root, manifest.nodePath, "Node.js", this.fileChecks);
+        const launcherPath = resolveContainedFile(root, manifest.launcherPath, "Playwright MCP launcher", this.fileChecks);
+        const browserExecutablePath = resolveContainedFile(root, manifest.browserExecutablePath, "Chromium", this.fileChecks);
         return { root, manifest, nodePath, launcherPath, browserExecutablePath };
     }
 }
@@ -204,8 +328,8 @@ async function smokeTestBrowser(runtime, disableSandbox) {
 function currentPlatformId() {
     return `${process.platform}-${process.arch}`;
 }
-function resolveContainedFile(root, relativePath, label) {
-    if (!relativePath || path.isAbsolute(relativePath)) {
+function resolveContainedFile(root, relativePath, label, cache) {
+    if (typeof relativePath !== "string" || !relativePath || path.isAbsolute(relativePath)) {
         throw new Error(`${label}: manifest содержит небезопасный путь.`);
     }
     const resolvedRoot = path.resolve(root);
@@ -216,6 +340,10 @@ function resolveContainedFile(root, relativePath, label) {
     }
     let stats;
     try {
+        const realRelative = path.relative(fs.realpathSync(resolvedRoot), fs.realpathSync(candidate));
+        if (!realRelative || realRelative === ".." || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) {
+            throw new Error("Runtime symlink escapes root");
+        }
         stats = fs.statSync(candidate);
     }
     catch {
@@ -224,14 +352,81 @@ function resolveContainedFile(root, relativePath, label) {
     if (!stats.isFile()) {
         throw new Error(`${label} не является файлом.`);
     }
-    const head = fs.readFileSync(candidate).subarray(0, 128).toString("utf8");
-    if (head.startsWith("version https://git-lfs.github.com/spec/v1")) {
-        throw new Error(`${label} остался Git LFS pointer вместо бинарного файла.`);
-    }
     if (process.platform !== "win32" && (stats.mode & 0o111) === 0 && label !== "Playwright MCP launcher") {
         throw new Error(`${label} не имеет executable bit.`);
     }
+    const signature = fileSignature(candidate, stats);
+    if (cache.get(candidate) !== signature) {
+        const fd = fs.openSync(candidate, "r");
+        try {
+            const buffer = Buffer.alloc(128);
+            const size = fs.readSync(fd, buffer, 0, buffer.length, 0);
+            if (buffer.toString("utf8", 0, size).startsWith("version https://git-lfs.github.com/spec/v1")) {
+                throw new Error(`${label} остался Git LFS pointer вместо бинарного файла.`);
+            }
+            if (fileSignature(candidate, fs.fstatSync(fd)) !== signature) {
+                throw new Error(`${label} изменился во время проверки. Повторите проверку.`);
+            }
+        }
+        finally {
+            fs.closeSync(fd);
+        }
+        if (cache.size >= 16) {
+            cache.clear();
+        }
+        cache.set(candidate, signature);
+    }
     return candidate;
+}
+function fileSignature(filePath, stats) {
+    return `${filePath}:${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.mode}`;
+}
+function managedBrowserOverride(name, command, args, enabled) {
+    const table = `{command=${JSON.stringify(command)},args=[${args.map((arg) => JSON.stringify(arg)).join(",")}],enabled=${enabled}}`;
+    return ["-c", `mcp_servers.${name}=${table}`];
+}
+function normalizeBrowserPreferences(input) {
+    if (!input || typeof input.enabled !== "boolean" || typeof input.baseUrl !== "string"
+        || !Array.isArray(input.allowedOrigins) || input.allowedOrigins.length > 20
+        || typeof input.disableSandbox !== "boolean") {
+        throw new Error("Некорректные настройки браузера.");
+    }
+    const baseUrl = input.baseUrl.trim();
+    const allowedOrigins = [...new Set(input.allowedOrigins.map((value) => {
+            if (typeof value !== "string" || value.length > 2048)
+                throw new Error("Некорректный origin браузера.");
+            const origin = new URL(value.trim());
+            if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password) {
+                throw new Error("Origin браузера должен использовать http или https без учетных данных.");
+            }
+            return origin.origin;
+        }))];
+    if (baseUrl.length > 8192 || (input.enabled && !baseUrl))
+        throw new Error("Укажите корректный URL приложения.");
+    if (baseUrl) {
+        const parsed = new URL(baseUrl);
+        if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+            throw new Error("URL приложения должен использовать http или https без учетных данных.");
+        }
+    }
+    return { enabled: input.enabled, baseUrl, allowedOrigins, disableSandbox: input.disableSandbox, validationMessage: "" };
+}
+function ensurePrivateDirectory(directory) {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const stats = fs.lstatSync(directory);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+        throw new Error("Каталог browser runtime не должен быть символической ссылкой.");
+    }
+}
+function writePrivateFile(filePath, content) {
+    const temporary = `${filePath}.${(0, crypto_1.randomUUID)()}.tmp`;
+    try {
+        fs.writeFileSync(temporary, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+        fs.renameSync(temporary, filePath);
+    }
+    finally {
+        fs.rmSync(temporary, { force: true });
+    }
 }
 function runProcess(command, args, timeoutMs) {
     return new Promise((resolve, reject) => {

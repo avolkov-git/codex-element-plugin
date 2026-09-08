@@ -60,7 +60,11 @@ class SidebarProvider {
             title: "Codex"
         });
         webviewView.webview.onDidReceiveMessage((message) => {
-            void this.handleMessage(message);
+            void this.handleMessage(message).catch((error) => {
+                const detail = error instanceof Error ? error.message : "Не удалось выполнить действие.";
+                this.logger.warn(`Sidebar action failed: ${detail}`);
+                this.postEvent("shell.notice", detail);
+            });
         });
     }
     postSnapshot() {
@@ -81,7 +85,7 @@ class SidebarProvider {
             this.logger.info(`Sidebar webview assets: ${message.assetMode ?? "unknown"}.`);
             this.postSnapshot();
             this.logger.info("Auth restore requested from sidebar ready.");
-            void this.handlers.restoreAuth();
+            void this.handlers.restoreAuth().catch((error) => this.postEvent("shell.notice", error instanceof Error ? error.message : "Не удалось проверить авторизацию."));
             return;
         }
         if (message.type !== "command") {
@@ -89,6 +93,9 @@ class SidebarProvider {
         }
         this.logger.info(`Sidebar command: ${message.command}`);
         switch (message.command) {
+            case "auth.restore":
+                await this.handlers.restoreAuth();
+                return;
             case "auth.deviceCode.start":
                 await this.handlers.startDeviceCodeLogin();
                 return;

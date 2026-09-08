@@ -45,6 +45,7 @@
     root.innerHTML = `
       <main class="app">
         ${brand()}
+        ${snapshot && !workspaceVisible && snapshot.auth.status === "error" ? `<section class="auth-strip error" role="alert"><div>${escapeHtml(snapshot.auth.message || "Не удалось проверить подключение.")}</div><button class="link-button" data-command="auth.restore">Повторить проверку</button></section>` : ""}
         ${snapshot ? (workspaceVisible ? `${showAuthFlow ? authCard(snapshot) : ""}${chatSections(snapshot)}` : authCard(snapshot)) : loading()}
       </main>
     `;
@@ -209,14 +210,6 @@
         </section>
       `;
     }
-    const hasKnownProfile = Boolean(snapshot.auth.profileLabel && snapshot.auth.profileLabel !== "-");
-    const waitingForLazyCheck = hasKnownProfile
-      && snapshot.runtime.status === "notStarted"
-      && snapshot.auth.status === "notAuthenticated";
-    if (waitingForLazyCheck) {
-      return "";
-    }
-
     const message = snapshot.auth.message || "Codex не авторизован.";
     const canStartLogin = snapshot.auth.status === "error" || snapshot.auth.status === "notAuthenticated";
     return `

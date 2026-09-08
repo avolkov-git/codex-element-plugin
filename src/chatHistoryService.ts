@@ -1,12 +1,12 @@
-import * as crypto from "crypto";
-import * as fs from "fs";
-import * as path from "path";
 import * as vscode from "vscode";
+import { ElementIdentity } from "./elementIdentityService";
 import { Logger } from "./logger";
+import { ProjectHistoryStore, validateHistory } from "./projectHistoryStore";
 import { ChatActivityDetail, ChatActivityKind, ChatAttachment, ChatClarificationOption, ChatDiffFileStatus, ChatEffort, ChatKind, ChatSpeed, ChatStatus, ChatSummary, ChatTranscriptItem, ChatTurnRunCounterKind, PersistedChatHistory, WorklogChild, WorklogOperationKind, WorklogSource, WorklogStatus } from "./types";
 
 interface PendingSave {
-  profileId: string;
+  identity: ElementIdentity;
+  workspacePath: string;
   history: PersistedChatHistory;
 }
 
@@ -14,39 +14,42 @@ export class ChatHistoryService implements vscode.Disposable {
   private pendingSave: PendingSave | undefined;
   private saveTimer: NodeJS.Timeout | undefined;
   private saveChain = Promise.resolve();
+  private readonly store: ProjectHistoryStore;
+  private identity: ElementIdentity | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly configRoot: string,
-    private readonly logger: Logger
-  ) {}
+    configRoot: string,
+    private readonly logger: Logger,
+    private readonly getIdentity: () => ElementIdentity | undefined,
+    private readonly onSaveError: (message: string) => void = () => undefined
+  ) { this.store = new ProjectHistoryStore(configRoot, normalizeHistory); }
 
   async load(profileId: string): Promise<PersistedChatHistory | undefined> {
-    const historyPath = this.historyPath(profileId);
-    try {
-      const raw = await fs.promises.readFile(historyPath, "utf8");
-      const parsed = JSON.parse(raw);
-      const history = normalizeHistory(parsed);
-      this.logger.info(`Chat history loaded: ${historyPath}.`);
-      return history;
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
-        this.logger.info(`Chat history not found for profile ${profileId}.`);
-        return undefined;
-      }
-      this.logger.warn(`Chat history read failed, starting empty: ${normalizeErrorMessage(error)}.`);
-      return undefined;
-    }
+    const identity = this.getIdentity();
+    if (!identity || identity.userKey !== profileId) { throw new Error("Пользователь IDE не подтвержден. История не открыта."); }
+    const workspacePath = this.workspacePath();
+    const flushed = this.flush();
+    return this.enqueue(async () => {
+      await flushed;
+      this.identity = undefined;
+      const loaded = await this.store.load(identity, workspacePath);
+      const current = this.getIdentity();
+      if (current?.userKey !== identity.userKey || current.projectKey !== identity.projectKey || this.workspacePath() !== workspacePath) { throw new Error("Пользователь или проект IDE изменился при загрузке истории."); }
+      this.identity = identity;
+      this.logger.info(`Project chat history loaded: ${this.store.file(identity)}.`);
+      return loaded;
+    });
   }
 
   scheduleSave(profileId: string, history: PersistedChatHistory): void {
-    this.pendingSave = { profileId, history };
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-    }
+    const identity = this.requireLoadedIdentity(profileId);
+    this.pendingSave = { identity, workspacePath: this.workspacePath(), history };
+    // A fixed deadline guarantees progress even during a continuous token stream.
+    if (this.saveTimer) { return; }
     this.saveTimer = setTimeout(() => {
       this.saveTimer = undefined;
-      void this.flush();
+      void this.flush().catch((error) => this.reportSaveError(error));
     }, 600);
   }
 
@@ -56,16 +59,17 @@ export class ChatHistoryService implements vscode.Disposable {
       this.saveTimer = undefined;
     }
     this.pendingSave = undefined;
-    await this.writeQueued(profileId, history);
+    await this.writeQueued({ identity: this.requireLoadedIdentity(profileId), workspacePath: this.workspacePath(), history });
   }
 
   async flush(): Promise<void> {
     const pending = this.pendingSave;
     if (!pending) {
+      await this.saveChain;
       return;
     }
     this.pendingSave = undefined;
-    await this.writeQueued(pending.profileId, pending.history);
+    await this.writeQueued(pending);
   }
 
   dispose(): void {
@@ -74,40 +78,60 @@ export class ChatHistoryService implements vscode.Disposable {
       this.saveTimer = undefined;
     }
     if (this.pendingSave) {
-      void this.flush();
+      void this.flush().catch((error) => this.reportSaveError(error));
     }
   }
 
-  private historyPath(profileId: string): string {
-    return path.join(this.configRoot, "users", profileId, "workspaces", this.workspaceId(), "chats.json");
+  async listLegacy() {
+    const identity = this.identity;
+    if (!identity) { throw new Error("Сначала откройте историю текущего проекта."); }
+    return this.enqueue(async () => {
+      if (this.identity !== identity) { throw new Error("Область истории изменилась. Обновите список переноса."); }
+      return this.store.listLegacy(identity);
+    });
   }
 
-  private workspaceId(): string {
-    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || this.context.globalStorageUri.fsPath;
-    return crypto.createHash("sha256").update(workspacePath).digest("hex").slice(0, 16);
+  async importLegacy(id: string, current: PersistedChatHistory): Promise<PersistedChatHistory> {
+    const identity = this.identity;
+    if (!identity) { throw new Error("Сначала откройте историю текущего проекта."); }
+    const workspacePath = this.workspacePath();
+    const snapshot = JSON.parse(JSON.stringify(current)) as PersistedChatHistory;
+    const flushed = this.flush();
+    return this.enqueue(async () => {
+      await flushed;
+      if (this.identity !== identity) { throw new Error("Область истории изменилась. Повторите перенос."); }
+      return this.store.importLegacy(identity, workspacePath, id, snapshot);
+    });
   }
 
-  private async writeQueued(profileId: string, history: PersistedChatHistory): Promise<void> {
-    this.saveChain = this.saveChain
-      .then(() => this.write(profileId, history))
-      .catch((error) => {
-        this.logger.warn(`Chat history save failed: ${normalizeErrorMessage(error)}.`);
-      });
-    await this.saveChain;
+  private workspacePath(): string { return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || this.context.globalStorageUri.fsPath; }
+
+  private requireLoadedIdentity(profileId: string): ElementIdentity {
+    if (!this.identity || this.identity.userKey !== profileId) { throw new Error("Запись истории до подтверждения пользователя и загрузки проекта запрещена."); }
+    return this.identity;
   }
 
-  private async write(profileId: string, history: PersistedChatHistory): Promise<void> {
-    const historyPath = this.historyPath(profileId);
-    await fs.promises.mkdir(path.dirname(historyPath), { recursive: true });
-    const tempPath = `${historyPath}.${process.pid}.${Date.now()}.tmp`;
-    await fs.promises.writeFile(tempPath, `${JSON.stringify(history, null, 2)}\n`, "utf8");
-    await fs.promises.rename(tempPath, historyPath);
-    this.logger.info(`Chat history saved: ${historyPath}.`);
+  private async writeQueued(pending: PendingSave): Promise<void> {
+    const history = JSON.parse(JSON.stringify(pending.history)) as PersistedChatHistory;
+    await this.enqueue(() => this.store.save(pending.identity, pending.workspacePath, history));
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.saveChain.then(operation);
+    this.saveChain = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private reportSaveError(error: unknown): void {
+    const message = normalizeErrorMessage(error);
+    this.logger.error(`Chat history save failed: ${message}`);
+    this.onSaveError(message);
   }
 }
 
-function normalizeHistory(value: unknown): PersistedChatHistory {
-  const object = isObject(value) ? value : {};
+export function normalizeHistory(value: unknown): PersistedChatHistory {
+  validateHistory(value);
+  const object = value;
   const chats = Array.isArray(object.chats)
     ? object.chats.map(normalizeChat).filter((chat): chat is ChatSummary => Boolean(chat))
     : [];
@@ -167,6 +191,8 @@ function normalizeChat(value: unknown): ChatSummary | undefined {
     pendingApproval: null,
     backendThreadAccessMode: normalizeOptionalChatAccessMode(value.backendThreadAccessMode),
     backendThreadId: typeof value.backendThreadId === "string" ? value.backendThreadId : null,
+    backendContextRestored: typeof value.backendContextRestored === "boolean" ? value.backendContextRestored : undefined,
+    backendWorkspacePath: typeof value.backendWorkspacePath === "string" ? value.backendWorkspacePath : undefined,
     activeTurnId: null,
     activeRunMode: null
   };
@@ -177,7 +203,7 @@ function normalizeQueuedMessages(value: unknown): ChatSummary["queuedMessages"] 
     return [];
   }
   return value.flatMap((entry) => {
-    if (!isObject(entry) || typeof entry.id !== "string" || typeof entry.text !== "string") {
+    if (!isObject(entry) || entry.dispatchState === "accepted" || typeof entry.id !== "string" || typeof entry.text !== "string") {
       return [];
     }
     const attachments = normalizeAttachments(entry.attachments);
@@ -190,6 +216,10 @@ function normalizeQueuedMessages(value: unknown): ChatSummary["queuedMessages"] 
       mode: entry.mode === "planning" || entry.mode === "implementPlan" ? entry.mode : "normal",
       skills: normalizeSkillSelections(entry.skills),
       attachments,
+      dispatchState: entry.dispatchState === "failed" || entry.dispatchState === "dispatching" ? "failed" as const : "queued" as const,
+      dispatchError: entry.dispatchState === "dispatching" ? "Отправка была прервана перезапуском. Проверьте ответ перед повтором." : typeof entry.dispatchError === "string" ? entry.dispatchError : undefined,
+      dispatchAttempt: typeof entry.dispatchAttempt === "number" ? entry.dispatchAttempt : undefined,
+      transcriptMessageId: typeof entry.transcriptMessageId === "string" ? entry.transcriptMessageId : undefined,
       createdAt: typeof entry.createdAt === "string" ? entry.createdAt : new Date().toISOString()
     }];
   });

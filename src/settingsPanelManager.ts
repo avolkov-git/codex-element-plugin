@@ -209,25 +209,15 @@ export class SettingsPanelManager {
         await this.postError(panel, "Проверьте URL и разрешенные origins браузера.");
         return;
       }
-      const previous = this.settings.getBrowserSettingsView();
       try {
-        this.settings.saveBrowserSettings(input);
-        const existing = await this.integrations.getConfiguredMcpServer(this.browserRuntime.getView().managedServerName);
-        if (input.enabled) {
-          const mcpInput = this.browserRuntime.prepareMcpServer();
-          if (!existing) {
-            delete mcpInput.originalName;
-          }
-          await this.integrations.saveMcpServer(mcpInput);
-        } else if (existing?.enabled) {
-          await this.integrations.setMcpEnabled(existing.name, false);
-        }
+        this.browserRuntime.saveSettings(input);
+        await this.onSettingsChanged({ restartRuntime: true });
+        await this.integrations.refresh(true);
         await this.postSaved(panel, input.enabled
-          ? "Браузерное тестирование включено. Codex получил Playwright MCP."
+          ? "Браузерное тестирование включено для текущего пользователя и проекта."
           : "Браузерное тестирование выключено.");
         await this.postSnapshot(panel);
       } catch (error) {
-        this.settings.saveBrowserSettings(previous);
         await this.postError(panel, error instanceof Error ? error.message : "Не удалось сохранить браузерное тестирование.");
         await this.postSnapshot(panel);
       }

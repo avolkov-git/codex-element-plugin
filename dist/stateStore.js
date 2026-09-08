@@ -26,6 +26,7 @@ class StateStore {
         this.chats = [];
         this.transcripts = new Map();
         this.contextWindows = new Map();
+        this.pendingUserInputs = new Map();
         this.modelOptions = FALLBACK_MODEL_OPTIONS;
         this.modelOptionsStatus = "idle";
         this.chatHeaderMode = "collapsed";
@@ -167,7 +168,9 @@ class StateStore {
             modelOptions: this.modelOptions,
             modelOptionsStatus: this.modelOptionsStatus,
             transcriptWindow: this.getTranscriptTail(chat.id),
-            activeClarification: this.getActiveClarification(chat.id)
+            activeClarification: this.getActiveClarification(chat.id),
+            pendingUserInput: this.pendingUserInputs.get(chat.id)?.[0] ?? null,
+            pendingUserInputs: [...(this.pendingUserInputs.get(chat.id) ?? [])]
         };
     }
     getActiveChatId() {
@@ -205,6 +208,33 @@ class StateStore {
         const safeCount = normalizeTranscriptWindowCount(count, exports.TRANSCRIPT_PAGE_SIZE);
         return this.buildTranscriptWindow(chatId, index + 1, Math.min(transcript.length, index + 1 + safeCount));
     }
+    getTurnTranscriptWindow(chatId, turnId, offset = 0, count = exports.TRANSCRIPT_PAGE_SIZE) {
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const parent = transcript.find((item) => item.kind === "turn-run" && item.turnId === turnId);
+        const ids = new Set(parent ? [...parent.activityIds, ...parent.worklogIds, ...parent.diffIds, ...parent.compactionIds] : []);
+        const children = transcript.filter((item) => item.kind !== "turn-run" && (ids.has(item.id) || ("turnId" in item && item.turnId === turnId)));
+        const start = Number.isFinite(offset) ? Math.max(0, Math.min(Math.trunc(offset), children.length)) : 0;
+        const items = children.slice(start, start + normalizeTranscriptWindowCount(count, exports.TRANSCRIPT_PAGE_SIZE));
+        return {
+            chatId, revision: this.version, turnId, turns: parent ? [parent] : [], items,
+            offset: start, totalCount: children.length, hasBefore: start > 0, hasAfter: start + items.length < children.length,
+            firstItemId: items[0]?.id, lastItemId: items[items.length - 1]?.id
+        };
+    }
+    setPendingUserInputs(chatId, requests) {
+        if (!this.getChat(chatId)) {
+            return;
+        }
+        if (requests.some((request) => request.chatId !== chatId)) {
+            throw new Error("Native input requests must belong to the target chat.");
+        }
+        const previous = this.pendingUserInputs.get(chatId) ?? [];
+        if (previous.length === requests.length && previous.every((request, index) => request === requests[index])) {
+            return;
+        }
+        this.pendingUserInputs.set(chatId, [...requests]);
+        this.updateChat(chatId, { pendingUserInput: requests[0] ?? null }, "immediate");
+    }
     getActiveClarification(chatId) {
         const chat = this.getChat(chatId);
         if (!chat || chat.status !== "idle") {
@@ -235,7 +265,13 @@ class StateStore {
         const normalizedStart = Math.max(0, Math.min(start, transcript.length));
         const normalizedEnd = Math.max(normalizedStart, Math.min(end, transcript.length));
         const items = transcript.slice(normalizedStart, normalizedEnd);
+        const itemIds = new Set(items.map((item) => item.id));
+        const turnIds = new Set(items.flatMap((item) => "turnId" in item && item.turnId ? [item.turnId] : []));
+        const turns = transcript.filter((item) => item.kind === "turn-run" && (turnIds.has(item.turnId) || [...item.activityIds, ...item.worklogIds, ...item.diffIds, ...item.compactionIds].some((id) => itemIds.has(id))));
         return {
+            chatId,
+            revision: this.version,
+            turns,
             items,
             offset: normalizedStart,
             totalCount: transcript.length,
@@ -267,6 +303,7 @@ class StateStore {
             queuedMessages: [],
             rulesEnabled: kind === "project",
             pendingApproval: null,
+            pendingUserInput: null,
             backendThreadAccessMode: null,
             backendThreadId: null,
             activeTurnId: null,
@@ -306,6 +343,38 @@ class StateStore {
     }
     getChat(chatId) {
         return this.chats.find((chat) => chat.id === chatId);
+    }
+    getConversationHistorySeed(chatId) {
+        const messages = (this.transcripts.get(chatId) ?? []).filter((item) => item.kind === "message" && (item.role === "user" || item.role === "assistant") && item.status !== "streaming" && Boolean(item.text.trim()));
+        // sendPrompt inserts the current user message before thread creation.
+        if (this.getChat(chatId)?.status === "running" && messages[messages.length - 1]?.role === "user") {
+            messages.pop();
+        }
+        const entries = [];
+        let remaining = 24000;
+        for (const message of messages.slice(-16).reverse()) {
+            const line = JSON.stringify({ role: message.role, text: message.text.slice(-Math.min(6000, Math.max(0, remaining - 128))) });
+            if (line.length > remaining || remaining < 128)
+                break;
+            entries.unshift(line);
+            remaining -= line.length + 1;
+        }
+        return entries.join("\n");
+    }
+    forkChatHistory(chatId, backendThreadId, title) {
+        const source = this.getChat(chatId);
+        if (!source || source.archivedAt || source.status !== "idle" || source.activeTurnId) {
+            throw new Error("Fork requires an idle source chat.");
+        }
+        const transcript = this.transcripts.get(chatId) ?? [];
+        const child = this.createChat(source.kind, title?.trim() || `${source.title} (fork)`);
+        this.transcripts.set(child.id, JSON.parse(JSON.stringify(transcript)));
+        return this.updateChat(child.id, {
+            accessMode: source.accessMode, modelId: source.modelId, modelLabel: source.modelLabel,
+            effort: source.effort, speed: source.speed, rulesEnabled: source.rulesEnabled,
+            backendThreadId, backendThreadAccessMode: source.backendThreadAccessMode ?? source.accessMode,
+            backendContextRestored: source.backendContextRestored, backendWorkspacePath: source.backendWorkspacePath
+        }, "immediate");
     }
     archiveChat(chatId) {
         const chat = this.getChat(chatId);
@@ -358,6 +427,7 @@ class StateStore {
         this.chats = this.chats.filter((candidate) => candidate.id !== chatId);
         this.transcripts.delete(chatId);
         this.contextWindows.delete(chatId);
+        this.pendingUserInputs.delete(chatId);
         if (this.activeChatId === chatId) {
             this.activeChatId = undefined;
         }
@@ -475,6 +545,7 @@ class StateStore {
             mode,
             skills: skills.map((skill) => ({ name: skill.name, path: skill.path })),
             attachments: attachments.map((attachment) => ({ ...attachment })),
+            dispatchState: "queued",
             createdAt: new Date().toISOString()
         };
         this.updateChat(chatId, { queuedMessages: [...chat.queuedMessages, queued] }, "immediate");
@@ -482,7 +553,7 @@ class StateStore {
     }
     removeQueuedChatMessage(chatId, messageId) {
         const chat = this.getChat(chatId);
-        if (!chat || !chat.queuedMessages.some((message) => message.id === messageId)) {
+        if (!chat || !chat.queuedMessages.some((message) => message.id === messageId && message.dispatchState !== "dispatching")) {
             return false;
         }
         this.updateChat(chatId, {
@@ -500,19 +571,42 @@ class StateStore {
         if (currentIndex < 0 || targetIndex < 0 || targetIndex >= chat.queuedMessages.length) {
             return false;
         }
+        if ([chat.queuedMessages[currentIndex], chat.queuedMessages[targetIndex]].some((message) => message.dispatchState === "dispatching")) {
+            return false;
+        }
         const queuedMessages = [...chat.queuedMessages];
         [queuedMessages[currentIndex], queuedMessages[targetIndex]] = [queuedMessages[targetIndex], queuedMessages[currentIndex]];
         this.updateChat(chatId, { queuedMessages }, "immediate");
         return true;
     }
     shiftQueuedChatMessage(chatId) {
+        return this.claimQueuedChatMessage(chatId);
+    }
+    claimQueuedChatMessage(chatId, messageId) {
         const chat = this.getChat(chatId);
-        const queued = chat?.queuedMessages[0];
+        const queued = messageId ? chat?.queuedMessages.find((message) => message.id === messageId) : chat?.queuedMessages[0];
+        if (!chat || !queued || chat.archivedAt || !["idle", "error"].includes(chat.status) || chat.queuedMessages.some((message) => message.dispatchState === "dispatching") || queued.dispatchState === "accepted" || (!messageId && queued.dispatchState === "failed")) {
+            return undefined;
+        }
+        return this.updateQueuedChatMessage(chatId, queued.id, {
+            dispatchState: "dispatching", dispatchError: undefined, dispatchAttempt: (queued.dispatchAttempt ?? 0) + 1
+        });
+    }
+    updateQueuedChatMessage(chatId, messageId, patch) {
+        const chat = this.getChat(chatId);
+        const queued = chat?.queuedMessages.find((message) => message.id === messageId);
         if (!chat || !queued) {
             return undefined;
         }
-        this.updateChat(chatId, { queuedMessages: chat.queuedMessages.slice(1) }, "immediate");
-        return queued;
+        const updated = { ...queued, ...patch };
+        this.updateChat(chatId, { queuedMessages: chat.queuedMessages.map((message) => message.id === messageId ? updated : message) }, "immediate");
+        return updated;
+    }
+    acceptQueuedChatMessage(chatId, messageId, turnId) {
+        const queued = this.updateQueuedChatMessage(chatId, messageId, { dispatchState: "accepted", acceptedTurnId: turnId, dispatchError: undefined });
+        if (queued) {
+            this.removeQueuedChatMessage(chatId, messageId);
+        }
     }
     setModelOptions(options, status) {
         const normalized = normalizeModelOptions(options);
@@ -542,6 +636,10 @@ class StateStore {
         this.version += 1;
     }
     setPendingApproval(chatId, pendingApproval) {
+        const chat = this.getChat(chatId);
+        if (chat?.pendingApproval === pendingApproval) {
+            return chat;
+        }
         const status = pendingApproval ? "waitingApproval" : this.getChat(chatId)?.status === "waitingApproval" ? "running" : undefined;
         return this.updateChat(chatId, {
             pendingApproval,
@@ -993,6 +1091,7 @@ class StateStore {
     }
     replaceChatHistory(history) {
         this.contextWindows.clear();
+        this.pendingUserInputs.clear();
         this.chats = history?.chats.map((chat) => ({
             ...chat,
             archivedAt: chat.archivedAt ?? null,
@@ -1003,9 +1102,12 @@ class StateStore {
             modelLabel: typeof chat.modelId === "string" ? chat.modelLabel || chat.modelId : "Авто",
             effort: chat.effort ?? "medium",
             speed: chat.speed ?? "standard",
-            queuedMessages: Array.isArray(chat.queuedMessages) ? chat.queuedMessages : [],
+            queuedMessages: Array.isArray(chat.queuedMessages) ? chat.queuedMessages.filter((message) => message.dispatchState !== "accepted").map((message) => message.dispatchState === "dispatching"
+                ? { ...message, dispatchState: "failed", dispatchError: "Dispatch interrupted; verify the previous turn before retrying." }
+                : { ...message, dispatchState: message.dispatchState ?? "queued" }) : [],
             rulesEnabled: chat.kind === "project" ? chat.rulesEnabled !== false : false,
             pendingApproval: null,
+            pendingUserInput: null,
             backendThreadAccessMode: chat.backendThreadAccessMode ?? null,
             status: "idle",
             activeTurnId: null,
@@ -1018,6 +1120,19 @@ class StateStore {
             .filter(([chatId]) => this.chats.some((chat) => chat.id === chatId)));
         this.version += 1;
     }
+    addImportedChatHistory(history) {
+        if (history.chats.some((chat) => this.chats.some((existing) => existing.id === chat.id))) {
+            throw new Error("Диалог с таким идентификатором уже появился. Обновите историю перед переносом.");
+        }
+        for (const chat of history.chats) {
+            this.chats.push(chat);
+            this.transcripts.set(chat.id, history.transcripts[chat.id] ?? []);
+        }
+        if (!this.activeChatId) {
+            this.activeChatId = this.chats[0]?.id;
+        }
+        this.version += 1;
+    }
     exportChatHistory() {
         const transcripts = {};
         for (const chat of this.chats) {
@@ -1026,6 +1141,7 @@ class StateStore {
         const chats = this.chats.map((chat) => ({
             ...chat,
             pendingApproval: null,
+            pendingUserInput: null,
             status: chat.status === "waitingApproval" || chat.status === "running" || chat.status === "cancelling" ? "idle" : chat.status,
             activeTurnId: null,
             activeRunMode: null

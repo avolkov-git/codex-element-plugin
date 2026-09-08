@@ -1,0 +1,61 @@
+name: Chat and history regression checks
+
+on:
+  pull_request:
+  push:
+    branches: [master, 'codex/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rc-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CODEX_TEST_BROWSER_CHANNEL: bundled
+      CODEX_TEST_ARTIFACTS: ${{ runner.temp }}/codex-chat-ui
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Build and validate contracts
+        run: |
+          npm run build
+          npm run check
+          npm run check:protocol
+          npm run check:models
+          npm run check:markdown-links
+          npm run check:transcript-window
+          npm run check:mcp-elicitation
+          npm run eval:context
+      - name: Verify persistence and server-side actions
+        run: |
+          npm run check:history
+          npm run check:identity
+          npm run check:runtime
+          npm run check:features
+          npm run check:services
+      - name: Verify chat scrolling and worker fallback
+        run: |
+          npm run check:chat-ui
+          npm run check:browser-highlighter
+      - name: Upload UI evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: chat-regression-${{ github.run_id }}
+          path: ${{ runner.temp }}/codex-chat-ui
+          if-no-files-found: ignore
+          retention-days: 14

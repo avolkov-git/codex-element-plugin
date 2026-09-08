@@ -34,43 +34,48 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ChatHistoryService = void 0;
-const crypto = __importStar(require("crypto"));
-const fs = __importStar(require("fs"));
-const path = __importStar(require("path"));
+exports.normalizeHistory = normalizeHistory;
 const vscode = __importStar(require("vscode"));
+const projectHistoryStore_1 = require("./projectHistoryStore");
 class ChatHistoryService {
-    constructor(context, configRoot, logger) {
+    constructor(context, configRoot, logger, getIdentity, onSaveError = () => undefined) {
         this.context = context;
-        this.configRoot = configRoot;
         this.logger = logger;
+        this.getIdentity = getIdentity;
+        this.onSaveError = onSaveError;
         this.saveChain = Promise.resolve();
+        this.store = new projectHistoryStore_1.ProjectHistoryStore(configRoot, normalizeHistory);
     }
     async load(profileId) {
-        const historyPath = this.historyPath(profileId);
-        try {
-            const raw = await fs.promises.readFile(historyPath, "utf8");
-            const parsed = JSON.parse(raw);
-            const history = normalizeHistory(parsed);
-            this.logger.info(`Chat history loaded: ${historyPath}.`);
-            return history;
+        const identity = this.getIdentity();
+        if (!identity || identity.userKey !== profileId) {
+            throw new Error("Пользователь IDE не подтвержден. История не открыта.");
         }
-        catch (error) {
-            if (isNodeError(error) && error.code === "ENOENT") {
-                this.logger.info(`Chat history not found for profile ${profileId}.`);
-                return undefined;
+        const workspacePath = this.workspacePath();
+        const flushed = this.flush();
+        return this.enqueue(async () => {
+            await flushed;
+            this.identity = undefined;
+            const loaded = await this.store.load(identity, workspacePath);
+            const current = this.getIdentity();
+            if (current?.userKey !== identity.userKey || current.projectKey !== identity.projectKey || this.workspacePath() !== workspacePath) {
+                throw new Error("Пользователь или проект IDE изменился при загрузке истории.");
             }
-            this.logger.warn(`Chat history read failed, starting empty: ${normalizeErrorMessage(error)}.`);
-            return undefined;
-        }
+            this.identity = identity;
+            this.logger.info(`Project chat history loaded: ${this.store.file(identity)}.`);
+            return loaded;
+        });
     }
     scheduleSave(profileId, history) {
-        this.pendingSave = { profileId, history };
+        const identity = this.requireLoadedIdentity(profileId);
+        this.pendingSave = { identity, workspacePath: this.workspacePath(), history };
+        // A fixed deadline guarantees progress even during a continuous token stream.
         if (this.saveTimer) {
-            clearTimeout(this.saveTimer);
+            return;
         }
         this.saveTimer = setTimeout(() => {
             this.saveTimer = undefined;
-            void this.flush();
+            void this.flush().catch((error) => this.reportSaveError(error));
         }, 600);
     }
     async saveNow(profileId, history) {
@@ -79,15 +84,16 @@ class ChatHistoryService {
             this.saveTimer = undefined;
         }
         this.pendingSave = undefined;
-        await this.writeQueued(profileId, history);
+        await this.writeQueued({ identity: this.requireLoadedIdentity(profileId), workspacePath: this.workspacePath(), history });
     }
     async flush() {
         const pending = this.pendingSave;
         if (!pending) {
+            await this.saveChain;
             return;
         }
         this.pendingSave = undefined;
-        await this.writeQueued(pending.profileId, pending.history);
+        await this.writeQueued(pending);
     }
     dispose() {
         if (this.saveTimer) {
@@ -95,36 +101,63 @@ class ChatHistoryService {
             this.saveTimer = undefined;
         }
         if (this.pendingSave) {
-            void this.flush();
+            void this.flush().catch((error) => this.reportSaveError(error));
         }
     }
-    historyPath(profileId) {
-        return path.join(this.configRoot, "users", profileId, "workspaces", this.workspaceId(), "chats.json");
-    }
-    workspaceId() {
-        const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || this.context.globalStorageUri.fsPath;
-        return crypto.createHash("sha256").update(workspacePath).digest("hex").slice(0, 16);
-    }
-    async writeQueued(profileId, history) {
-        this.saveChain = this.saveChain
-            .then(() => this.write(profileId, history))
-            .catch((error) => {
-            this.logger.warn(`Chat history save failed: ${normalizeErrorMessage(error)}.`);
+    async listLegacy() {
+        const identity = this.identity;
+        if (!identity) {
+            throw new Error("Сначала откройте историю текущего проекта.");
+        }
+        return this.enqueue(async () => {
+            if (this.identity !== identity) {
+                throw new Error("Область истории изменилась. Обновите список переноса.");
+            }
+            return this.store.listLegacy(identity);
         });
-        await this.saveChain;
     }
-    async write(profileId, history) {
-        const historyPath = this.historyPath(profileId);
-        await fs.promises.mkdir(path.dirname(historyPath), { recursive: true });
-        const tempPath = `${historyPath}.${process.pid}.${Date.now()}.tmp`;
-        await fs.promises.writeFile(tempPath, `${JSON.stringify(history, null, 2)}\n`, "utf8");
-        await fs.promises.rename(tempPath, historyPath);
-        this.logger.info(`Chat history saved: ${historyPath}.`);
+    async importLegacy(id, current) {
+        const identity = this.identity;
+        if (!identity) {
+            throw new Error("Сначала откройте историю текущего проекта.");
+        }
+        const workspacePath = this.workspacePath();
+        const snapshot = JSON.parse(JSON.stringify(current));
+        const flushed = this.flush();
+        return this.enqueue(async () => {
+            await flushed;
+            if (this.identity !== identity) {
+                throw new Error("Область истории изменилась. Повторите перенос.");
+            }
+            return this.store.importLegacy(identity, workspacePath, id, snapshot);
+        });
+    }
+    workspacePath() { return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || this.context.globalStorageUri.fsPath; }
+    requireLoadedIdentity(profileId) {
+        if (!this.identity || this.identity.userKey !== profileId) {
+            throw new Error("Запись истории до подтверждения пользователя и загрузки проекта запрещена.");
+        }
+        return this.identity;
+    }
+    async writeQueued(pending) {
+        const history = JSON.parse(JSON.stringify(pending.history));
+        await this.enqueue(() => this.store.save(pending.identity, pending.workspacePath, history));
+    }
+    enqueue(operation) {
+        const result = this.saveChain.then(operation);
+        this.saveChain = result.then(() => undefined, () => undefined);
+        return result;
+    }
+    reportSaveError(error) {
+        const message = normalizeErrorMessage(error);
+        this.logger.error(`Chat history save failed: ${message}`);
+        this.onSaveError(message);
     }
 }
 exports.ChatHistoryService = ChatHistoryService;
 function normalizeHistory(value) {
-    const object = isObject(value) ? value : {};
+    (0, projectHistoryStore_1.validateHistory)(value);
+    const object = value;
     const chats = Array.isArray(object.chats)
         ? object.chats.map(normalizeChat).filter((chat) => Boolean(chat))
         : [];
@@ -179,6 +212,8 @@ function normalizeChat(value) {
         pendingApproval: null,
         backendThreadAccessMode: normalizeOptionalChatAccessMode(value.backendThreadAccessMode),
         backendThreadId: typeof value.backendThreadId === "string" ? value.backendThreadId : null,
+        backendContextRestored: typeof value.backendContextRestored === "boolean" ? value.backendContextRestored : undefined,
+        backendWorkspacePath: typeof value.backendWorkspacePath === "string" ? value.backendWorkspacePath : undefined,
         activeTurnId: null,
         activeRunMode: null
     };
@@ -188,7 +223,7 @@ function normalizeQueuedMessages(value) {
         return [];
     }
     return value.flatMap((entry) => {
-        if (!isObject(entry) || typeof entry.id !== "string" || typeof entry.text !== "string") {
+        if (!isObject(entry) || entry.dispatchState === "accepted" || typeof entry.id !== "string" || typeof entry.text !== "string") {
             return [];
         }
         const attachments = normalizeAttachments(entry.attachments);
@@ -201,6 +236,10 @@ function normalizeQueuedMessages(value) {
                 mode: entry.mode === "planning" || entry.mode === "implementPlan" ? entry.mode : "normal",
                 skills: normalizeSkillSelections(entry.skills),
                 attachments,
+                dispatchState: entry.dispatchState === "failed" || entry.dispatchState === "dispatching" ? "failed" : "queued",
+                dispatchError: entry.dispatchState === "dispatching" ? "Отправка была прервана перезапуском. Проверьте ответ перед повтором." : typeof entry.dispatchError === "string" ? entry.dispatchError : undefined,
+                dispatchAttempt: typeof entry.dispatchAttempt === "number" ? entry.dispatchAttempt : undefined,
+                transcriptMessageId: typeof entry.transcriptMessageId === "string" ? entry.transcriptMessageId : undefined,
                 createdAt: typeof entry.createdAt === "string" ? entry.createdAt : new Date().toISOString()
             }];
     });

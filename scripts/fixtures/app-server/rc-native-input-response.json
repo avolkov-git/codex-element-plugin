@@ -1,0 +1,15 @@
+{
+  "$comment": "Generated shape verified from bundled 0.153.4: app-server generate-json-schema --experimental, ToolRequestUserInputResponse.json. No cancel/success field exists; cancellation uses JSON-RPC error.",
+  "type": "object",
+  "required": ["answers"],
+  "properties": {
+    "answers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["answers"],
+        "properties": { "answers": { "type": "array", "items": { "type": "string" } } }
+      }
+    }
+  }
+}

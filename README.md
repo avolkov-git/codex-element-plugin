@@ -5,11 +5,13 @@
 Плагин для Theia IDE, который добавляет Codex в среду разработки 1C: Элемент. Runtime работает через поставляемый вместе с плагином [codex app-server](https://github.com/openai/codex).
 Подробнее про `codex app-server` [тут](https://developers.openai.com/codex/app-server) и [тут](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
-- Текущая версия плагина: `0.1.87`
+- Версия этой ветки: `1.0.0-rc`, кандидат для тестирования в 1C Element 9.2.4-6.
 - Текущая версия Codex CLI/app-server: `0.153.4`
 - Готовые поставки: Windows x64 и Linux x64
 - Исходный проект также содержит runtime-матрицу для Windows, Linux и macOS на x64 и arm64
 - [Релизы](https://github.com/avolkov-git/codex-element-plugin/releases)
+
+Инструкции для этой сборки: [проверка и перенос данных RC](docs/1.0.0-rc-testing.md). Стабильная ветка `master` остается на 0.1.89.
 
 ## Возможности
 
@@ -21,6 +23,8 @@
 - Остановка активного запроса, очередь сообщений и отправка рекомендации в текущий turn.
 - Popup подтверждения для операций, которым требуется разрешение.
 - Архивирование, восстановление и полное удаление чатов.
+- Поиск по всей истории проекта, переход к сообщению и ответвление диалога.
+- История пользователя IDE в рамках имени проекта, независимо от экземпляра приложения и пути workspace.
 
 ### Контекст
 
@@ -30,7 +34,7 @@
 - Базовые правила языка 1C: Element из поставки плагина.
 - Контекст открытого файла, выделения и ошибок IDE (диагностик).
 
-Контекст проекта используется только в проектных чатах, для использования в общем чате надо явно запросить полечение проектного контекста. 
+Контекст проекта используется в проектных чатах. В общем чате запросите его отдельно.
 
 ### Transcript
 
@@ -39,12 +43,14 @@
 - Сгруппированный журнал поисков, команд, чтения и изменений.
 - Карточки diff с просмотром отдельных файлов и открытием нативного diff editor.
 - Вложения из workspace, локального компьютера, drag-and-drop и буфера обмена.
+- React-чат с виртуализацией, пакетными обновлениями и сохранением позиции при поступлении ответа.
+- Просмотр полных Git-ревизий, комментарии, подготовка к коммиту и отмена выбранного изменения с проверкой актуальности файла.
 
 ### Интеграции
 
 - Локальные STDIO и удаленные HTTP MCP-серверы.
 - OAuth и bearer token через переменную окружения.
-- Навыки Codex с включением на уровне профиля и прикреплением к сообщению.
+- Навыки Codex с включением для пользователя IDE и прикреплением к сообщению.
 - Настраиваемый proxy для app-server и загрузки управляемых инструментов.
 - Управляемый Playwright MCP с собственными Node.js и Chromium для проверки web-приложений с сервера Element.
 
@@ -52,8 +58,8 @@
 
 1. Откройте страницу [Releases](https://github.com/avolkov-git/codex-element-plugin/releases).
 2. Выберите архив по операционной системе сервера Element:
-   - Windows x64: `codex-plugins-0.1.87-win32-x64.zip`;
-   - Linux x64: `codex-plugins-0.1.87-linux-x64.tar.gz`.
+   - Windows x64: `codex-plugins-1.0.0-rc-win32-x64.zip`;
+   - Linux x64: `codex-plugins-1.0.0-rc-linux-x64.tar.gz`.
 3. Сверьте SHA-256 с `SHA256SUMS.txt`.
 4. Распакуйте архив.
 5. Поместите каталог `codex-plugins` в каталог `/plugins` сервера Element.
@@ -64,10 +70,10 @@
 ## Первый запуск
 
 1. Откройте Codex в activity bar.
-2. Авторизуйтесь через Device Code.
+2. Дождитесь проверки пользователя и проекта через Console Element, затем авторизуйтесь в Codex через Device Code или API key.
 3. При закрытом сетевом контуре настройте proxy в `Codex: Настройки`.
 4. Укажите каталог нормализованной документации, если сервер не предоставляет его сам.
-5. Для быстрого извлечения текста из документов можно установить `ripgrep` непосредственно из настроект.
+5. Установите `ripgrep` из настроек, если его нет на сервере.
 
 ## Настройки
 
@@ -83,7 +89,7 @@
 
 ### MCP-серверы
 
-Настройки MCP хранятся на уровне профиля. Для bearer token укажите имя переменной окружения процесса Element. Не вводите значение токена в настройки плагина. Наименование сервера не должно содержать пробелы.
+Настройки пользовательских MCP хранятся в `CODEX_HOME` подтвержденного пользователя IDE. Для bearer token укажите имя переменной окружения процесса Element. Не вводите значение токена в настройки плагина. Наименование сервера не должно содержать пробелы.
 
 Если локальный 1C Element MCP доступен по `codexElement.elementMcpUrl`, плагин вне диалога передаёт ему временный
 контекст текущей IDE: параметры Console, `1C.applicationId`, открытые workspace folders и безопасную часть результата штатной команды
@@ -97,7 +103,7 @@
 
 ### Браузерное тестирование
 
-Платформенная поставка включает официальный `@playwright/mcp`, Node.js и headless Chromium. В настройках укажите URL приложения, доступный именно с сервера Element, и разрешенные origins. После включения плагин регистрирует управляемый stdio MCP-сервер `codex-element-browser`; отдельный порт, `npx`, системный Node.js и `sudo` не требуются.
+Платформенная поставка включает официальный `@playwright/mcp`, Node.js и headless Chromium. В настройках укажите URL приложения, доступный с сервера Element, и разрешенные origins. Плагин хранит эти настройки для пользователя и проекта, а при запуске создает отдельную browser-сессию. Он задает временное имя MCP через параметры app-server и отключает прежнюю общую запись `codex-element-browser`. Отдельный порт, `npx`, системный Node.js и `sudo` не требуются.
 
 Вызовы инструментов этого встроенного MCP подтверждаются автоматически без модального окна, но только для активного turn и точного имени управляемого сервера. Пользовательские MCP-серверы, команды и изменения файлов не получают это разрешение.
 
@@ -117,9 +123,15 @@
 4. `XDG_STATE_HOME`, `~/.local/state/codex-element` или другой user-writable каталог на Unix.
 5. Global storage IDE.
 
-Профили, история, `CODEX_HOME`, вложения и настройки лежат внутри config root. Секреты proxy и авторизации не попадают в transcript. Плагин не пишет содержимое проекта, документации или диагностик в `Output: Codex`.
+История, `CODEX_HOME`, вложения и настройки лежат внутри config root. Пользователя IDE плагин проверяет через Console `/api/v2/me`. Имя и пространство проекта получает через `/api/v2/projects/{id}`. При недоступности этих данных он не выбирает произвольный старый профиль.
 
-Локальные файлы из браузерной части IDE передаются чанками и сохраняются в `<configRoot>/attachments/<chatId>/`. Плагин принимает до 10 вложений на сообщение, до 50 МБ на файл и до 20 МБ на изображение. Удаление чата очищает его managed-вложения.
+История хранится в `<configRoot>/users/<userKey>/projects/<projectKey>/chats.json`. Ключи учитывают сервер, пользователя, пространство и имя проекта. Приложение и путь workspace не определяют каталог истории. Плагин сохраняет резервную копию `.bak`, отказывается перезаписывать поврежденную историю и сохраняет конкурирующую правку одного чата в отдельный `.conflict-*.json`.
+
+Для переноса истории 0.1.89 администратор подтверждает владельца и проект, затем подготавливает архив скриптом `scripts/export-legacy-history.js`. Перенос доступен в панели истории; [порядок переноса и откат](docs/1.0.0-rc-testing.md). Одного совпадения логина недостаточно.
+
+Локальные файлы из браузерной части IDE передаются чанками в `attachments/<chatId>/` внутри каталога пользователя и проекта. Плагин принимает до 10 вложений на сообщение, до 50 МБ на файл и до 20 МБ на изображение. Удаление чата очищает его managed-вложения.
+
+Имена каталогов не заменяют ACL сервера: процессы с одним OS-пользователем могут иметь доступ ко всем его файлам. Для недоверенных арендаторов администратор должен разделить процессы и права хранения. Плагин не переносит учетные данные из старых произвольных профилей.
 
 ## Команды
 
@@ -139,12 +151,12 @@
 
 ## Разработка
 
-Плагин использует TypeScript для extension host и JavaScript/CSS для webview.
+Extension host написан на TypeScript. Исходники чата находятся в `webview/chat/` (React/TypeScript); сборка включает зависимости в локальный `media/chat.js`. CDN и отдельный frontend-сервер не нужны.
 
 ```bash
-npm install
-npm run check
+npm ci
 npm run build
+npm run check
 ```
 
 Дополнительные проверки:
@@ -152,6 +164,12 @@ npm run build
 ```bash
 npm run check:markdown-links
 npm run check:transcript-window
+npm run check:history
+npm run check:identity
+npm run check:chat-ui
+node scripts/rc-runtime-check.js
+node scripts/rc-features-check.js
+node --test tests/service-reliability.test.cjs tests/browser-highlighter.test.cjs
 npm run eval:context
 node --check media/chat.js
 node --check media/sidebar.js
@@ -159,11 +177,14 @@ node --check media/settings.js
 git diff --check
 ```
 
+UI-тесты запускают установленный Chrome. Для поставляемого Playwright Chromium выполните `npx playwright install chromium` и задайте `CODEX_TEST_BROWSER_CHANNEL=bundled`. Workflow `rc-quality.yml` проверяет чат и хранение истории при push/PR; скриншоты и метрики сохраняются в artifact. Проверка точной оболочки Element требует пути `ELEMENT_WEBVIEW_PRE` к каталогу `ide/theia/products/browser-app/lib/webview/pre` установленного бандла. Без него этот отдельный тест пропускается.
+
 Основные каталоги:
 
 ```text
 src/        extension host и сервисы
-media/      webview UI
+webview/    React-чат и worker подсветки
+media/      собранные webview assets, sidebar и настройки
 dist/       результат TypeScript build
 resources/  иконки и базовый контекст
 scripts/    preflight, staging, smoke и fixture checks
@@ -201,11 +222,10 @@ Legacy layout для старых Windows, Linux и macOS сборок подд�
 Не копируйте рабочий Git-каталог в `/plugins`. Соберите payload без `.git`, `node_modules`, временных файлов и LFS pointers:
 
 ```bash
-npm run deploy:stage:release
-npm run preflight:deploy:release
+node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy-1.0.0-rc/win32-x64/codex-plugins --platform win32-x64 --platform-only --browser-runtime-root ../local-codex-temp/browser-runtime --strict
 ```
 
-Плагин создаст соседний каталог `../codex-plugin-deploy`. Для одной платформы доступны команды:
+Для RC используйте отдельный target. Обычные команды ниже работают со стабильным каталогом `../codex-plugin-deploy`; не запускайте их из RC-ветки при подготовке тестовой поставки:
 
 ```bash
 npm run deploy:stage
@@ -218,7 +238,8 @@ npm run preflight:deploy
 Один исходный проект выпускается двумя архивами с общей версией:
 
 ```bash
-npm run release:platforms
+npm run build
+node scripts/package-platform-releases.js --output ../codex-plugin-release/1.0.0-rc --browser-runtime-root ../local-codex-temp/browser-runtime
 ```
 
 Перед локальной platform-specific упаковкой подготовьте browser runtime на целевой ОС. Кросс-компиляция browser runtime не поддерживается: Windows payload собирается на Windows, Linux payload — на Linux.
@@ -232,11 +253,11 @@ node scripts/package-platform-releases.js \
 
 GitHub Actions делает это матрицей на `windows-latest` и `ubuntu-latest`, затем объединяет архивы, checksums и release notes.
 
-Команда собирает и повторно распаковывает оба архива, запускает строгий preflight и создает в `../codex-plugin-release`:
+Команда собирает и повторно распаковывает оба архива, запускает строгий preflight и создает в указанном `--output`:
 
 ```text
-codex-plugins-0.1.87-win32-x64.zip
-codex-plugins-0.1.87-linux-x64.tar.gz
+codex-plugins-1.0.0-rc-win32-x64.zip
+codex-plugins-1.0.0-rc-linux-x64.tar.gz
 SHA256SUMS.txt
 README_RELEASE.md
 ```

@@ -44,10 +44,17 @@ const MAX_UPLOAD_CHUNK_BYTES = 512 * 1024;
 const STALE_UPLOAD_MS = 10 * 60 * 1000;
 const IMAGE_EXTENSIONS = new Set([".gif", ".jpeg", ".jpg", ".png", ".webp"]);
 class ChatAttachmentService {
-    constructor(logger, managedRoot) {
+    constructor(logger, managedRootSource) {
         this.logger = logger;
-        this.managedRoot = managedRoot;
+        this.managedRootSource = managedRootSource;
         this.pendingUploads = new Map();
+    }
+    get managedRoot() {
+        const root = typeof this.managedRootSource === "function" ? this.managedRootSource() : this.managedRootSource;
+        if (!root || !path.isAbsolute(root)) {
+            throw new Error("Сначала подтвердите пользователя и проект IDE.");
+        }
+        return root;
     }
     async pick(existing) {
         const current = await this.resolve(existing);
@@ -149,6 +156,9 @@ class ChatAttachmentService {
         if (!upload) {
             throw new Error("Сессия загрузки не найдена или уже завершена.");
         }
+        if (!isPathInside(this.managedRoot, upload.directoryPath)) {
+            throw new Error("Пользователь или проект загрузки изменился.");
+        }
         const chunkIndex = Number(payload.chunkIndex);
         if (!Number.isInteger(chunkIndex) || chunkIndex !== upload.nextChunkIndex) {
             throw new Error("Нарушен порядок частей загружаемого файла.");
@@ -172,6 +182,9 @@ class ChatAttachmentService {
         const upload = this.pendingUploads.get(uploadId);
         if (!upload) {
             throw new Error("Сессия загрузки не найдена или уже завершена.");
+        }
+        if (!isPathInside(this.managedRoot, upload.directoryPath)) {
+            throw new Error("Пользователь или проект загрузки изменился.");
         }
         if (upload.receivedBytes !== upload.expectedBytes) {
             throw new Error("Файл загружен не полностью.");

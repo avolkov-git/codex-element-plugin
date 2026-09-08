@@ -152,6 +152,7 @@ function writeReleaseReadme(artifacts) {
     "После распаковки скопируйте каталог `codex-plugins` в `/plugins` сервера Element.",
     "Каждый архив содержит Codex app-server и управляемый Playwright MCP browser runtime для своей платформы.",
     "Проверяйте SHA-256 по `SHA256SUMS.txt`.",
+    ...(manifest.version.includes("-") ? ["", "Это предварительная сборка для проверки. Сохраните предыдущий плагин и config root перед установкой.", "Приемочные сценарии, перенос истории и откат: `codex-plugins/docs/1.0.0-rc-testing.md`."] : []),
     ""
   ];
   fs.writeFileSync(path.join(outputRoot, "README_RELEASE.md"), lines.join("\n"), "utf8");

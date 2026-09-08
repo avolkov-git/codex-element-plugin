@@ -62,7 +62,11 @@ class RipgrepInstallerService {
         }
         const toolsRoot = path.join(this.settings.getConfigRoot(), "server", "tools", "ripgrep");
         const platformRoot = path.join(toolsRoot, version, platformKey());
-        const tempRoot = path.join(toolsRoot, `.tmp-${process.pid}-${Date.now()}`);
+        if (path.basename(asset.name) !== asset.name || /[\\\0]/.test(asset.name)) {
+            throw new Error("Release asset ripgrep содержит небезопасное имя.");
+        }
+        await fs.promises.mkdir(toolsRoot, { recursive: true });
+        const tempRoot = await fs.promises.mkdtemp(path.join(toolsRoot, ".tmp-"));
         const archivePath = path.join(tempRoot, asset.name);
         const extractRoot = path.join(tempRoot, "extract");
         await fs.promises.mkdir(extractRoot, { recursive: true });
@@ -79,20 +83,24 @@ class RipgrepInstallerService {
             if (!executable) {
                 throw new Error("В архиве ripgrep не найден исполняемый файл rg.");
             }
-            progress(75, "install", "Устанавливаем ripgrep в каталог Codex Element");
-            await fs.promises.rm(platformRoot, { recursive: true, force: true });
-            await fs.promises.mkdir(platformRoot, { recursive: true });
+            progress(75, "install", "Подготавливаем новую установку ripgrep");
+            const stagedPath = path.join(tempRoot, (0, ripgrepUtils_1.ripgrepExecutableName)());
             const finalPath = path.join(platformRoot, (0, ripgrepUtils_1.ripgrepExecutableName)());
-            await fs.promises.copyFile(executable, finalPath);
+            await fs.promises.copyFile(executable, stagedPath, fs.constants.COPYFILE_EXCL);
             if (process.platform !== "win32") {
-                await fs.promises.chmod(finalPath, 0o755);
+                await fs.promises.chmod(stagedPath, 0o755);
             }
             progress(88, "verify", "Проверяем rg --version");
-            const probe = await (0, ripgrepUtils_1.probeRipgrepExecutable)(finalPath);
+            const probe = await (0, ripgrepUtils_1.probeRipgrepExecutable)(stagedPath);
             if (!probe.ok) {
                 throw new Error(probe.message || "Установленный rg не прошел проверку.");
             }
-            this.settings.saveInstalledRipgrepPath(finalPath, probe.version || version);
+            if (probe.version !== version) {
+                throw new Error(`Версия rg ${probe.version || "неизвестна"} не соответствует release ${version}.`);
+            }
+            await publishRipgrep(toolsRoot, stagedPath, finalPath, () => {
+                this.settings.saveInstalledRipgrepPath(finalPath, probe.version);
+            });
             options.onProgress?.({
                 status: "completed",
                 percent: 100,
@@ -118,8 +126,78 @@ class RipgrepInstallerService {
 }
 exports.RipgrepInstallerService = RipgrepInstallerService;
 function normalizeReleaseVersion(release) {
-    const raw = (release.tag_name || release.name || "latest").trim();
-    return raw.replace(/^v/i, "") || "latest";
+    const version = (release.tag_name || release.name || "").trim().replace(/^v/i, "");
+    if (!/^\d[\w.+-]*$/.test(version) || version.includes("..")) {
+        throw new Error("Release ripgrep содержит некорректную версию.");
+    }
+    return version;
+}
+async function publishRipgrep(toolsRoot, stagedPath, finalPath, save) {
+    const lockPath = path.join(toolsRoot, ".install.lock");
+    const deadline = Date.now() + 20000;
+    let lock;
+    for (;;) {
+        try {
+            lock = await fs.promises.open(lockPath, "wx", 0o600);
+            break;
+        }
+        catch (error) {
+            if (error.code !== "EEXIST") {
+                throw error;
+            }
+            if (Date.now() >= deadline) {
+                throw new Error("Другая установка ripgrep еще не завершена. Повторите операцию позже.");
+            }
+            await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+    }
+    try {
+        await fs.promises.mkdir(path.dirname(finalPath), { recursive: true });
+        const backupPath = `${finalPath}.backup`;
+        const backupStage = `${stagedPath}.backup`;
+        let hasPrevious = false;
+        try {
+            const stats = await fs.promises.lstat(finalPath);
+            if (!stats.isFile() || stats.isSymbolicLink()) {
+                throw new Error("Установленный rg должен быть обычным файлом.");
+            }
+            await fs.promises.copyFile(finalPath, backupStage, fs.constants.COPYFILE_EXCL);
+            await fs.promises.rename(backupStage, backupPath);
+            hasPrevious = true;
+        }
+        catch (error) {
+            if (error.code !== "ENOENT") {
+                throw error;
+            }
+        }
+        const file = await fs.promises.open(stagedPath, "r+");
+        try {
+            await file.sync();
+        }
+        finally {
+            await file.close();
+        }
+        // Same-filesystem rename keeps the old executable callable until the switch.
+        // A Windows sharing violation is a failure, never a reason to delete it first.
+        await fs.promises.rename(stagedPath, finalPath);
+        try {
+            save();
+        }
+        catch (error) {
+            if (hasPrevious) {
+                fs.copyFileSync(backupPath, stagedPath, fs.constants.COPYFILE_EXCL);
+                fs.renameSync(stagedPath, finalPath);
+            }
+            else {
+                fs.unlinkSync(finalPath);
+            }
+            throw error;
+        }
+    }
+    finally {
+        await lock.close();
+        await fs.promises.unlink(lockPath);
+    }
 }
 function selectAsset(release) {
     const assets = release.assets ?? [];

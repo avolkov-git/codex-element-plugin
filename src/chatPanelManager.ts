@@ -3,12 +3,50 @@ import { Logger } from "./logger";
 import { parseMarkdownFileTarget, workspaceRelativePathCandidates } from "./markdownFileLink";
 import { getCodexPanelIconPath } from "./panelIcon";
 import { StateStore } from "./stateStore";
-import { ChatAccessMode, ChatAttachment, ChatEffort, ChatHeaderMode, ChatPanelState, ChatRunMode, ChatSpeed, DocsContextDetails, ProjectContextDetails, SkillOption, SkillSelection, WebviewCommand } from "./types";
+import { ChatAccessMode, ChatAttachment, ChatEffort, ChatHeaderMode, ChatPanelSnapshot, ChatPanelState, ChatRunMode, ChatSpeed, ChatTranscriptItem, DocsContextDetails, ProjectContextDetails, SkillOption, SkillSelection, WebviewCommand } from "./types";
 import { renderWebviewHtml } from "./webviewHtml";
 
 export const CHAT_PANEL_VIEW_TYPE = "codexElement.chatPanel";
 
+export type ChatBridgeMeta = Omit<ChatPanelSnapshot, "transcriptWindow">;
+export interface ChatBridgeRow { index: number; item: ChatTranscriptItem }
+export interface ChatBridgeFrame {
+  type: "chat.bridge";
+  kind: "snapshot" | "patch";
+  chatId: string;
+  epoch: string;
+  revision: number;
+  baseRevision: number;
+  meta?: ChatBridgeMeta | null;
+  rows: ChatBridgeRow[];
+  appends: Array<{ index: number; id: string; text: string; status?: "streaming" | "complete" }>;
+  totalCount: number;
+  turns: ChatTranscriptItem[];
+}
+
+type ChatPanelMessage = WebviewCommand | {
+  type: "chat.ack" | "chat.resync" | "chat.visibility" | "chat.viewport" | "features.request";
+  chatId?: string;
+  epoch?: string;
+  revision?: number;
+  visible?: boolean;
+  offset?: number;
+  requestId?: string;
+  command?: string;
+  payload?: unknown;
+};
+
+const FEATURE_COMMANDS = new Set([
+  "history.search", "history.jump", "review.list", "review.open", "review.comment", "review.stage", "review.revert",
+  "project.actions", "project.action.run", "browser.artifacts.list", "browser.artifacts.open", "chat.fork",
+  "history.migration.list", "history.migration.import"
+]);
+
 export interface ChatPanelHandlers {
+  ensureHistoryLoaded?(): Promise<void>;
+  featureRequest?(command: string, payload: unknown, chatId: string): Promise<unknown>;
+  resolveUserInput?(chatId: string, id: string, response: { answers: Record<string, { answers: string[] }> } | null): boolean | Promise<boolean>;
+  retryQueuedPrompt?(chatId: string, messageId: string): boolean | Promise<boolean>;
   sendPrompt(chatId: string, prompt: string, mode?: ChatRunMode, transcriptText?: string, skills?: readonly SkillSelection[], attachments?: readonly ChatAttachment[]): Promise<void>;
   queuePrompt(chatId: string, prompt: string, mode?: ChatRunMode, skills?: readonly SkillSelection[], attachments?: readonly ChatAttachment[]): Promise<boolean>;
   steerTurn(chatId: string, prompt: string, attachments?: readonly ChatAttachment[]): Promise<void>;
@@ -44,6 +82,21 @@ export interface ChatPanelHandlers {
 export class ChatPanelManager {
   private panel: vscode.WebviewPanel | undefined;
   private skillOptions: SkillOption[] = [];
+  private panelChatId = "";
+  private epoch = "";
+  private revision = 0;
+  private ready = false;
+  private visible = true;
+  private dirty = false;
+  private viewportOffset = -1;
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
+  private ackTimer: ReturnType<typeof setTimeout> | undefined;
+  private inFlight = false;
+  private lastMeta = "";
+  private lastTurns = "";
+  private lastTotal = -1;
+  private previousRows = new Map<number, { json: string; item: ChatTranscriptItem }>();
+  private featureRequests = new Set<string>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -60,6 +113,8 @@ export class ChatPanelManager {
           return;
         }
 
+        try { await this.handlers.ensureHistoryLoaded?.(); }
+        catch (error) { void vscode.window.showWarningMessage(`Не удалось загрузить историю: ${error instanceof Error ? error.message : "ошибка"}`); }
         const restoredState = parsePanelState(rawState);
         const restoredChatId = restoredState?.activeChatId ?? restoredState?.chatId;
         if (restoredChatId && this.state.getChat(restoredChatId)) {
@@ -73,6 +128,13 @@ export class ChatPanelManager {
   }
 
   openChat(chatId: string): void {
+    void this.openLoadedChat(chatId).catch((error) => {
+      void vscode.window.showWarningMessage(`Не удалось загрузить диалог: ${error instanceof Error ? error.message : "ошибка"}`);
+    });
+  }
+
+  private async openLoadedChat(chatId: string): Promise<void> {
+    await this.handlers.ensureHistoryLoaded?.();
     const chat = this.state.getChat(chatId);
     if (!chat) {
       vscode.window.showWarningMessage("Чат не найден.");
@@ -123,10 +185,104 @@ export class ChatPanelManager {
   }
 
   private postActiveSnapshot(): void {
-    this.panel?.webview.postMessage({
-      type: "chat.snapshot",
-      snapshot: this.state.getActiveChatSnapshot() ?? null
-    });
+    this.dirty = true;
+    if (this.flushTimer || this.inFlight || !this.ready || !this.visible || this.panel?.visible === false) {
+      return;
+    }
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      void this.flushSnapshot();
+    }, 48);
+  }
+
+  private resetBridge(): void {
+    clearTimeout(this.ackTimer);
+    this.ackTimer = undefined;
+    this.inFlight = false;
+    this.epoch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    this.revision = 0;
+    this.previousRows.clear();
+    this.lastMeta = "";
+    this.lastTurns = "";
+    this.lastTotal = -1;
+  }
+
+  private async flushSnapshot(): Promise<void> {
+    const panel = this.panel;
+    if (!panel || !this.ready || !this.visible || panel.visible === false || this.inFlight || !this.dirty) return;
+    this.dirty = false;
+    const snapshot = this.state.getActiveChatSnapshot();
+    const chatId = snapshot?.chat.id ?? "";
+    if (chatId !== this.panelChatId) {
+      this.panelChatId = chatId;
+      this.viewportOffset = -1;
+      this.resetBridge();
+    }
+    if (!this.epoch) this.resetBridge();
+    const rows = new Map<number, ChatTranscriptItem>();
+    const turns = new Map<string, ChatTranscriptItem>();
+    let meta: ChatBridgeMeta | null = null;
+    if (snapshot) {
+      const { transcriptWindow, ...rest } = snapshot;
+      meta = rest;
+      const windows = [transcriptWindow];
+      if (this.viewportOffset >= 0 && this.viewportOffset < transcriptWindow.offset) {
+        windows.push(this.state.getTranscriptBefore(chatId, "", 120, this.viewportOffset + 100));
+      }
+      for (const window of windows) {
+        window.items.forEach((item, index) => rows.set(window.offset + index, projectTranscriptItem(item)));
+        const parents = (window as typeof window & { turns?: ChatTranscriptItem[] }).turns ?? [];
+        for (const item of parents) turns.set(item.id, item);
+        for (const item of window.items) if (item.kind === "turn-run") turns.set(item.id, item);
+      }
+    }
+    const metaJson = JSON.stringify(meta ? { ...meta, version: 0, chat: { ...meta.chat, updatedAt: "" } } : null);
+    const turnValues = [...turns.values()].map(item => item.kind === "turn-run"
+      ? { ...item, activityIds: [], worklogIds: [], diffIds: [], compactionIds: [] } : item);
+    const turnsJson = JSON.stringify(turnValues);
+    const frame: ChatBridgeFrame = {
+      type: "chat.bridge", kind: this.revision === 0 ? "snapshot" : "patch", chatId, epoch: this.epoch,
+      revision: this.revision + 1, baseRevision: this.revision,
+      rows: [], appends: [], totalCount: snapshot?.transcriptWindow.totalCount ?? 0,
+      turns: turnsJson !== this.lastTurns ? turnValues : []
+    };
+    if (metaJson !== this.lastMeta) frame.meta = meta;
+    const nextRows = new Map<number, { json: string; item: ChatTranscriptItem }>();
+    for (const [index, item] of rows) {
+      const json = JSON.stringify(item);
+      const previous = this.previousRows.get(index);
+      if (json !== previous?.json) {
+        const old = previous?.item;
+        if (old?.kind === "message" && item.kind === "message" && old.id === item.id
+          && item.text.startsWith(old.text) && item.text.length > old.text.length
+          && JSON.stringify({ ...old, text: "", status: item.status }) === JSON.stringify({ ...item, text: "" })) {
+          frame.appends.push({ index, id: item.id, text: item.text.slice(old.text.length), status: item.status });
+        } else frame.rows.push({ index, item });
+      }
+      // StateStore mutates entities in place. Keep only a bounded detached wire baseline.
+      nextRows.set(index, previous?.json === json ? previous : { json, item: JSON.parse(json) as ChatTranscriptItem });
+    }
+    if (this.revision && !frame.rows.length && !frame.appends.length && frame.meta === undefined
+      && turnsJson === this.lastTurns && frame.totalCount === this.lastTotal) return;
+    this.previousRows = nextRows;
+    this.lastMeta = metaJson;
+    this.lastTurns = turnsJson;
+    this.lastTotal = frame.totalCount;
+    this.revision = frame.revision;
+    this.inFlight = true;
+    const epoch = this.epoch;
+    // One unacknowledged frame at a time. A timeout starts a new epoch, never a patch over a gap.
+    this.ackTimer = setTimeout(() => {
+      if (this.panel !== panel || this.epoch !== epoch) return;
+      this.resetBridge();
+      this.postActiveSnapshot();
+    }, 3000);
+    try {
+      const delivered = await panel.webview.postMessage(frame);
+      if (!delivered && this.epoch === epoch) this.dirty = true;
+    } catch {
+      if (this.epoch === epoch) this.dirty = true;
+    }
   }
 
   private setupPanel(panel: vscode.WebviewPanel): void {
@@ -153,27 +309,103 @@ export class ChatPanelManager {
 
     this.panel = panel;
 
-    panel.webview.onDidReceiveMessage((message: WebviewCommand) => {
-      void this.handleMessage(panel, message);
+    panel.webview.onDidReceiveMessage((message: ChatPanelMessage) => {
+      void this.handleMessage(panel, message).catch((error) => {
+        const restore = message.type === "command" && ["chat.send", "chat.queue.add", "chat.steer"].includes(message.command) && isObject(message.payload)
+          ? { restorePrompt: message.payload.prompt, restoreAttachments: message.payload.attachments } : {};
+        void panel.webview.postMessage({ type: "event", event: "chat.error", chatId: (message as { chatId?: string }).chatId,
+          payload: { message: error instanceof Error ? error.message : "Command failed.", ...restore } });
+      });
+    });
+
+    panel.onDidChangeViewState(() => {
+      if (panel.visible) {
+        this.resetBridge();
+        this.postActiveSnapshot();
+      }
     });
 
     panel.onDidDispose(() => {
       if (this.panel === panel) {
         this.panel = undefined;
+        this.ready = false;
+        clearTimeout(this.flushTimer);
+        this.flushTimer = undefined;
+        this.resetBridge();
+        this.featureRequests.clear();
       }
       this.logger.info("Singleton chat panel disposed.");
     });
   }
 
-  private async handleMessage(panel: vscode.WebviewPanel, message: WebviewCommand): Promise<void> {
+  private async handleMessage(panel: vscode.WebviewPanel, message: ChatPanelMessage): Promise<void> {
     if (!message || typeof message !== "object") {
       return;
     }
 
     if (message.type === "ready") {
+      try { await this.handlers.ensureHistoryLoaded?.(); }
+      catch (error) { await panel.webview.postMessage({ type: "event", event: "chat.error", payload: `Не удалось загрузить историю: ${error instanceof Error ? error.message : "ошибка"}` }); }
       this.logger.info("Chat panel webview ready.");
       this.logger.info(`Chat panel webview assets: ${message.assetMode ?? "unknown"}.`);
+      this.ready = true;
+      this.visible = true;
+      this.resetBridge();
       this.postActiveSnapshot();
+      return;
+    }
+
+    if (message.type === "chat.ack") {
+      if (message.epoch === this.epoch && message.revision === this.revision && message.chatId === this.panelChatId) {
+        clearTimeout(this.ackTimer);
+        this.ackTimer = undefined;
+        this.inFlight = false;
+        if (this.dirty) this.postActiveSnapshot();
+      }
+      return;
+    }
+    if (message.type === "chat.resync" || message.type === "chat.visibility") {
+      if (message.type === "chat.visibility") this.visible = message.visible !== false;
+      this.resetBridge();
+      this.postActiveSnapshot();
+      return;
+    }
+    if (message.type === "chat.viewport") {
+      if (message.chatId === this.panelChatId && Number.isSafeInteger(message.offset) && message.offset! >= 0) {
+        this.viewportOffset = message.offset!;
+        this.postActiveSnapshot();
+      }
+      return;
+    }
+    const originChatId = (message as { chatId?: string }).chatId ?? this.panelChatId;
+    if ((!originChatId || !this.state.getChat(originChatId))
+      && !(message.type === "features.request" && message.command?.startsWith("history."))) return;
+    if (message.type === "features.request") {
+      const requestId = message.requestId;
+      if (!requestId || requestId.length > 128 || this.featureRequests.has(requestId)) return;
+      if (this.featureRequests.size >= 32) {
+        await panel.webview.postMessage({ type: "features.result", requestId, error: "Too many pending requests." });
+        return;
+      }
+      this.featureRequests.add(requestId);
+      try {
+        if (!message.command || !FEATURE_COMMANDS.has(message.command) || !this.handlers.featureRequest) {
+          throw new Error("This action is unavailable in this runtime.");
+        }
+        if (JSON.stringify(message.payload ?? null).length > 262144) throw new Error("Request is too large.");
+        const result = await this.handlers.featureRequest(message.command, message.payload, originChatId);
+        if (message.command === "history.jump" && isObject(result) && typeof result.index === "number" && typeof result.chatId === "string") {
+          this.panelChatId = result.chatId;
+          this.viewportOffset = Math.max(0, result.index - 20);
+          this.resetBridge();
+          this.postActiveSnapshot();
+          await panel.webview.postMessage({ type: "event", event: "chat.jump", chatId: result.chatId, payload: { offset: result.index } });
+        }
+        await panel.webview.postMessage({ type: "features.result", requestId, chatId: originChatId, result });
+      } catch (error) {
+        await panel.webview.postMessage({ type: "features.result", requestId, chatId: originChatId,
+          error: error instanceof Error ? error.message : "Action failed." });
+      } finally { this.featureRequests.delete(requestId); }
       return;
     }
 
@@ -181,8 +413,61 @@ export class ChatPanelManager {
       return;
     }
 
+    if (message.command === "clipboard.write") {
+      const payload = isObject(message.payload) ? message.payload : {};
+      try {
+        if (typeof payload.text !== "string" || payload.text.length > 2000000) throw new Error("Текст для копирования слишком большой.");
+        await vscode.env.clipboard.writeText(payload.text);
+        await panel.webview.postMessage({ type: "event", event: "clipboard.result", chatId: originChatId, payload: { requestId: payload.requestId, ok: true } });
+      } catch (error) {
+        await panel.webview.postMessage({ type: "event", event: "chat.error", chatId: originChatId, payload: error instanceof Error ? error.message : "Не удалось скопировать текст." });
+      }
+      return;
+    }
+
+    if (message.command === "chat.userInput.respond") {
+      const payload = isObject(message.payload) ? message.payload : {};
+      try {
+        if (typeof payload.id !== "string" || !this.handlers.resolveUserInput) throw new Error("Question handler unavailable.");
+        const response = payload.response === null ? null : payload.response as { answers: Record<string, { answers: string[] }> };
+        if (response !== null && (!isObject(response) || !isObject(response.answers))) throw new Error("Invalid answer.");
+        const accepted = await this.handlers.resolveUserInput(originChatId, payload.id, response);
+        await panel.webview.postMessage({ type: "event", event: "chat.userInput.result", chatId: originChatId,
+          payload: { id: payload.id, accepted, error: accepted ? undefined : "Вопрос уже закрыт или относится к другому запросу." } });
+      } catch (error) {
+        await panel.webview.postMessage({ type: "event", event: "chat.userInput.result", chatId: originChatId,
+          payload: { id: payload.id, accepted: false, error: error instanceof Error ? error.message : "Invalid answer." } });
+      }
+      return;
+    }
+    if (message.command === "chat.queue.retry") {
+      const id = isObject(message.payload) ? message.payload.messageId : undefined;
+      if (typeof id === "string" && this.handlers.retryQueuedPrompt) await this.handlers.retryQueuedPrompt(originChatId, id);
+      return;
+    }
+    if (message.command === "chat.turn.load") {
+      const payload = isObject(message.payload) ? message.payload : {};
+      const getter = (this.state as StateStore & { getTurnTranscriptWindow?: (chatId: string, turnId: string, offset: number, count: number) => unknown }).getTurnTranscriptWindow;
+      const window = typeof payload.turnId === "string" && getter
+        ? getter.call(this.state, originChatId, payload.turnId, Math.max(0, Number(payload.offset) || 0), 40) : null;
+      const projected = isObject(window) && Array.isArray(window.items)
+        ? { ...window, turns: [], items: (window.items as ChatTranscriptItem[]).map(item => projectTranscriptItem(item)) } : null;
+      await panel.webview.postMessage({ type: "event", event: "chat.turn.window", chatId: originChatId,
+        payload: { requestId: payload.requestId, turnId: payload.turnId, window: projected } });
+      return;
+    }
+    if (message.command === "chat.item.load") {
+      const payload = isObject(message.payload) ? message.payload : {};
+      const item = typeof payload.id === "string"
+        ? this.state.exportChatHistory().transcripts[originChatId]?.find(value => value.id === payload.id) : undefined;
+      const offset = Math.max(0, Math.floor(Number(payload.offset) || 0));
+      await panel.webview.postMessage({ type: "event", event: "chat.item.detail", chatId: originChatId,
+        payload: { requestId: payload.requestId, item: item ? projectTranscriptItem(item, offset) : null } });
+      return;
+    }
+
     if (message.command === "chat.attachments.pick") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       if (!chatId) {
         return;
       }
@@ -191,6 +476,7 @@ export class ChatPanelManager {
         await panel.webview.postMessage({ type: "event", event: "chat.attachments.selected", payload: { chatId, attachments } });
       } catch (error) {
         await panel.webview.postMessage({
+          chatId: originChatId,
           type: "event",
           event: "chat.attachments.error",
           payload: { chatId, message: error instanceof Error ? error.message : "Не удалось прикрепить файл." }
@@ -201,7 +487,7 @@ export class ChatPanelManager {
 
     if (message.command === "chat.attachment.upload.start") {
       const payload = isObject(message.payload) ? message.payload : {};
-      const chatId = typeof payload.chatId === "string" ? payload.chatId : this.state.getActiveChatId();
+      const chatId = originChatId;
       if (!chatId || !this.state.getChat(chatId)) {
         return;
       }
@@ -253,6 +539,7 @@ export class ChatPanelManager {
         await this.handlers.openAttachment(isObject(message.payload) ? message.payload.attachment : undefined);
       } catch (error) {
         await panel.webview.postMessage({
+          chatId: originChatId,
           type: "event",
           event: "chat.attachments.error",
           payload: error instanceof Error ? error.message : "Вложение недоступно."
@@ -262,7 +549,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.transcript.loadBefore") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const beforeItemId = isObject(message.payload) && typeof message.payload.beforeItemId === "string" ? message.payload.beforeItemId : "";
       const requestId = isObject(message.payload) && typeof message.payload.requestId === "string" ? message.payload.requestId : "";
       const beforeOffset = isObject(message.payload) && typeof message.payload.beforeOffset === "number" ? message.payload.beforeOffset : undefined;
@@ -270,6 +557,7 @@ export class ChatPanelManager {
         return;
       }
       panel.webview.postMessage({
+          chatId: originChatId,
         type: "event",
         event: "chat.transcript.window",
         payload: {
@@ -283,7 +571,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.transcript.loadAfter") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const afterItemId = isObject(message.payload) && typeof message.payload.afterItemId === "string" ? message.payload.afterItemId : "";
       const requestId = isObject(message.payload) && typeof message.payload.requestId === "string" ? message.payload.requestId : "";
       const afterOffset = isObject(message.payload) && typeof message.payload.afterOffset === "number" ? message.payload.afterOffset : undefined;
@@ -291,6 +579,7 @@ export class ChatPanelManager {
         return;
       }
       panel.webview.postMessage({
+          chatId: originChatId,
         type: "event",
         event: "chat.transcript.window",
         payload: {
@@ -304,11 +593,12 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.transcript.tail") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       if (!chatId) {
         return;
       }
       panel.webview.postMessage({
+          chatId: originChatId,
         type: "event",
         event: "chat.transcript.window",
         payload: {
@@ -320,7 +610,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.readToBottom") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       if (!chatId) {
         return;
       }
@@ -329,7 +619,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.rules.toggle") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       if (!chatId) {
         return;
       }
@@ -343,7 +633,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.restore") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       if (!chatId) {
         return;
       }
@@ -357,7 +647,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.access.set") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const accessMode = isObject(message.payload) ? parseAccessMode(message.payload.accessMode) : undefined;
       if (!chatId || !accessMode) {
         return;
@@ -367,7 +657,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.model.set") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const model = isObject(message.payload) ? parseModelSelection(message.payload) : undefined;
       if (!chatId || !model) {
         return;
@@ -377,7 +667,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.effort.set") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const effort = isObject(message.payload) ? parseEffort(message.payload.effort) : undefined;
       if (!chatId || !effort) {
         return;
@@ -387,7 +677,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.speed.set") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const speed = isObject(message.payload) ? parseSpeed(message.payload.speed) : undefined;
       if (!chatId || !speed) {
         return;
@@ -405,12 +695,14 @@ export class ChatPanelManager {
       try {
         this.skillOptions = await this.handlers.loadSkills(isObject(message.payload) && message.payload.forceReload === true);
         await panel.webview.postMessage({
+          chatId: originChatId,
           type: "event",
           event: "chat.skills.options",
           payload: this.skillOptions
         });
       } catch (error) {
         await panel.webview.postMessage({
+          chatId: originChatId,
           type: "event",
           event: "chat.skills.error",
           payload: error instanceof Error ? error.message : "Не удалось загрузить навыки."
@@ -421,6 +713,7 @@ export class ChatPanelManager {
 
     if (message.command === "chat.context.projectDetails") {
       panel.webview.postMessage({
+          chatId: originChatId,
         type: "event",
         event: "chat.context.details",
         payload: await this.handlers.getProjectContextDetails()
@@ -430,6 +723,7 @@ export class ChatPanelManager {
 
     if (message.command === "chat.context.docsDetails") {
       panel.webview.postMessage({
+          chatId: originChatId,
         type: "event",
         event: "chat.context.details",
         payload: await this.handlers.getDocsContextDetails()
@@ -439,6 +733,7 @@ export class ChatPanelManager {
 
     if (message.command === "chat.plan.revise") {
       panel.webview.postMessage({
+          chatId: originChatId,
         type: "event",
         event: "chat.plan.reviseDraft",
         payload: isObject(message.payload) && typeof message.payload.planText === "string" ? message.payload.planText : ""
@@ -447,10 +742,11 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.plan.implement") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const planText = isObject(message.payload) && typeof message.payload.planText === "string" ? message.payload.planText : "";
       if (!chatId || !planText.trim()) {
         panel.webview.postMessage({
+          chatId: originChatId,
           type: "event",
           event: "chat.error",
           payload: "План не найден."
@@ -462,7 +758,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "diff.openNative") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const diffId = isObject(message.payload) && typeof message.payload.diffId === "string" ? message.payload.diffId : "";
       const fileIndex = isObject(message.payload) ? parseFileIndex(message.payload.fileIndex) : undefined;
       if (!chatId || !diffId || fileIndex === undefined) {
@@ -479,7 +775,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "approval.approve" || message.command === "approval.deny") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       if (!chatId || !isObject(message.payload) || typeof message.payload.approvalId !== "string") {
         return;
       }
@@ -489,7 +785,7 @@ export class ChatPanelManager {
 
     this.logger.info(`Chat panel command: ${message.command}`);
     if (message.command === "chat.cancel") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       if (!chatId) {
         return;
       }
@@ -498,7 +794,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.queue.remove") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const messageId = isObject(message.payload) && typeof message.payload.messageId === "string" ? message.payload.messageId : "";
       if (chatId && messageId) {
         this.handlers.removeQueuedPrompt(chatId, messageId);
@@ -507,7 +803,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.queue.move") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const messageId = isObject(message.payload) && typeof message.payload.messageId === "string" ? message.payload.messageId : "";
       const direction = isObject(message.payload) && message.payload.direction === "up" ? "up" : "down";
       if (chatId && messageId) {
@@ -517,7 +813,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.queue.add" || message.command === "chat.steer") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       const prompt = isObject(message.payload) && typeof message.payload.prompt === "string" ? message.payload.prompt.trim() : "";
       const attachments = await this.handlers.resolveAttachments(isObject(message.payload) ? message.payload.attachments : []);
       if (!chatId || (!prompt && !attachments.length)) {
@@ -537,6 +833,7 @@ export class ChatPanelManager {
         }
       } catch (error) {
         panel.webview.postMessage({
+          chatId: originChatId,
           type: "event",
           event: "chat.error",
           payload: {
@@ -550,9 +847,10 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.send") {
-      const chatId = this.state.getActiveChatId();
+      const chatId = originChatId;
       if (!chatId) {
         panel.webview.postMessage({
+          chatId: originChatId,
           type: "event",
           event: "chat.error",
           payload: "Выберите диалог в sidebar или создайте новый."
@@ -562,6 +860,7 @@ export class ChatPanelManager {
       const chat = this.state.getChat(chatId);
       if (chat?.archivedAt) {
         panel.webview.postMessage({
+          chatId: originChatId,
           type: "event",
           event: "chat.error",
           payload: "Диалог в архиве. Восстановите его, чтобы продолжить."
@@ -570,6 +869,7 @@ export class ChatPanelManager {
       }
       if (!isObject(message.payload) || typeof message.payload.prompt !== "string") {
         panel.webview.postMessage({
+          chatId: originChatId,
           type: "event",
           event: "chat.error",
           payload: "Введите сообщение для Codex."
@@ -580,13 +880,14 @@ export class ChatPanelManager {
       const mode = parseRunMode(message.payload.mode);
       const attachments = await this.handlers.resolveAttachments(message.payload.attachments);
       if (!message.payload.prompt.trim() && !attachments.length) {
-        panel.webview.postMessage({ type: "event", event: "chat.error", payload: "Введите сообщение или прикрепите файл." });
+        panel.webview.postMessage({ chatId: originChatId, type: "event", event: "chat.error", payload: "Введите сообщение или прикрепите файл." });
         return;
       }
       try {
         await this.handlers.sendPrompt(chatId, message.payload.prompt, mode, undefined, this.parseSelectedSkills(message.payload), attachments);
       } catch (error) {
         panel.webview.postMessage({
+          chatId: originChatId,
           type: "event",
           event: "chat.error",
           payload: {
@@ -600,6 +901,7 @@ export class ChatPanelManager {
     }
 
     panel.webview.postMessage({
+          chatId: originChatId,
       type: "event",
       event: "chat.error",
       payload: `Команда ${message.command} пока не подключена.`
@@ -645,6 +947,23 @@ export class ChatPanelManager {
     }
     return [...selected.values()];
   }
+}
+
+function projectTranscriptItem(item: ChatTranscriptItem, detailOffset?: number): ChatTranscriptItem {
+  const preview = (value?: string) => value && value.length > 12000 ? `${value.slice(0, 12000)}\n[Превью ограничено]` : value;
+  const start = detailOffset ?? 0;
+  if (item.kind === "turn-run") return { ...item, activityIds: [], worklogIds: [], diffIds: [], compactionIds: [] };
+  if (item.kind === "worklog") return Object.assign({ ...item,
+    children: detailOffset === undefined ? [] : item.children.slice(start, start + 20).map(child => ({ ...child, outputPreview: preview(child.outputPreview), argumentsPreview: preview(child.argumentsPreview) }))
+  }, { detailAvailable: true, detailCount: item.children.length });
+  if (item.kind === "activity") return Object.assign({ ...item,
+    outputPreview: detailOffset === undefined ? undefined : preview(item.outputPreview),
+    details: detailOffset === undefined ? [] : item.details?.slice(start, start + 20).map(detail => ({ ...detail, outputPreview: preview(detail.outputPreview) }))
+  }, { detailAvailable: true, detailCount: item.details?.length ?? 0 });
+  if (item.kind === "diff") return Object.assign({ ...item,
+    files: item.files.slice(start, start + 20).map(file => ({ ...file, diff: detailOffset === undefined ? undefined : preview(file.diff) }))
+  }, { detailAvailable: true, detailCount: item.files.length });
+  return item;
 }
 
 function parsePanelState(rawState: unknown): ChatPanelState | undefined {
