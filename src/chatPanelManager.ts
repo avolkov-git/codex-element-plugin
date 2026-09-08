@@ -29,7 +29,7 @@ export interface ChatPanelHandlers {
   setEffort(chatId: string, effort: ChatEffort): void;
   setSpeed(chatId: string, speed: ChatSpeed): void;
   setChatHeaderMode(mode: ChatHeaderMode): Promise<void> | void;
-  loadModels(): Promise<void>;
+  loadModels(forceReload?: boolean): Promise<void>;
   loadSkills(forceReload?: boolean): Promise<SkillOption[]>;
   getProjectContextDetails(): Promise<ProjectContextDetails>;
   getDocsContextDetails(): Promise<DocsContextDetails>;
@@ -397,7 +397,7 @@ export class ChatPanelManager {
     }
 
     if (message.command === "chat.models.load") {
-      await this.handlers.loadModels();
+      await this.handlers.loadModels(isObject(message.payload) && message.payload.forceReload === true);
       return;
     }
 

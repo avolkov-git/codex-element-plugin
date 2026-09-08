@@ -536,6 +536,11 @@ class StateStore {
         this.modelOptionsStatus = status;
         this.version += 1;
     }
+    invalidateModelOptions() {
+        this.modelOptions = FALLBACK_MODEL_OPTIONS;
+        this.modelOptionsStatus = "idle";
+        this.version += 1;
+    }
     setPendingApproval(chatId, pendingApproval) {
         const status = pendingApproval ? "waitingApproval" : this.getChat(chatId)?.status === "waitingApproval" ? "running" : undefined;
         return this.updateChat(chatId, {

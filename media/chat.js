@@ -875,7 +875,11 @@
         }
         if (command === "chat.model.toggle") {
           toggleMenu("model");
-          loadModelsIfNeeded();
+          if (state.openMenu === "model") loadModelsIfNeeded();
+          return;
+        }
+        if (command === "chat.models.refresh") {
+          loadModelsIfNeeded(true);
           return;
         }
         if (command === "chat.model.submenu.toggle") {
@@ -1696,13 +1700,12 @@
     state.openModelSubmenu = null;
   }
 
-  function loadModelsIfNeeded() {
+  function loadModelsIfNeeded(forceReload = false) {
     if (
       state.snapshot &&
-      state.snapshot.modelOptionsStatus !== "ready" &&
       state.snapshot.modelOptionsStatus !== "loading"
     ) {
-      vscode.postMessage({ type: "command", command: "chat.models.load" });
+      vscode.postMessage({ type: "command", command: "chat.models.load", payload: { forceReload } });
     }
   }
 
@@ -2160,7 +2163,8 @@
   function modelSelector(snapshot) {
     const options = modelOptions(snapshot);
     const automatic = options.find((option) => option.id === null) || { id: null, label: "Авто" };
-    const runtimeModels = options.filter((option) => option.id !== null);
+    const runtimeModels = options.filter((option) => option.id !== null)
+      .sort((left, right) => Number(Boolean(right.isDefault)) - Number(Boolean(left.isDefault)));
     const topModels = runtimeModels.slice(0, 3);
     const otherModels = runtimeModels.slice(topModels.length);
     const activeLabel = snapshot.chat.modelLabel || "Авто";
@@ -2188,7 +2192,9 @@
               <span class="submenu-chevron">›</span>
             </button>
           ` : ""}
-          ${snapshot.modelOptionsStatus === "loading" ? `<div class="selector-hint">Загружаем список моделей...</div>` : ""}
+          ${snapshot.modelOptionsStatus === "loading" ? `<div class="selector-hint" role="status">Обновляем список моделей...</div>` : ""}
+          ${snapshot.modelOptionsStatus === "error" ? `<div class="selector-hint error" role="status">${runtimeModels.length ? "Не удалось обновить список. Показан последний загруженный." : "Список моделей недоступен. Проверьте подключение и авторизацию."}</div>` : ""}
+          <button class="selector-option model-refresh" type="button" data-command="chat.models.refresh" role="menuitem" ${snapshot.modelOptionsStatus === "loading" ? "disabled" : ""}>Обновить список</button>
           ${state.openModelSubmenu === "other" ? `
             <div class="selector-submenu model-submenu" role="menu">
               ${otherModels.map((option) => {
@@ -3413,6 +3419,7 @@
       pendingApproval.id || "",
       snapshot.chatHeaderMode || "",
       snapshot.modelOptionsStatus || "",
+      JSON.stringify(snapshot.modelOptions || []),
       contextWindow.status || "",
       contextWindow.usedTokens ?? "",
       contextWindow.maxTokens ?? "",

@@ -355,7 +355,7 @@ class ChatPanelManager {
             return;
         }
         if (message.command === "chat.models.load") {
-            await this.handlers.loadModels();
+            await this.handlers.loadModels(isObject(message.payload) && message.payload.forceReload === true);
             return;
         }
         if (message.command === "chat.skills.load") {

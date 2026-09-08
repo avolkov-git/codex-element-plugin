@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const targets = [
   { platformId: "win32-x64", legacyPlatformId: "windows-x86_64", executableName: "codex.exe", kind: "pe", arch: "x64", executableBit: false },
@@ -258,10 +259,54 @@ function modeString(mode) {
   return `0${(mode & 0o777).toString(8)}`;
 }
 
+function verifyRuntimeManifest(root, platformIds, { allowLfsPointer = false } = {}) {
+  const errors = [];
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, "bin/runtime-manifest.json"), "utf8"));
+    if (!manifest.version || !Array.isArray(manifest.files)) throw new Error("invalid runtime manifest");
+    for (const platformId of platformIds) {
+      const target = targetForPlatform(platformId);
+      const expected = target.platformId.startsWith("win32-")
+        ? ["codex.exe", "codex-command-runner.exe", "codex-windows-sandbox-setup.exe"] : ["codex"];
+      for (const name of expected) {
+        const relative = `bin/${target.platformId}/${name}`;
+        const entry = manifest.files.find((file) => file.path === relative);
+        if (!entry || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error(`missing checksum for ${relative}`);
+        const filePath = path.join(root, relative);
+        const header = readHeader(filePath).toString("utf8");
+        if (allowLfsPointer && header.startsWith("version https://git-lfs.github.com/spec/v1")) {
+          if (!header.includes(`oid sha256:${entry.sha256}\n`) || !header.includes(`size ${entry.size}\n`)) errors.push(`${relative} points to a different runtime version`);
+          continue;
+        }
+        if (fs.statSync(filePath).size !== entry.size || sha256File(filePath) !== entry.sha256) {
+          errors.push(`${relative} does not match pinned runtime ${manifest.version}`);
+        }
+      }
+    }
+  } catch (error) {
+    errors.push(`Runtime manifest verification failed: ${error.message}`);
+  }
+  return errors;
+}
+
+function sha256File(filePath) {
+  const fd = fs.openSync(filePath, "r");
+  const hash = crypto.createHash("sha256");
+  const buffer = Buffer.alloc(4 * 1024 * 1024);
+  try {
+    let length;
+    while ((length = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) hash.update(buffer.subarray(0, length));
+    return hash.digest("hex");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 module.exports = {
   resolveRuntime,
   targetForPlatform,
   targetPaths,
   targets,
+  verifyRuntimeManifest,
   validateRuntimeFile
 };

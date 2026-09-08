@@ -6,7 +6,7 @@
 Подробнее про `codex app-server` [тут](https://developers.openai.com/codex/app-server) и [тут](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
 - Текущая версия плагина: `0.1.87`
-- Текущая версия Codex CLI/app-server: `0.144.5`
+- Текущая версия Codex CLI/app-server: `0.153.4`
 - Готовые поставки: Windows x64 и Linux x64
 - Исходный проект также содержит runtime-матрицу для Windows, Linux и macOS на x64 и arm64
 - [Релизы](https://github.com/avolkov-git/codex-element-plugin/releases)
@@ -173,7 +173,7 @@ bin/        platform runtime
 
 ## Runtime и Git LFS
 
-Плагин ожидает Codex CLI/app-server `0.144.5` для каждой платформы:
+Плагин ожидает Codex CLI/app-server `0.153.4` для каждой платформы:
 
 ```text
 bin/
@@ -319,7 +319,7 @@ npm run preflight:runtime
 
 ## Документация
 
-- [Контракт Codex app-server 0.144.5](docs/app-server-0.144.5.md)
+- [Контракт Codex app-server 0.153.4 и проверка совместимости](docs/app-server-0.153.4.md)
 - [Unix smoke checklist](docs/unix-smoke-checklist.md)
 
 Проект распространяется по [лицензии MIT](LICENSE). Copyright (c) 2026 Alexandr Volkov.

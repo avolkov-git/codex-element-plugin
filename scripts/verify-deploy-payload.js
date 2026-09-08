@@ -5,6 +5,7 @@ const path = require("path");
 const {
   targets,
   targetPaths,
+  verifyRuntimeManifest,
   validateRuntimeFile
 } = require("./runtime-preflight-lib");
 
@@ -160,6 +161,7 @@ function checkPackageMetadata(value) {
 
 function checkRuntimeBinaries(value) {
   const requestedTargets = requestedRuntimeTargets();
+  errors.push(...verifyRuntimeManifest(value, requestedTargets.map((target) => target.platformId), { allowLfsPointer }));
   const requestedPlatformIds = new Set(requestedTargets.map((target) => target.platformId));
   for (const target of requestedTargets) {
     const candidatePaths = targetPaths(value, target);

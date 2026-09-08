@@ -1,5 +1,7 @@
 # Codex app-server 0.144.5
 
+Исторический baseline. Текущая поставка и результаты проверки: [0.153.4](app-server-0.153.4.md).
+
 ## Цель
 
 Зафиксировать protocol baseline поставки Codex for 1C: Element и исключить скрытое смешивание старых runtime/payload с новым app-server.
