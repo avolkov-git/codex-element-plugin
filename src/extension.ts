@@ -166,13 +166,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       logger.info(`Chat header mode changed: ${mode}.`);
       chatPanels.postSnapshot();
     },
-    loadModels: async () => {
-      state.setModelOptionsStatus("loading");
-      chatPanels.postSnapshot();
-      const result = await runtime.loadModelOptions();
-      state.setModelOptions(result.options, result.status);
-      chatPanels.postSnapshot();
-    },
+    loadModels: (forceReload?: boolean) => runtime.loadModelOptions(forceReload),
     loadSkills: async (forceReload?: boolean) => integrations.listEnabledSkills(forceReload),
     getProjectContextDetails: async () => projectContext.getDetails(profiles.getCurrentProfileId()),
     getDocsContextDetails: async () => docsContext.decorateDetails(await settings.getDocsContextDetails()),

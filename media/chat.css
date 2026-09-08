@@ -2722,6 +2722,12 @@ button.worklog-line {
   font-weight: 650;
 }
 
+.model-refresh {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}
+
 .selector-icon {
   width: 15px;
   height: 15px;
@@ -2768,7 +2774,30 @@ button.worklog-line {
   }
 
   .composer-right {
+    position: relative;
     flex: 1 1 100%;
+  }
+
+  .model-selector {
+    position: static;
+  }
+
+  .model-menu {
+    left: 0;
+    right: auto;
+    width: min(280px, 100%);
+    min-width: 0;
+    max-height: min(480px, calc(100vh - 200px));
+    overflow-y: auto;
+  }
+
+  .model-submenu {
+    position: static;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
   }
 
   .queue-message-skills,

@@ -1,0 +1,79 @@
+# Codex app-server 0.153.4
+
+## Цель
+
+Обновить runtime для GPT-6 Astra, сохранив используемый плагином контракт 0.144.5: авторизацию, существующие диалоги, streaming, очередь и рекомендации, approvals, MCP, навыки и лимиты. Новые возможности API не включаются автоматически.
+
+Плагин: **0.1.89**. Runtime: **0.153.4** на всех шести платформах в `bin`. Пользовательские поставки по-прежнему две: Windows x64 и Linux x64. Windows helpers обновлены вместе с основным executable.
+
+Источник: [официальный релиз rust-v0.153.4](https://github.com/openai/codex/releases/tag/rust-v0.153.4). В нем исправлена видимость Astra в bundled model picker. [Описание протокола](https://learn.chatgpt.com/docs/app-server).
+
+## Проверка контракта
+
+Схемы получены командами `app-server generate-json-schema --experimental` из настоящих бинарников **обеих** версий. Их нормализованные снимки сохранены в `scripts/fixtures/app-server/`. AJV используется только в проверках, не в runtime расширения.
+
+`npm run check:protocol` вызывает production-код контроллера с тестовым RPC-транспортом и валидирует его запросы по обеим схемам. Проверяются:
+
+- `initialize`, `account/read`, `account/login/start` (device code и API key), `account/logout`;
+- `model/list`, runtime default, reasoning до `ultra`, service tiers;
+- `thread/start`, `thread/resume`, `turn/start` во всех трех режимах доступа;
+- текст, localImage, mention и skill inputs, `turn/steer` с `expectedTurnId`, `turn/interrupt`, `thread/compact/start`;
+- `skills/list`, `skills/config/write`, MCP status, reload и OAuth;
+- account rate limits с разными окнами и `rateLimitsByLimitId`;
+- command/file/permissions approvals и ответы на managed MCP elicitation;
+- streaming текста, command output, diff, plan, compaction, token usage, завершение turn и передача управления локальной очереди.
+
+Найден и исправлен отдельный случай входящих событий 0.153.4: `agentMessage` с `delivery: "async"` приходит без streaming delta. Раньше такой вопрос мог перезаписать последнюю реплику. Теперь он добавляется отдельным сообщением; работа продолжается, предыдущий и следующий текст сохраняются. Вопрос и варианты видны как обычный текст, ответ можно отправить существующей функцией рекомендации. Специальные интерактивные карточки native async questions в этом срезе не добавляются.
+
+Используемые параметры совместимы. Среди добавлений 0.153.4: необязательные `projectId` в `thread/start`, `toolOutput`, `turnTrigger`, `serviceTierForTurn`, `cyberAccessProgram` в `turn/start`, OAuth client registration, audio inputs и дополнительные response metadata. Плагин их не требует и не подставляет вместо прежних параметров. Старую локальную очередь не переключаем на новый server-side queue API.
+
+## Каталог моделей
+
+Источником истины остается `model/list`, а не список в исходниках. При открытии меню каталог обновляется, если старше пяти минут. `Обновить список` обходит TTL. Параллельные обращения используют один запрос. При сетевой ошибке сохраняется последний успешный список; без него доступен только `Авто` и сообщение об ошибке.
+
+Выход из аккаунта, успешный login, `account/updated`, остановка или завершение app-server сбрасывают каталог. Ответ старого процесса не может вернуть устаревшие модели в новый сеанс. Сброс не меняет сохраненный выбор модели, reasoning и speed в диалогах. Runtime default ставится в начало списка без специального правила для Astra.
+
+## Проверка бинарников
+
+`bin/runtime-manifest.json` фиксирует версию, официальный release URL, SHA-256 архивов и каждого executable. Перед импортом проверены GitHub release asset digests. Preflight проверяет формат, архитектуру, executable bit и соответствие файлов манифесту, включая оба Windows helper. Старый бинарник из deploy не пройдет проверку только потому, что у него верный формат PE/ELF.
+
+Git хранит файлы через LFS. Архивы поставки содержат настоящие executable, а не pointers. SHA-256 архивов поставки записывается отдельно в `SHA256SUMS.txt`.
+
+## Реальный smoke test
+
+```bash
+npm ci
+npm run check
+npm run build
+npm run check:models
+npm run check:protocol
+npm run check:mcp-elicitation
+npm run preflight:runtime:release
+node scripts/app-server-smoke.js bin/darwin-arm64/codex
+```
+
+На Windows используется `bin/win32-x64/codex.exe`, на Linux `bin/linux-x64/codex`. CI запускает smoke на целевой ОС. Smoke использует временный `CODEX_HOME`, не меняет пользовательские диалоги и не требует авторизации. Проверяется startup, initialize, paginated model/list с видимой Astra, account, skills, MCP reload/status и создание thread.
+
+Для короткого реального ответа:
+
+```bash
+node scripts/app-server-smoke.js bin/darwin-arm64/codex --live --auth-home "$HOME/.codex"
+```
+
+Этот режим копирует только `auth.json` во временный закрытый каталог, выполняет маленький запрос к Astra в read-only режиме и удаляет тестовый профиль. Токены не выводятся. Оригинальный профиль не изменяется. `thread/resume` проверяется после первого turn: у только что созданного пустого thread еще нет persisted rollout.
+
+На macOS проверен реальный ответ Astra `OK`, streaming и resume с ChatGPT-аккаунтом. Это подтверждает работоспособность протокола и модели для тестового аккаунта, но не доказывает доступ конкретного аккаунта на удаленном сервере Element.
+
+Отдельно проверен переход сохраненной истории **0.144.5 → 0.153.4**: старая версия создала диалог и сохранила первый ответ; новая открыла тот же thread, вернула предыдущие сообщения и передала их Astra. В следующем ответе Astra воспроизвела контрольную строку из первого сообщения. Тест использовал временный профиль, не рабочие чаты:
+
+```bash
+node scripts/app-server-upgrade-smoke.js /path/to/codex-0.144.5 bin/darwin-arm64/codex "$HOME/.codex"
+```
+
+Это live-тест с двумя короткими запросами к моделям. Он не запускается автоматически в CI и требует авторизованный `auth.json`.
+
+На Linux x64 прошел запуск и smoke-test без авторизации в Docker под непривилегированным пользователем (UID 501), с read-only подключением исходников. Контейнер linux/amd64 запускался на Apple Silicon, поэтому это не проверка производительности и не замена теста в сервере Element.
+
+Меню моделей проверено в Chromium: светлая и темная темы, ширины 1280/420/320 px, порядок runtime default, обновление, клавиатура, loading/error и сохранение последнего каталога. На узком окне меню и вложенный список больше не выходят за левую границу.
+
+Остается ручная проверка поставки в настоящей Windows/Theia IDE: ограничения служебного пользователя, proxy, локальные MCP и браузерная авторизация зависят от окружения. Проверка схем не заменяет эти проверки и не гарантирует отсутствие любых регрессий upstream runtime.

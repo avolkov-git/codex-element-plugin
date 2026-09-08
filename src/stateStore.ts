@@ -603,6 +603,12 @@ export class StateStore {
     this.version += 1;
   }
 
+  invalidateModelOptions(): void {
+    this.modelOptions = FALLBACK_MODEL_OPTIONS;
+    this.modelOptionsStatus = "idle";
+    this.version += 1;
+  }
+
   setPendingApproval(chatId: string, pendingApproval: ChatSummary["pendingApproval"]): ChatSummary | undefined {
     const status = pendingApproval ? "waitingApproval" : this.getChat(chatId)?.status === "waitingApproval" ? "running" : undefined;
     return this.updateChat(

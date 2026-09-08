@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Claude Code-style Codex plugin shell for 1C: Element.",
-  "version": "0.1.88",
+  "version": "0.1.89",
   "publisher": "element-ai",
   "license": "MIT",
   "private": true,
@@ -39,6 +39,8 @@
     "check:markdown-links": "node scripts/markdown-file-link-check.js",
     "check:transcript-window": "node scripts/transcript-window-check.js",
     "check:mcp-elicitation": "node scripts/mcp-elicitation-policy-check.js",
+    "check:models": "node scripts/model-catalog-check.js",
+    "check:protocol": "node scripts/app-server-protocol-check.js",
     "eval:context": "node scripts/context-acceptance-check.js",
     "preflight:runtime": "node scripts/verify-runtime-binaries.js --require-current",
     "preflight:runtime:release": "node scripts/verify-runtime-binaries.js --require-all",
@@ -230,6 +232,7 @@
     "@shikijs/langs": "^4.3.1",
     "@types/node": "^20.11.30",
     "@types/vscode": "^1.97.0",
+    "ajv": "^8.20.0",
     "esbuild": "^0.25.12",
     "typescript": "^5.4.5"
   }

@@ -41,6 +41,7 @@ const vscode = __importStar(require("vscode"));
 const codexIntegrationConstants_1 = require("./codexIntegrationConstants");
 const jsonRpcClient_1 = require("./jsonRpcClient");
 const logger_1 = require("./logger");
+const modelCatalog_1 = require("./modelCatalog");
 const mcpElicitationPolicy_1 = require("./mcpElicitationPolicy");
 const platform_1 = require("./platform");
 const runtimeProcessManager_1 = require("./runtimeProcessManager");
@@ -51,9 +52,6 @@ class UserCancelledTurnError extends Error {
         this.name = "UserCancelledTurnError";
     }
 }
-const FALLBACK_MODEL_OPTIONS = [
-    { id: null, label: "Авто", description: "Модель по умолчанию Codex" }
-];
 class CodexRuntimeController {
     constructor(options) {
         this.options = options;
@@ -62,6 +60,18 @@ class CodexRuntimeController {
         this.integrationsChangedEmitter = new vscode.EventEmitter();
         this.onDidChangeIntegrations = this.integrationsChangedEmitter.event;
         this.mcpStartupStatuses = new Map();
+        this.modelCatalog = new modelCatalog_1.ModelCatalog(() => this.fetchModelOptions(), (snapshot) => {
+            if (snapshot.status === "ready") {
+                this.options.state.setModelOptions(snapshot.options, "ready");
+            }
+            else if (snapshot.status === "idle") {
+                this.options.state.invalidateModelOptions();
+            }
+            else {
+                this.options.state.setModelOptionsStatus(snapshot.status);
+            }
+            this.options.onDidChange();
+        }, (error) => this.options.logger.warn(`model/list failed; retaining last model list: ${normalizeErrorMessage(error)}`));
         this.activeTurnChatId = new Map();
         this.activeThreadChatId = new Map();
         this.activeItemChatId = new Map();
@@ -226,7 +236,7 @@ class CodexRuntimeController {
         this.loadedThreadIds.clear();
         this.latestChatId = undefined;
         this.mcpStartupStatuses.clear();
-        this.options.state.setModelOptions([], "idle");
+        this.modelCatalog.invalidate();
         this.updateRateLimits({ status: "unknown", rows: [] });
         this.updateAuth({
             status: "notAuthenticated",
@@ -433,36 +443,39 @@ class CodexRuntimeController {
             this.options.logger.error(`sendPrompt failed: ${message}`);
         }
     }
-    async loadModelOptions() {
+    async loadModelOptions(forceReload = false) {
         try {
             await this.ensureBackendProcess();
-            const collected = [];
-            let cursor = null;
-            for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
-                const result = await this.requireRpcClient().request("model/list", {
-                    cursor,
-                    limit: 100,
-                    includeHidden: false
-                }, 10000);
-                const page = normalizeModelOptionsPage(result);
-                collected.push(...page.options);
-                cursor = page.nextCursor;
-                if (!cursor) {
-                    break;
-                }
-            }
-            const options = withAutomaticModelOption(collected);
-            if (!options.length) {
-                this.options.logger.warn("model/list returned no usable models; using fallback model list.");
-                return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
-            }
-            this.options.logger.info(`model/list completed: ${Math.max(0, options.length - 1)} runtime models; default=${options.find((option) => option.id === null)?.description ?? "runtime default"}.`);
-            return { options, status: "ready" };
         }
         catch (error) {
-            this.options.logger.warn(`model/list failed; using fallback model list: ${normalizeErrorMessage(error)}`);
-            return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
+            this.options.logger.warn(`model/list startup failed: ${normalizeErrorMessage(error)}`);
+            this.options.state.setModelOptionsStatus("error");
+            this.options.onDidChange();
+            return;
         }
+        await this.modelCatalog.load(forceReload);
+    }
+    async fetchModelOptions() {
+        const rpcClient = this.requireRpcClient();
+        const collected = [];
+        const seenCursors = new Set();
+        let cursor = null;
+        for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
+            const result = await rpcClient.request("model/list", { cursor, limit: 100, includeHidden: false }, 10000);
+            const page = normalizeModelOptionsPage(result);
+            collected.push(...page.options);
+            cursor = page.nextCursor;
+            if (!cursor) {
+                const options = withAutomaticModelOption(collected);
+                this.options.logger.info(`model/list completed: ${collected.length} runtime models; models=${options.filter((option) => option.id).map((option) => option.id).join(",")}.`);
+                return options;
+            }
+            if (seenCursors.has(cursor)) {
+                throw new Error("model/list returned a repeated cursor");
+            }
+            seenCursors.add(cursor);
+        }
+        throw new Error("model/list exceeded the pagination limit");
     }
     isBackendRunning() {
         return this.processManager.isRunning;
@@ -1391,6 +1404,7 @@ class CodexRuntimeController {
         this.activeConcreteItemsByChat.clear();
     }
     async stop() {
+        this.modelCatalog.invalidate();
         this.rejectAllHiddenPlannerRuns(new Error("Codex runtime stopped before docs planner completed."));
         this.cleanupThinking();
         this.rpcClient?.dispose();
@@ -1462,9 +1476,24 @@ class CodexRuntimeController {
         this.processManager.dispose();
     }
     async ensureBackendProcess() {
+        if (this.backendStartPromise) {
+            return this.backendStartPromise;
+        }
         if (this.processManager.isRunning) {
             return;
         }
+        const startup = this.startBackendSession();
+        this.backendStartPromise = startup;
+        try {
+            await startup;
+        }
+        finally {
+            if (this.backendStartPromise === startup) {
+                this.backendStartPromise = undefined;
+            }
+        }
+    }
+    async startBackendSession() {
         this.loadedThreadIds.clear();
         this.contextCompactionItemThreads.clear();
         this.contextCompactionActivityIds.clear();
@@ -1746,6 +1775,8 @@ class CodexRuntimeController {
         }
         if (notification.method === "account/login/completed") {
             const completed = normalizeLoginCompletedNotification(notification.params);
+            if (completed.success)
+                this.modelCatalog.invalidate();
             this.updateAuth({
                 status: completed.success ? "checking" : "error",
                 message: completed.message,
@@ -1759,6 +1790,7 @@ class CodexRuntimeController {
             return;
         }
         if (notification.method === "account/updated") {
+            this.modelCatalog.invalidate();
             void this.readAccount();
             return;
         }
@@ -1986,7 +2018,11 @@ class CodexRuntimeController {
             if (chatId && agentText) {
                 const classification = classifyCompletedAssistantText(agentText);
                 const completedTurnId = itemTurnId;
-                if (classification.kind === "clarification") {
+                if (extractItemRecord(notification.params).delivery === "async") {
+                    // Async questions arrive without streaming deltas and must not replace the previous reply.
+                    this.options.state.addTranscriptItem(chatId, "assistant", agentText, "immediate", completedTurnId);
+                }
+                else if (classification.kind === "clarification") {
                     this.options.state.removeLastStreamingAssistantMessage(chatId, completedTurnId);
                     this.options.state.addOrUpdateClarificationItem(chatId, completedTurnId || "", classification.question, classification.options, "immediate");
                 }
@@ -2186,6 +2222,7 @@ class CodexRuntimeController {
         return resolution.response;
     }
     handleExit(code, signal) {
+        this.modelCatalog.invalidate();
         const wasCancelFallback = this.suppressNextExitAsCancel;
         const wasBackendRetry = this.suppressNextExitAsBackendRetry;
         const wasLogout = this.suppressNextExitAsLogout;

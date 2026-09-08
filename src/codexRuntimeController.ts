@@ -10,6 +10,7 @@ import { DiagnosticsContextService } from "./diagnosticsContextService";
 import { DocsPlannerRuntimeRequest, DocsRetrievalLoopService } from "./docsRetrievalLoopService";
 import { JsonRpcClient, JsonRpcNotification, JsonRpcServerRequest } from "./jsonRpcClient";
 import { Logger, redact } from "./logger";
+import { ModelCatalog } from "./modelCatalog";
 import { resolveManagedMcpElicitation } from "./mcpElicitationPolicy";
 import { NativeContextToolLoopService } from "./nativeContextToolLoopService";
 import {
@@ -109,10 +110,6 @@ class UserCancelledTurnError extends Error {
   }
 }
 
-const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
-  { id: null, label: "Авто", description: "Модель по умолчанию Codex" }
-];
-
 export class CodexRuntimeController implements vscode.Disposable {
   private readonly processManager = new RuntimeProcessManager();
   private readonly worklogNormalizer = new WorklogOperationNormalizer();
@@ -120,6 +117,21 @@ export class CodexRuntimeController implements vscode.Disposable {
   readonly onDidChangeIntegrations = this.integrationsChangedEmitter.event;
   private readonly mcpStartupStatuses = new Map<string, Pick<McpRuntimeStatus, "runtimeStatus" | "error">>();
   private rpcClient: JsonRpcClient | undefined;
+  private backendStartPromise: Promise<void> | undefined;
+  private readonly modelCatalog = new ModelCatalog(
+    () => this.fetchModelOptions(),
+    (snapshot) => {
+      if (snapshot.status === "ready") {
+        this.options.state.setModelOptions(snapshot.options, "ready");
+      } else if (snapshot.status === "idle") {
+        this.options.state.invalidateModelOptions();
+      } else {
+        this.options.state.setModelOptionsStatus(snapshot.status);
+      }
+      this.options.onDidChange();
+    },
+    (error) => this.options.logger.warn(`model/list failed; retaining last model list: ${normalizeErrorMessage(error)}`)
+  );
   private activeTurnChatId = new Map<string, string>();
   private activeThreadChatId = new Map<string, string>();
   private activeItemChatId = new Map<string, string>();
@@ -300,7 +312,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.loadedThreadIds.clear();
     this.latestChatId = undefined;
     this.mcpStartupStatuses.clear();
-    this.options.state.setModelOptions([], "idle");
+    this.modelCatalog.invalidate();
     this.updateRateLimits({ status: "unknown", rows: [] });
     this.updateAuth({
       status: "notAuthenticated",
@@ -534,35 +546,39 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
   }
 
-  async loadModelOptions(): Promise<{ options: ModelOption[]; status: "ready" | "error" }> {
+  async loadModelOptions(forceReload = false): Promise<void> {
     try {
       await this.ensureBackendProcess();
-      const collected: ModelOption[] = [];
-      let cursor: string | null = null;
-      for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
-        const result = await this.requireRpcClient().request("model/list", {
-          cursor,
-          limit: 100,
-          includeHidden: false
-        }, 10_000);
-        const page = normalizeModelOptionsPage(result);
-        collected.push(...page.options);
-        cursor = page.nextCursor;
-        if (!cursor) {
-          break;
-        }
-      }
-      const options = withAutomaticModelOption(collected);
-      if (!options.length) {
-        this.options.logger.warn("model/list returned no usable models; using fallback model list.");
-        return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
-      }
-      this.options.logger.info(`model/list completed: ${Math.max(0, options.length - 1)} runtime models; default=${options.find((option) => option.id === null)?.description ?? "runtime default"}.`);
-      return { options, status: "ready" };
     } catch (error) {
-      this.options.logger.warn(`model/list failed; using fallback model list: ${normalizeErrorMessage(error)}`);
-      return { options: FALLBACK_MODEL_OPTIONS, status: "error" };
+      this.options.logger.warn(`model/list startup failed: ${normalizeErrorMessage(error)}`);
+      this.options.state.setModelOptionsStatus("error");
+      this.options.onDidChange();
+      return;
     }
+    await this.modelCatalog.load(forceReload);
+  }
+
+  private async fetchModelOptions(): Promise<ModelOption[]> {
+    const rpcClient = this.requireRpcClient();
+    const collected: ModelOption[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
+    for (let pageIndex = 0; pageIndex < 10; pageIndex += 1) {
+      const result = await rpcClient.request("model/list", { cursor, limit: 100, includeHidden: false }, 10_000);
+      const page = normalizeModelOptionsPage(result);
+      collected.push(...page.options);
+      cursor = page.nextCursor;
+      if (!cursor) {
+        const options = withAutomaticModelOption(collected);
+        this.options.logger.info(`model/list completed: ${collected.length} runtime models; models=${options.filter((option) => option.id).map((option) => option.id).join(",")}.`);
+        return options;
+      }
+      if (seenCursors.has(cursor)) {
+        throw new Error("model/list returned a repeated cursor");
+      }
+      seenCursors.add(cursor);
+    }
+    throw new Error("model/list exceeded the pagination limit");
   }
 
   isBackendRunning(): boolean {
@@ -1606,6 +1622,7 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 
   async stop(): Promise<void> {
+    this.modelCatalog.invalidate();
     this.rejectAllHiddenPlannerRuns(new Error("Codex runtime stopped before docs planner completed."));
     this.cleanupThinking();
     this.rpcClient?.dispose();
@@ -1686,10 +1703,24 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 
   private async ensureBackendProcess(): Promise<void> {
+    if (this.backendStartPromise) {
+      return this.backendStartPromise;
+    }
     if (this.processManager.isRunning) {
       return;
     }
+    const startup = this.startBackendSession();
+    this.backendStartPromise = startup;
+    try {
+      await startup;
+    } finally {
+      if (this.backendStartPromise === startup) {
+        this.backendStartPromise = undefined;
+      }
+    }
+  }
 
+  private async startBackendSession(): Promise<void> {
     this.loadedThreadIds.clear();
     this.contextCompactionItemThreads.clear();
     this.contextCompactionActivityIds.clear();
@@ -2016,6 +2047,7 @@ export class CodexRuntimeController implements vscode.Disposable {
 
     if (notification.method === "account/login/completed") {
       const completed = normalizeLoginCompletedNotification(notification.params);
+      if (completed.success) this.modelCatalog.invalidate();
       this.updateAuth({
         status: completed.success ? "checking" : "error",
         message: completed.message,
@@ -2030,6 +2062,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
 
     if (notification.method === "account/updated") {
+      this.modelCatalog.invalidate();
       void this.readAccount();
       return;
     }
@@ -2274,7 +2307,10 @@ export class CodexRuntimeController implements vscode.Disposable {
       if (chatId && agentText) {
         const classification = classifyCompletedAssistantText(agentText);
         const completedTurnId = itemTurnId;
-        if (classification.kind === "clarification") {
+        if (extractItemRecord(notification.params).delivery === "async") {
+          // Async questions arrive without streaming deltas and must not replace the previous reply.
+          this.options.state.addTranscriptItem(chatId, "assistant", agentText, "immediate", completedTurnId);
+        } else if (classification.kind === "clarification") {
           this.options.state.removeLastStreamingAssistantMessage(chatId, completedTurnId);
           this.options.state.addOrUpdateClarificationItem(
             chatId,
@@ -2501,6 +2537,7 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
+    this.modelCatalog.invalidate();
     const wasCancelFallback = this.suppressNextExitAsCancel;
     const wasBackendRetry = this.suppressNextExitAsBackendRetry;
     const wasLogout = this.suppressNextExitAsLogout;

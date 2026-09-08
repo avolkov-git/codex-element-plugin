@@ -4,6 +4,7 @@ const path = require("path");
 const {
   targets,
   targetPaths,
+  verifyRuntimeManifest,
   validateRuntimeFile
 } = require("./runtime-preflight-lib");
 
@@ -23,6 +24,7 @@ const currentPlatformId = `${process.platform}-${process.arch}`;
 const errors = [];
 const warnings = [];
 const platformFilter = new Set(parsedArgs.platforms);
+const checkedPlatforms = [];
 const unknownPlatforms = [...platformFilter].filter((platformId) => !targets.some((target) => target.platformId === platformId || target.legacyPlatformId === platformId));
 for (const platformId of unknownPlatforms) {
   errors.push(`unknown platform ${platformId}; supported: ${targets.map((target) => target.platformId).join(", ")}`);
@@ -44,9 +46,12 @@ for (const target of targets) {
   }
 
   const result = validateRuntimeFile(existingPath, target, { allowLfsPointer });
+  checkedPlatforms.push(target.platformId);
   errors.push(...result.errors);
   warnings.push(...result.warnings);
 }
+
+errors.push(...verifyRuntimeManifest(root, checkedPlatforms, { allowLfsPointer }));
 
 if (warnings.length) {
   for (const warning of warnings) {

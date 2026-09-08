@@ -65,6 +65,9 @@ jobs:
         run: |
           npm run check
           npm run build
+          npm run check:models
+          npm run check:protocol
+          npm run check:mcp-elicitation
           npm run check:markdown-links
           npm run check:transcript-window
           npm run eval:context
@@ -72,6 +75,13 @@ jobs:
           node --check media/sidebar.js
           node --check media/settings.js
           git diff --check
+
+      - name: Smoke test the target Codex app-server
+        shell: bash
+        run: |
+          RUNTIME="bin/${{ matrix.platform }}/codex"
+          if [[ "${{ matrix.platform }}" == win32-* ]]; then RUNTIME="${RUNTIME}.exe"; fi
+          node scripts/app-server-smoke.js "$RUNTIME"
 
       - name: Prepare managed Playwright MCP browser runtime
         shell: bash
