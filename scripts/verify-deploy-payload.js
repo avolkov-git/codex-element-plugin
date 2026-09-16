@@ -134,14 +134,46 @@ function checkPackageMetadata(value) {
     return;
   }
 
-  if (!manifest.name) {
-    errors.push("package.json is missing name.");
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    errors.push("package.json must contain a JSON object.");
+    return;
   }
-  if (!manifest.version) {
-    errors.push("package.json is missing version.");
+  for (const field of ["name", "publisher", "version"]) {
+    if (typeof manifest[field] !== "string" || !manifest[field].trim()) {
+      errors.push(`package.json ${field} must be a non-empty string.`);
+    }
+  }
+  if (!manifest.engines || typeof manifest.engines !== "object" || Array.isArray(manifest.engines)
+    || typeof manifest.engines.vscode !== "string" || !manifest.engines.vscode.trim()) {
+    errors.push("package.json engines must be an object with a non-empty vscode string.");
   }
   if (manifest.main !== "./dist/extension.js") {
     errors.push(`package.json main must be ./dist/extension.js, got ${manifest.main || "-"}.`);
+  }
+  for (const field of ["main", "browser", "icon"]) {
+    if (manifest[field] === undefined) {
+      continue;
+    }
+    const relativePath = manifest[field];
+    if (typeof relativePath !== "string" || !relativePath.trim() || path.isAbsolute(relativePath)) {
+      errors.push(`package.json ${field} must be a non-empty relative file path.`);
+      continue;
+    }
+    const candidate = path.resolve(value, relativePath);
+    const relative = path.relative(value, candidate);
+    if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+      || !fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
+      errors.push(`package.json ${field} must point to a file inside the plugin: ${relativePath}`);
+    }
+  }
+  for (const field of ["displayName", "description"]) {
+    if (typeof manifest[field] !== "string" || !manifest[field].trim()) {
+      warnings.push(`package.json ${field} is missing or empty; XBSL.IO will warn about it.`);
+    }
+  }
+  if (!Array.isArray(manifest.categories) || !manifest.categories.length
+    || manifest.categories.some((category) => typeof category !== "string" || !category.trim())) {
+    warnings.push("package.json categories should be a non-empty array of strings for XBSL.IO.");
   }
 
   const lockPath = path.join(value, "package-lock.json");

@@ -120,13 +120,51 @@ function stagingFixture(root, target) {
   for (const script of ["stage-deploy-payload.js", "verify-deploy-payload.js", "runtime-preflight-lib.js"]) {
     write(source, `scripts/${script}`, fs.readFileSync(path.join(__dirname, "../scripts", script)));
   }
-  write(source, "package.json", JSON.stringify({ name: "fixture", version: "1.0.2-rc", main: "./dist/extension.js" }));
+  write(source, "package.json", JSON.stringify({
+    name: "fixture", publisher: "fixture-author", version: "1.0.2-rc",
+    engines: { vscode: "^1.97.0" }, main: "./dist/extension.js"
+  }));
   for (const relative of ["dist/extension.js", "media/chat.js", "media/xbsl-highlighter.js", "media/sidebar.js", "media/settings.js", "media/settings.css", "media/settings-icons.js", "media/settings-icons.NOTICES.txt", "resources/context/codex-element-language-rules.md", "resources/icons/codex.svg"]) write(source, relative, "fixture");
   return source;
 }
 function stage(source, destination, runtimeRoot) {
   return spawnSync(process.execPath, [path.join(source, "scripts/stage-deploy-payload.js"), "--target", destination, "--platform", "win32-x64", "--platform-only", "--strict", ...(runtimeRoot ? ["--runtime-root", runtimeRoot] : [])], { encoding: "utf8", timeout: 10000 });
 }
+for (const [label, mutate, expected] of [
+  ["missing publisher", (manifest) => delete manifest.publisher, /publisher must be a non-empty string/],
+  ["blank name", (manifest) => { manifest.name = "  "; }, /name must be a non-empty string/],
+  ["numeric version", (manifest) => { manifest.version = 103; }, /version must be a non-empty string/],
+  ["missing engines", (manifest) => delete manifest.engines, /engines must be an object/],
+  ["string engines", (manifest) => { manifest.engines = "^1.97.0"; }, /engines must be an object/],
+  ["blank API range", (manifest) => { manifest.engines.vscode = " "; }, /engines must be an object/],
+  ["missing entry point", (manifest) => delete manifest.main, /main must be/],
+  ["missing browser entry file", (manifest) => { manifest.browser = "./dist/missing.js"; }, /browser must point to a file/],
+  ["missing icon file", (manifest) => { manifest.icon = "resources/missing.svg"; }, /icon must point to a file/],
+  ["entry outside plugin", (manifest) => { manifest.browser = "../outside.js"; }, /browser must point to a file/]
+]) {
+  test(`staging rejects publication manifest with ${label}`, (t) => {
+    const root = temp(t), target = targetForPlatform("win32-x64"), source = stagingFixture(root, target);
+    const runtimeRoot = path.join(root, "runtime");
+    fixture(runtimeRoot, target);
+    const manifestPath = path.join(source, "package.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    mutate(manifest);
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    const result = stage(source, path.join(root, "deploy"), runtimeRoot);
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, expected);
+  });
+}
+test("staging only warns about missing optional publication metadata", (t) => {
+  const root = temp(t), target = targetForPlatform("win32-x64"), source = stagingFixture(root, target);
+  const runtimeRoot = path.join(root, "runtime");
+  fixture(runtimeRoot, target);
+  const result = stage(source, path.join(root, "deploy"), runtimeRoot);
+  assert.equal(result.status, 0, result.stderr);
+  for (const field of ["displayName", "description", "categories"]) {
+    assert.match(result.stderr, new RegExp(`WARN package.json ${field}`));
+  }
+});
 test("staging copies every companion from an external runtime root", (t) => {
   const root = temp(t), target = targetForPlatform("win32-x64"), source = stagingFixture(root, target);
   const runtimeRoot = path.join(root, "runtime"), destination = path.join(root, "deploy");

@@ -76,7 +76,7 @@ function buildReleaseTarget(workingRoot, releaseTarget) {
     "--browser-runtime-root", browserRuntimeRoot,
     "--strict"
   ]);
-  assertPayloadVersion(payloadRoot);
+  assertPayloadManifest(payloadRoot);
 
   fs.rmSync(archivePath, { force: true });
   if (releaseTarget.extension === "zip") {
@@ -111,6 +111,7 @@ function verifyArchive(workingRoot, releaseTarget, archivePath) {
   } else {
     runCommand("tar", ["-xzf", archivePath, "-C", verificationRoot], sourceRoot);
   }
+  assertPayloadManifest(path.join(verificationRoot, "codex-plugins"));
   runNodeScript("verify-deploy-payload.js", [
     "--root", path.join(verificationRoot, "codex-plugins"),
     "--platform", releaseTarget.platformId,
@@ -120,10 +121,17 @@ function verifyArchive(workingRoot, releaseTarget, archivePath) {
   ]);
 }
 
-function assertPayloadVersion(payloadRoot) {
+function assertPayloadManifest(payloadRoot) {
   const payloadManifest = JSON.parse(fs.readFileSync(path.join(payloadRoot, "package.json"), "utf8"));
-  if (payloadManifest.version !== manifest.version) {
-    throw new Error(`Staged payload version ${payloadManifest.version} does not match release version ${manifest.version}.`);
+  for (const [field, actual, expected] of [
+    ["publisher", payloadManifest.publisher, manifest.publisher],
+    ["name", payloadManifest.name, manifest.name],
+    ["version", payloadManifest.version, manifest.version],
+    ["engines.vscode", payloadManifest.engines?.vscode, manifest.engines?.vscode]
+  ]) {
+    if (actual !== expected) {
+      throw new Error(`Payload ${field} ${JSON.stringify(actual)} does not match source manifest ${JSON.stringify(expected)}.`);
+    }
   }
 }
 

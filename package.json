@@ -1,10 +1,16 @@
 {
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
-  "description": "Claude Code-style Codex plugin shell for 1C: Element.",
+  "description": "Расширение Codex для Theia IDE (1С:Элемент)",
   "version": "1.0.3",
   "publisher": "element-ai",
   "license": "MIT",
+  "homepage": "https://xbsl.io/plugins/213de8b5-1edb-4336-9970-8bb6020b6ab6",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/avolkov-git/codex-element-plugin.git"
+  },
+  "icon": "resources/icons/codex.svg",
   "private": true,
   "engines": {
     "vscode": "^1.97.0"
