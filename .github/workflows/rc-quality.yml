@@ -19,7 +19,6 @@ jobs:
     timeout-minutes: 20
     env:
       CODEX_TEST_BROWSER_CHANNEL: bundled
-      CODEX_TEST_ARTIFACTS: ${{ runner.temp }}/codex-chat-ui
     steps:
       - uses: actions/checkout@v7
         with:
@@ -52,6 +51,8 @@ jobs:
           npm run check:browser-runtime
           npm run check:pressure
       - name: Verify chat scrolling and worker fallback
+        env:
+          CODEX_TEST_ARTIFACTS: ${{ runner.temp }}/codex-chat-ui
         run: |
           npm run check:chat-ui
           npm run check:chat-shortcuts
