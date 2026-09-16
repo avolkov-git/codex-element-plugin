@@ -3,7 +3,7 @@
   "displayName": "Codex for 1C: Element",
   "description": "Расширение Codex для Theia IDE (1С:Элемент)",
   "version": "1.0.3",
-  "publisher": "element-ai",
+  "publisher": "Alexandr Volkov",
   "license": "MIT",
   "homepage": "https://xbsl.io/plugins/213de8b5-1edb-4336-9970-8bb6020b6ab6",
   "repository": {
