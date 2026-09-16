@@ -60,6 +60,43 @@ cp.execFile = function(file, args, options, callback) {
 const { PluginFeatureService } = require("../src/pluginFeatureService.ts");
 const { DiffArtifactService } = require("../src/diffArtifactService.ts");
 const { safeFile, safeRelative } = require("../src/featureSafety.ts");
+const { captureReview, mutateReview } = require("../src/featureGitReview.ts");
+
+function windowsReviewFixture({ top = "", gitDir = "", indexPath = "", aliases }) {
+  const paths = new Map();
+  for (const [alias, canonical] of aliases) {
+    paths.set(path.win32.resolve(alias), path.win32.resolve(canonical));
+    paths.set(path.win32.resolve(canonical), path.win32.resolve(canonical));
+  }
+  // JS realpath can retain Windows spelling; native realpath resolves the actual directory name.
+  const realpathSync = Object.assign(value => path.win32.resolve(value), {
+    native(value) {
+      const resolved = path.win32.resolve(value);
+      assert.ok(paths.has(resolved), `Unexpected native realpath: ${resolved}`);
+      return paths.get(resolved);
+    }
+  });
+  const filename = require.resolve("../src/featureGitReview.ts");
+  const isolated = new Module(filename, module);
+  isolated.filename = filename;
+  isolated.paths = Module._nodeModulePaths(path.dirname(filename));
+  const load = isolated.require.bind(isolated);
+  isolated.require = request => {
+    if (request === "fs") return { realpathSync };
+    if (request === "path") return path.win32;
+    if (request === "child_process") return {
+      execFile(file, args, options, callback) {
+        assert.equal(file, "git");
+        const output = args.includes("--show-toplevel") ? top : args.includes("--absolute-git-dir") ? gitDir : args.includes("--git-path") ? indexPath : "";
+        queueMicrotask(() => callback(null, Buffer.from(output)));
+        return {};
+      }
+    };
+    return load(request);
+  };
+  Module._extensions[".ts"](isolated, filename);
+  return isolated.exports;
+}
 
 function git(root, ...args) {
   return cp.execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(sandbox, "no-global-config"), GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" }, stdio: ["pipe", "pipe", "pipe"] });
@@ -108,6 +145,78 @@ function action(entry) { return { id: entry.id, revision: entry.revision, confir
 function changed(f, value = "after") { put(f.root, "file.txt", `first unchanged line\n${value}\nlast unchanged line\n`); }
 
 async function main() {
+  const windowsRoot = String.raw`C:\Users\runneradmin\AppData\Local\Temp\project`;
+  const windowsAliases = [
+    ["drive case", `c:${windowsRoot.slice(2)}`],
+    ["8.3 temp path", String.raw`c:\Users\RUNNER~1\AppData\Local\Temp\project`]
+  ];
+  for (const [label, root] of windowsAliases) {
+    await run(`Git review accepts canonical Windows root and index parent aliases: ${label}`, async () => {
+      const gitDir = path.win32.join(root, ".git");
+      const canonicalGitDir = path.win32.join(windowsRoot, ".git");
+      const review = windowsReviewFixture({ top: windowsRoot, gitDir, indexPath: path.win32.join(canonicalGitDir, "index"), aliases: [[root, windowsRoot], [gitDir, canonicalGitDir]] });
+      assert.deepEqual(await review.listReviewPaths(root), { items: [], truncated: false });
+    });
+    await run(`dirty editor guard compares both native Windows file paths: ${label}`, async () => {
+      const file = path.win32.join(windowsRoot, "file.txt");
+      const alias = path.win32.join(root, "file.txt");
+      const review = windowsReviewFixture({ aliases: [[alias, file]] });
+      for (const [target, document] of [[file, alias], [alias, file]]) {
+        native.documents = [{ uri: Uri.file(document), isDirty: true }];
+        assert.equal(review.isDirty(target), true);
+        native.documents[0].isDirty = false;
+        assert.equal(review.isDirty(target), false);
+        native.documents[0] = { uri: Uri.from({ scheme: "untitled", path: document }), isDirty: true };
+        assert.equal(review.isDirty(target), false);
+      }
+      const missing = path.win32.join(root, "deleted.txt");
+      native.documents = [{ uri: Uri.file(missing), isDirty: true }];
+      assert.equal(review.isDirty(missing), true);
+      resetNative();
+    });
+  }
+  await run("canonical Windows comparison still refuses parent repos and distinct case-sensitive roots", async () => {
+    for (const [root, canonical] of [
+      [path.win32.join(windowsAliases[1][1], "nested"), path.win32.join(windowsRoot, "nested")],
+      [windowsRoot.replace("project", "Project"), windowsRoot.replace("project", "Project")]
+    ]) {
+      const review = windowsReviewFixture({ top: windowsRoot, aliases: [[root, canonical], [windowsRoot, windowsRoot]] });
+      await assert.rejects(review.listReviewPaths(root), error => error.status === "blocked" && /родительских каталогах/.test(error.message));
+    }
+  });
+  await run("canonical Windows index parent must still be the repository Git directory", async () => {
+    const gitDir = path.win32.join(windowsRoot, ".git");
+    const outside = path.win32.join(path.win32.dirname(windowsRoot), "other-project", ".git");
+    const review = windowsReviewFixture({ top: windowsRoot, gitDir, indexPath: path.win32.join(outside, "index"), aliases: [[windowsRoot, windowsRoot], [gitDir, gitDir], [outside, outside]] });
+    await assert.rejects(review.listReviewPaths(windowsRoot), error => error.status === "unsupported");
+  });
+  await run("recovery directory cannot alias a path inside the project", async () => {
+    const f = fixture();
+    try {
+      changed(f);
+      const inside = path.join(f.root, "private-scope");
+      const alias = path.join(f.scope, "recovery-alias");
+      fs.mkdirSync(inside);
+      fs.symlinkSync(inside, alias, process.platform === "win32" ? "junction" : "dir");
+      const review = await captureReview(f.root, "file.txt", "worktree");
+      await assert.rejects(mutateReview(review, "revert", alias, () => {}), error => error.status === "blocked" && /Каталог восстановления/.test(error.message));
+      assert.deepEqual(fs.readdirSync(inside), []);
+      assert.match(fs.readFileSync(path.join(f.root, "file.txt"), "utf8"), /after/);
+    } finally { f.dispose(); }
+  });
+  await run("real Git review accepts alternate root spelling and preserves mutation guards", async () => {
+    const f = fixture();
+    try {
+      changed(f);
+      const review = await captureReview(f.root + path.sep, "file.txt", "worktree");
+      native.documents = [{ uri: Uri.file(path.join(f.root, "file.txt")), isDirty: true }];
+      await assert.rejects(mutateReview(review, "stage", f.scope, () => {}), error => error.status === "blocked");
+      assert.match(git(f.root, "show", ":file.txt"), /before/);
+      native.documents = [];
+      await mutateReview(review, "stage", f.scope, () => {});
+      assert.match(git(f.root, "show", ":file.txt"), /after/);
+    } finally { f.dispose(); }
+  });
   await run("Russian feature guidance preserves structured error/status contracts", async () => {
     const f = fixture();
     try {

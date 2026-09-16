@@ -70,18 +70,21 @@ export function isDirty(file: string): boolean {
   return vscode.workspace.textDocuments.some((document) => {
     if (!document.isDirty || document.uri.scheme !== "file") return false;
     if (path.resolve(document.uri.fsPath) === file) return true;
-    try { return fs.realpathSync(document.uri.fsPath) === file; } catch { return false; }
+    try { return fs.realpathSync.native(document.uri.fsPath) === fs.realpathSync.native(file); } catch { return false; }
   });
 }
 
 async function repository(root: string): Promise<{ gitDir: string; indexPath: string }> {
   const top = (await git(root, ["rev-parse", "--show-toplevel"])).toString("utf8").trim();
-  if (!top || fs.realpathSync(top) !== root) {
+  // Git and Node can use different drive casing or long/8.3 names on Windows.
+  if (!top || fs.realpathSync.native(top) !== fs.realpathSync.native(root)) {
     throw new FeatureError("blocked", "Чтобы посмотреть изменения, откройте в IDE корневой каталог Git-репозитория. Репозитории в родительских каталогах здесь не используются.");
   }
-  const gitDir = fs.realpathSync((await git(root, ["rev-parse", "--absolute-git-dir"])).toString("utf8").trim());
+  const gitDir = fs.realpathSync.native((await git(root, ["rev-parse", "--absolute-git-dir"])).toString("utf8").trim());
   const indexPath = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).toString("utf8").trim());
-  if (path.dirname(indexPath) !== gitDir) {
+  // An unborn repository may not have an index yet; its parent must exist.
+  const indexParent = fs.realpathSync.native(path.dirname(indexPath));
+  if (indexParent !== gitDir) {
     throw new FeatureError("unsupported", "Нестандартное расположение индекса Git не поддерживается.");
   }
   const partial = await git(root, ["config", "--get", "extensions.partialClone"], undefined, undefined, true);
@@ -89,7 +92,7 @@ async function repository(root: string): Promise<{ gitDir: string; indexPath: st
   if (partial.length || /\s(?:true|yes|on|1)\s*$/im.test(promisor.toString("utf8"))) {
     throw new FeatureError("unsupported", "Просмотр частично клонированного репозитория отключён: чтение недостающих объектов может потребовать скачивания с сервера.");
   }
-  return { gitDir, indexPath };
+  return { gitDir, indexPath: path.join(indexParent, path.basename(indexPath)) };
 }
 
 async function currentHead(root: string): Promise<string> {
@@ -230,7 +233,7 @@ function assertDiskAndIndex(review: ReviewRevision): string {
 
 export async function mutateReview(review: ReviewRevision, operation: "stage" | "revert", scopeRoot: string, assertContext: () => void): Promise<{ recoveryId?: string }> {
   if (review.layer !== "worktree" || review.mutationReason) throw new FeatureError("unsupported", review.mutationReason ?? "Добавить в индекс или отменить можно только изменения рабочих файлов.");
-  if (operation === "revert" && contained(review.root, scopeRoot)) throw new FeatureError("blocked", "Каталог восстановления должен находиться вне дерева проекта.");
+  if (operation === "revert" && contained(fs.realpathSync.native(review.root), fs.realpathSync.native(scopeRoot))) throw new FeatureError("blocked", "Каталог восстановления должен находиться вне дерева проекта.");
   const repo = await repository(review.root);
   if (repo.gitDir !== review.gitDir || repo.indexPath !== review.indexPath) throw new FeatureError("conflict", "Подключённый репозиторий изменился. Обновите список.");
   assertContext();

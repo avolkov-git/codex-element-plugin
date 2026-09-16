@@ -683,19 +683,20 @@
     const selector = state.focusTarget || presentation.selector;
     state.focusTarget = "";
     cancelAnimationFrame(presentationFrame);
+    // Restore focus with the DOM replacement, before the user can focus another field.
+    const target = selector ? root.querySelector(selector) : null;
+    if (target?.getClientRects().length && !target.disabled && (!state.drawer || target.closest(".settings-drawer"))) {
+      target.focus({ preventScroll: true });
+      if (selector === presentation.selector && presentation.selectionStart !== null && typeof target.setSelectionRange === "function") {
+        const max = String(target.value || "").length;
+        try { target.setSelectionRange(Math.min(presentation.selectionStart, max), Math.min(presentation.selectionEnd ?? presentation.selectionStart, max)); } catch { /* Non-text inputs do not expose a selection range. */ }
+      }
+    } else if (state.drawer) root.querySelector(".settings-drawer")?.focus({ preventScroll: true });
     presentationFrame = requestAnimationFrame(() => {
       const main = root.querySelector(".settings-main");
       if (main) main.scrollTop = presentation.page === state.activePage ? presentation.mainScroll : state.pageScrolls[state.activePage] || 0;
       const body = root.querySelector(".settings-drawer-body");
       if (body) body.scrollTop = presentation.drawer ? presentation.drawerScroll : 0;
-      const target = selector ? root.querySelector(selector) : null;
-      if (target?.getClientRects().length && !target.disabled && (!state.drawer || target.closest(".settings-drawer"))) {
-        target.focus({ preventScroll: true });
-        if (selector === presentation.selector && presentation.selectionStart !== null && typeof target.setSelectionRange === "function") {
-          const max = String(target.value || "").length;
-          try { target.setSelectionRange(Math.min(presentation.selectionStart, max), Math.min(presentation.selectionEnd ?? presentation.selectionStart, max)); } catch { /* Non-text inputs do not expose a selection range. */ }
-        }
-      } else if (state.drawer) root.querySelector(".settings-drawer")?.focus({ preventScroll: true });
       if (state.feedbackToReveal !== null) { revealFeedback(state.feedbackToReveal); state.feedbackToReveal = null; }
     });
   }

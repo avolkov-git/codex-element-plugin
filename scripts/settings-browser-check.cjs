@@ -114,6 +114,18 @@ async function runScenario(browser, scenario, artifacts) {
   assert.equal(await page.evaluate(() => document.activeElement.id), "mcp-name");
   await page.locator("#save-mcp").click();
   assert.match(await page.locator('[data-feedback-scope="mcp-editor"]').innerText(), /Укажите имя/);
+  // A delayed presentation frame must not steal focus or caret from subsequent input.
+  await page.evaluate(() => {
+    document.querySelector("#save-mcp").click();
+    const field = document.querySelector("#mcp-bearer-env");
+    field.focus();
+    field.value = "DRAFT_TOKEN";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.setSelectionRange(5, 5);
+  });
+  await settle(page);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "mcp-bearer-env", "new user focus survives the render frame");
+  assert.equal(await page.locator("#mcp-bearer-env").evaluate(node => node.selectionStart), 5, "new caret survives the render frame");
   await page.locator("#mcp-name").fill("my server");
   await page.locator("#mcp-url").fill("http://127.0.0.1:9901/mcp");
   await page.locator("#mcp-bearer-env").fill("ELEMENT_TOKEN");
