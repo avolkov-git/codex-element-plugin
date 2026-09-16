@@ -23,6 +23,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           lfs: false
+      - name: Fetch the Linux runtime used by startup checks
+        run: |
+          git lfs install --local
+          git lfs pull --include="bin/linux-x64/**" --exclude=""
+          node scripts/verify-runtime-binaries.js --platform linux-x64
       - uses: actions/setup-node@v7
         with:
           node-version: 22
