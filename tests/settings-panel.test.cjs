@@ -303,7 +303,7 @@ test("invalid base context payloads and service failures settle only the dedicat
   assert.match(h.events.at(-1).payload, /изменился/);
 });
 
-test("settings icon preload precedes the app in external and executable inline fallback HTML", () => {
+for (const [platform, paths] of [["posix", path.posix], ["win32", path.win32]]) test(`settings icon preload precedes the app in external and executable inline fallback HTML (${platform})`, () => {
   let options;
   const h = harness({ mocks: { "./webviewHtml": { renderWebviewHtml(value) { options = value; return "fixture"; } } } });
   h.panel.webview.onDidReceiveMessage = () => ({ dispose() {} });
@@ -316,10 +316,14 @@ test("settings icon preload precedes the app in external and executable inline f
     "settings.css": "body { margin: 0; }"
   };
   const { renderWebviewHtml } = loadSource("src/webviewHtml.ts", {
-    vscode: h.mockVscode, fs: { readFileSync: file => scripts[path.basename(file)] }
+    vscode: { ...h.mockVscode, Uri: { ...h.mockVscode.Uri, joinPath: (uri, ...parts) => ({ fsPath: paths.join(uri.fsPath, ...parts) }) } },
+    fs: { readFileSync: file => scripts[paths.basename(file)] }
   });
-  const html = renderWebviewHtml({ ...options, webview: { cspSource: "fixture:", asWebviewUri: uri => ({ toString: () => `fixture:${uri.fsPath}` }) } });
-  assert(html.indexOf('src="fixture:/fixture-extension/media/settings-icons.js"') < html.indexOf('src="fixture:/fixture-extension/media/settings.js"'));
+  const html = renderWebviewHtml({ ...options, webview: { cspSource: "fixture:", asWebviewUri: uri => ({ toString: () => `fixture:${uri.fsPath.replace(/\\/g, "/")}` }) } });
+  const iconIndex = html.indexOf('src="fixture:/fixture-extension/media/settings-icons.js"');
+  const appIndex = html.indexOf('src="fixture:/fixture-extension/media/settings.js"');
+  assert(iconIndex >= 0 && appIndex >= 0, "both external scripts are present");
+  assert(iconIndex < appIndex, "icons load before the settings app");
   const fallback = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)[1];
   const window = { setTimeout() {} };
   vm.runInNewContext(fallback, { window, document: { createElement: () => ({ setAttribute() {} }), head: { appendChild() {} } } });
