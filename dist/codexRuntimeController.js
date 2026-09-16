@@ -35,17 +35,23 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CodexRuntimeController = void 0;
 const child_process_1 = require("child_process");
+const crypto_1 = require("crypto");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const perf_hooks_1 = require("perf_hooks");
 const vscode = __importStar(require("vscode"));
 const codexIntegrationConstants_1 = require("./codexIntegrationConstants");
 const jsonRpcClient_1 = require("./jsonRpcClient");
 const logger_1 = require("./logger");
 const modelCatalog_1 = require("./modelCatalog");
+const experimentalContext_1 = require("./experimentalContext");
 const mcpElicitationPolicy_1 = require("./mcpElicitationPolicy");
 const platform_1 = require("./platform");
 const runtimeProcessManager_1 = require("./runtimeProcessManager");
 const worklogNormalizer_1 = require("./worklogNormalizer");
+const diffPatchStore_1 = require("./diffPatchStore");
+class SteerTurnNotActiveError extends Error {
+}
 class UserCancelledTurnError extends Error {
     constructor() {
         super("Turn cancelled by user.");
@@ -59,6 +65,11 @@ class CodexRuntimeController {
         this.worklogNormalizer = new worklogNormalizer_1.WorklogOperationNormalizer();
         this.integrationsChangedEmitter = new vscode.EventEmitter();
         this.onDidChangeIntegrations = this.integrationsChangedEmitter.event;
+        this.experimentalContextEmitter = new vscode.EventEmitter();
+        this.onDidChangeExperimentalContext = this.experimentalContextEmitter.event;
+        this.experimentalContextView = (0, experimentalContext_1.emptyExperimentalContext)();
+        this.experimentalContextScope = (0, crypto_1.randomUUID)();
+        this.experimentalContextSaving = false;
         this.mcpStartupStatuses = new Map();
         this.modelCatalog = new modelCatalog_1.ModelCatalog(() => this.fetchModelOptions(), (snapshot) => {
             if (snapshot.status === "ready") {
@@ -106,6 +117,147 @@ class CodexRuntimeController {
         this.activeConcreteItemsByChat = new Map();
         this.cancelEpochByChat = new Map();
         this.restoreAttempted = false;
+        this.pressure = { notifications: 0, streamNotifications: 0, ignoredNotifications: 0, stdoutLines: 0, stdoutBytes: 0, maxLineBytes: 0, maxHandleMs: 0, diffFailures: 0 };
+    }
+    getMetrics() { return { ...this.pressure, pid: this.processManager.pid, running: this.processManager.isRunning }; }
+    getExperimentalContextView() {
+        const view = this.experimentalContextView;
+        const busy = this.hasActiveContextWork();
+        this.experimentalContextLastBusy = busy;
+        return { ...view, canChange: view.canChange && !busy && !this.experimentalContextSaving,
+            message: busy && view.status === "ready" ? "Изменить режим можно после завершения всех ответов." : view.message };
+    }
+    hasActiveContextWork() {
+        return this.promptStarts.size > 0 || this.queuedDispatches.size > 0 || this.hiddenPlannerRunsByThread.size > 0
+            || this.options.state.getSidebarSnapshot().chats.some(chat => ["running", "waitingApproval", "cancelling"].includes(chat.status));
+    }
+    notifyExperimentalContextAvailability() {
+        if (this.experimentalContextView.status !== "ready")
+            return;
+        const busy = this.hasActiveContextWork();
+        if (busy === this.experimentalContextLastBusy)
+            return;
+        this.experimentalContextLastBusy = busy;
+        this.experimentalContextEmitter.fire();
+    }
+    refreshExperimentalContext() {
+        if (this.experimentalContextRead)
+            return this.experimentalContextRead;
+        const epoch = this.lifecycleEpoch;
+        const read = (async () => {
+            this.experimentalContextView = { ...this.experimentalContextView, status: "checking", canChange: false, message: "Проверяем доступность режима..." };
+            this.experimentalContextEmitter.fire();
+            try {
+                await this.ensureBackendProcess();
+                this.assertLifecycleEpoch(epoch);
+                const rpc = this.requireRpcClient();
+                const scope = this.experimentalContextScope;
+                const request = async (method, params) => {
+                    this.assertLifecycleEpoch(epoch);
+                    if (rpc !== this.rpcClient)
+                        throw new Error("Подключение Codex изменилось. Повторите проверку.");
+                    const result = await rpc.request(method, params, 10000);
+                    this.assertLifecycleEpoch(epoch);
+                    if (rpc !== this.rpcClient || scope !== this.experimentalContextScope)
+                        throw new Error("Подключение Codex изменилось. Повторите проверку.");
+                    return result;
+                };
+                const view = await (0, experimentalContext_1.readExperimentalContext)(request, scope);
+                this.assertLifecycleEpoch(epoch);
+                if (rpc !== this.rpcClient || scope !== this.experimentalContextScope)
+                    throw new Error("Пользователь IDE изменился.");
+                this.experimentalContextView = view;
+            }
+            catch (error) {
+                if (epoch !== this.lifecycleEpoch)
+                    throw error;
+                this.options.logger.warn(`Experimental context check failed: ${normalizeErrorMessage(error)}`);
+                this.experimentalContextView = { ...this.experimentalContextView, status: "error", canChange: false,
+                    message: "Не удалось проверить экспериментальный контекст. Повторите проверку; подробности записаны в логи Codex." };
+            }
+            this.experimentalContextEmitter.fire();
+            return this.getExperimentalContextView();
+        })();
+        this.experimentalContextRead = read;
+        void read.finally(() => { if (this.experimentalContextRead === read)
+            this.experimentalContextRead = undefined; }).catch(() => { });
+        return read;
+    }
+    async saveExperimentalContext(enabled, scopeId, revision) {
+        if (this.experimentalContextSaving || this.hasActiveContextWork())
+            throw new Error("Дождитесь завершения всех ответов и повторите изменение настройки.");
+        if (!scopeId || scopeId !== this.experimentalContextScope || revision !== this.experimentalContextView.revision) {
+            throw new Error("Пользователь или настройки Codex изменились. Повторите проверку перед сохранением.");
+        }
+        this.experimentalContextSaving = true;
+        this.experimentalContextEmitter.fire();
+        let saved = false;
+        try {
+            const epoch = this.lifecycleEpoch;
+            const view = await this.refreshExperimentalContext();
+            this.assertLifecycleEpoch(epoch);
+            if (scopeId !== this.experimentalContextScope || view.revision !== revision)
+                throw new Error("Настройки изменены другой IDE. Повторите проверку.");
+            if (view.status !== "ready" || (enabled && !view.eligible))
+                throw new Error(view.message);
+            if (this.hasActiveContextWork())
+                throw new Error("Дождитесь завершения всех ответов.");
+            const rpc = this.requireRpcClient();
+            await (0, experimentalContext_1.writeExperimentalContext)(async (method, params) => {
+                this.assertLifecycleEpoch(epoch);
+                const result = await rpc.request(method, params, 10000);
+                this.assertLifecycleEpoch(epoch);
+                if (rpc !== this.rpcClient || scopeId !== this.experimentalContextScope)
+                    throw new Error("Пользователь IDE изменился.");
+                return result;
+            }, enabled, revision);
+            saved = true;
+            this.assertLifecycleEpoch(epoch);
+            if (rpc !== this.rpcClient || scopeId !== this.experimentalContextScope)
+                throw new Error("Пользователь IDE изменился.");
+            this.options.logger.info(`Experimental context preference saved: enabled=${enabled}; restarting idle runtime.`);
+            const restartEpoch = epoch + 1;
+            const stopping = this.stop();
+            const restartScope = this.experimentalContextScope;
+            await stopping;
+            this.assertLifecycleEpoch(restartEpoch);
+            if (restartScope !== this.experimentalContextScope)
+                throw new Error("Пользователь IDE изменился.");
+            await this.ensureBackendProcess();
+            this.assertLifecycleEpoch(restartEpoch);
+            const updated = await this.refreshExperimentalContext();
+            this.assertLifecycleEpoch(restartEpoch);
+            if (updated.status !== "ready" || updated.enabled !== enabled)
+                throw new Error("Не удалось подтвердить применение настройки после перезапуска.");
+            return updated;
+        }
+        catch (error) {
+            this.options.logger.warn(`Experimental context save failed: ${normalizeErrorMessage(error)}`);
+            throw new Error(saved
+                ? "Выбор сохранён, но применение не подтверждено. Повторите проверку; история диалогов сохранена."
+                : error instanceof Error && /^(Дождитесь|Пользователь|Настройки|Для этого|Выбор сохранён|Версия)/.test(error.message)
+                    ? error.message : "Не удалось сохранить настройку контекста. Повторите проверку; подробности записаны в логи Codex.");
+        }
+        finally {
+            this.experimentalContextSaving = false;
+            this.experimentalContextEmitter.fire();
+        }
+    }
+    recordDiff(chatId, turnId, diff) {
+        if (!diff)
+            return;
+        try {
+            const files = this.options.diffPatches?.capture(diff, `${chatId}:${turnId ?? "current"}`) ?? (0, diffPatchStore_1.summarizePatch)(diff);
+            if (turnId)
+                this.fileChangingTurnIds.add(turnId);
+            this.options.state.addOrUpdateDiffItem(chatId, turnId ?? "", "Изменения", files);
+            this.notifyChatChange(chatId);
+        }
+        catch {
+            this.pressure.diffFailures++;
+            if (this.pressure.diffFailures === 1)
+                this.options.logger.warn("Runtime patch exceeded the recording limit; use the project review for current file changes.");
+        }
     }
     async restoreAccountIfAvailable() {
         const epoch = this.lifecycleEpoch;
@@ -213,7 +365,7 @@ class CodexRuntimeController {
             this.options.logger.info("account/login/start apiKey accepted.");
             this.updateAuth({
                 status: "checking",
-                message: "API key передан. Читаем account state...",
+                message: "Ключ API передан. Проверяем учётную запись...",
                 apiKey: { status: "awaiting" }
             });
             await this.readAccount();
@@ -288,7 +440,7 @@ class CodexRuntimeController {
     async openDeviceCodeUrl() {
         const url = this.options.state.getSidebarSnapshot().auth.deviceCode.verificationUrl;
         if (!url) {
-            this.updateAuth({ message: "Device Code URL еще не получен." });
+            this.updateAuth({ message: "Ссылка для входа по коду устройства ещё не получена." });
             return;
         }
         try {
@@ -302,16 +454,16 @@ class CodexRuntimeController {
     async copyDeviceCode() {
         const code = this.options.state.getSidebarSnapshot().auth.deviceCode.userCode;
         if (!code) {
-            this.updateAuth({ message: "Device Code еще не получен." });
+            this.updateAuth({ message: "Код устройства ещё не получен." });
             return;
         }
         await vscode.env.clipboard.writeText(code);
-        this.updateAuth({ message: "Device Code скопирован." });
+        this.updateAuth({ message: "Код устройства скопирован." });
     }
     async copyDeviceCodeUrl() {
         const url = this.options.state.getSidebarSnapshot().auth.deviceCode.verificationUrl;
         if (!url) {
-            this.updateAuth({ message: "Device Code URL еще не получен." });
+            this.updateAuth({ message: "Ссылка для входа по коду устройства ещё не получена." });
             return;
         }
         await vscode.env.clipboard.writeText(url);
@@ -320,7 +472,7 @@ class CodexRuntimeController {
     async copyDeviceCodeBundle() {
         const deviceCode = this.options.state.getSidebarSnapshot().auth.deviceCode;
         if (!deviceCode.verificationUrl || !deviceCode.userCode) {
-            this.updateAuth({ message: "Device Code еще не получен." });
+            this.updateAuth({ message: "Код устройства ещё не получен." });
             return;
         }
         await vscode.env.clipboard.writeText([
@@ -340,11 +492,14 @@ class CodexRuntimeController {
     async sendPromptCore(chatId, prompt, mode, transcriptText, explicitContextBlocks, options) {
         const runtimeEpoch = this.runtimeEpoch;
         const cancelEpoch = this.cancelEpoch(chatId);
+        if (this.experimentalContextSaving)
+            throw new Error("Сохраняется режим контекста. Дождитесь завершения и отправьте сообщение снова.");
         if (this.promptStarts.has(chatId) || this.backendStopPromise || this.disposed) {
-            throw new Error("A prompt is already dispatching or the runtime is stopping.");
+            throw new Error("Запрос уже отправляется или сервер Codex останавливается. Дождитесь завершения.");
         }
         const dispatchToken = Symbol(chatId);
         this.promptStarts.set(chatId, dispatchToken);
+        this.notifyExperimentalContextAvailability();
         try {
             const trimmed = prompt.trim();
             const attachments = await this.options.attachments.resolve(options.attachments ?? []);
@@ -359,10 +514,10 @@ class CodexRuntimeController {
                 throw new Error("Чат не найден.");
             }
             if (chat.archivedAt) {
-                throw new Error("Cannot send to an archived chat.");
+                throw new Error("Нельзя отправить сообщение в архивный диалог. Сначала восстановите его.");
             }
             if (["running", "waitingApproval", "cancelling"].includes(chat.status)) {
-                throw new Error("A turn is already active in this chat.");
+                throw new Error("В этом диалоге уже выполняется запрос.");
             }
             this.latestChatId = chatId;
             if (options.addUserMessage) {
@@ -504,6 +659,7 @@ class CodexRuntimeController {
         finally {
             if (this.promptStarts.get(chatId) === dispatchToken) {
                 this.promptStarts.delete(chatId);
+                this.notifyExperimentalContextAvailability();
             }
         }
     }
@@ -711,14 +867,16 @@ class CodexRuntimeController {
         if (readOnlyThreadId) {
             await probe("thread/resume full payload", () => rpcClient.request("thread/resume", {
                 threadId: readOnlyThreadId,
+                excludeTurns: true,
                 cwd,
                 approvalPolicy: "never",
                 approvalsReviewer: "user",
                 sandbox: "read-only",
                 model: null
             }, 10000), (value) => `thread=${extractThreadId(value) || readOnlyThreadId}; payload=${describePayloadShape(value)}`);
-            await probe("thread/resume threadId-only payload", () => rpcClient.request("thread/resume", {
-                threadId: readOnlyThreadId
+            await probe("thread/resume minimal payload", () => rpcClient.request("thread/resume", {
+                threadId: readOnlyThreadId,
+                excludeTurns: true
             }, 10000), (value) => `thread=${extractThreadId(value) || readOnlyThreadId}; payload=${describePayloadShape(value)}`);
         }
         else {
@@ -781,7 +939,11 @@ class CodexRuntimeController {
         this.options.logger.info(formatCapabilityProbeReport(rows, Date.now() - startedAt));
     }
     async planDocsRetrieval(request) {
+        if (this.experimentalContextSaving)
+            throw new Error("Сохраняется режим контекста. Повторите запрос после завершения настройки.");
         await this.ensureBackendProcess();
+        if (this.experimentalContextSaving)
+            throw new Error("Сохраняется режим контекста. Повторите запрос после завершения настройки.");
         const rpcClient = this.requireRpcClient();
         const cwd = resolveWorkspaceCwd(this.options.context);
         const plannerPrompt = buildDocsPlannerPrompt(request);
@@ -794,6 +956,8 @@ class CodexRuntimeController {
             serviceName: "codex_element_docs_planner",
             model: null
         }, request.timeoutMs);
+        if (this.experimentalContextSaving)
+            throw new Error("Сохраняется режим контекста. Повторите запрос после завершения настройки.");
         const threadId = extractThreadId(threadResult);
         if (!threadId) {
             throw new Error("docs planner thread/start не вернул thread.id.");
@@ -811,6 +975,7 @@ class CodexRuntimeController {
                 }, request.timeoutMs)
             };
             this.hiddenPlannerRunsByThread.set(threadId, run);
+            this.notifyExperimentalContextAvailability();
             void (async () => {
                 try {
                     const turnResult = await rpcClient.request("turn/start", {
@@ -985,15 +1150,133 @@ class CodexRuntimeController {
         }
         return moved;
     }
-    async steerTurn(chatId, prompt, attachments = []) {
+    async respondToQuestion(chatId, messageId, questionId, answer) {
+        const result = { messageId, questionId, accepted: false };
+        const epoch = this.runtimeEpoch;
+        const historyGeneration = this.options.state.getHistoryGeneration();
+        const cancelEpoch = this.cancelEpoch(chatId);
+        const token = Symbol("question-response");
+        let startingMode;
+        try {
+            if (this.experimentalContextSaving)
+                throw new Error("Сохраняется режим контекста. Дождитесь завершения и отправьте ответ снова.");
+            if (typeof answer !== "string" || !answer.trim() || Buffer.byteLength(answer.trim(), "utf8") > 16 * 1024) {
+                throw new Error("Введите непустой ответ не длиннее 16 КиБ UTF-8.");
+            }
+            const target = this.options.state.getChatQuestion(chatId, messageId, questionId);
+            // Older clarification items have no source IDs. Freeze their current thread for this dispatch only.
+            const legacyUnbound = target?.kind === "clarification" && target.backendThreadId === undefined && target.backendItemId === undefined;
+            const threadId = legacyUnbound ? this.options.state.getChat(chatId)?.backendThreadId : target?.backendThreadId;
+            const assertOwner = () => {
+                const chat = this.options.state.getChat(chatId);
+                const question = this.options.state.getChatQuestion(chatId, messageId, questionId);
+                if (epoch !== this.runtimeEpoch || historyGeneration !== this.options.state.getHistoryGeneration() || this.disposed || this.backendStopPromise
+                    || this.cancelEpoch(chatId) !== cancelEpoch || this.cancellingChatIds.has(chatId))
+                    throw new Error("Сеанс изменился или запрос отменен. Ответ не отправлен.");
+                if (!target || !threadId || (!legacyUnbound && !target.backendItemId) || !question || !chat || chat.archivedAt
+                    || chat.backendThreadId !== threadId || question.backendThreadId !== target.backendThreadId || question.backendItemId !== target.backendItemId
+                    || question.kind !== target.kind || question.turnId !== target.turnId || question.title !== target.title
+                    || (this.activeThreadChatId.has(threadId) && this.activeThreadChatId.get(threadId) !== chatId)
+                    || (chat.backendWorkspacePath && !sameWorkspacePath(chat.backendWorkspacePath, resolveWorkspaceCwd(this.options.context)))) {
+                    throw new Error("Вопрос недоступен, находится в архиве или относится к другому серверному диалогу.");
+                }
+                if (question.answer !== undefined)
+                    throw new Error("На этот вопрос уже отправлен ответ.");
+                if (chat.status === "cancelling" || (target.turnId && this.cancelledTurnIds.has(target.turnId)))
+                    throw new Error("Запрос с этим вопросом отменен.");
+                if (target.kind === "clarification" && chat.status === "running" && chat.activeRunMode !== "planning") {
+                    throw new Error("Дождитесь завершения текущего выполнения, чтобы продолжить уточнение плана.");
+                }
+            };
+            assertOwner();
+            if (this.promptStarts.has(chatId) || this.queuedDispatches.has(chatId))
+                throw new Error("В этом диалоге уже отправляется сообщение. Дождитесь завершения.");
+            this.promptStarts.set(chatId, token);
+            this.notifyExperimentalContextAvailability();
+            const normalized = answer.trim();
+            const prompt = `Вопрос: ${target.title}\nОтвет: ${normalized}`;
+            const mode = target.kind === "clarification" ? "planning" : "normal";
+            let acceptedTurnId;
+            if (this.options.state.getChat(chatId)?.status === "running") {
+                try {
+                    acceptedTurnId = await this.steerTurn(chatId, prompt, [], assertOwner);
+                }
+                catch (error) {
+                    // Only this local preflight failure guarantees that no steer RPC was sent.
+                    if (!(error instanceof SteerTurnNotActiveError))
+                        throw error;
+                    assertOwner();
+                }
+            }
+            if (!acceptedTurnId) {
+                await this.ensureBackendProcess();
+                assertOwner();
+                await this.ensureAuthenticatedForTurn();
+                assertOwner();
+                const assertIdle = () => {
+                    assertOwner();
+                    const chat = this.options.state.getChat(chatId);
+                    if (chat.activeTurnId || (chat.status !== "idle" && chat.status !== "error"))
+                        throw new Error("Состояние запроса изменилось. Повторите отправку ответа.");
+                };
+                assertIdle();
+                this.activeThreadChatId.set(threadId, chatId);
+                if (!this.loadedThreadIds.has(threadId)) {
+                    // A question cannot migrate to a recreated thread when resume fails.
+                    await this.resumeBackendThread(chatId, getRunAccessMode(this.options.state.getChat(chatId).accessMode, mode), assertIdle);
+                    assertIdle();
+                }
+                const accepted = await this.startTurnWithFallback(chatId, prompt, mode, [], { assertOwner, beforeRequest: () => {
+                        assertIdle();
+                        startingMode = mode;
+                        this.options.state.updateChat(chatId, { activeRunMode: mode }, "immediate");
+                    } });
+                assertOwner();
+                acceptedTurnId = extractTurnId(accepted);
+                if (!acceptedTurnId)
+                    throw new Error("Сервер не подтвердил принятие ответа: отсутствует turn.id.");
+                const current = this.options.state.getChat(chatId);
+                if (!this.completedTurnIds.has(acceptedTurnId) && (!current.activeTurnId || current.activeTurnId === acceptedTurnId)) {
+                    this.activeTurnChatId.set(acceptedTurnId, chatId);
+                    this.options.state.updateChat(chatId, { activeTurnId: acceptedTurnId, status: "running", activeRunMode: mode });
+                }
+                this.options.state.addTranscriptItem(chatId, "user", prompt, "immediate", acceptedTurnId);
+            }
+            assertOwner();
+            if (!this.options.state.answerChatQuestion(chatId, messageId, questionId, normalized))
+                throw new Error("Вопрос уже закрыт.");
+            this.notifyChatChange(chatId);
+            return { ...result, accepted: true };
+        }
+        catch (error) {
+            return { ...result, error: error instanceof UserCancelledTurnError ? "Запрос отменен. Ответ не принят."
+                    : error instanceof Error ? error.message : "Не удалось отправить ответ на вопрос." };
+        }
+        finally {
+            if (this.promptStarts.get(chatId) === token) {
+                this.promptStarts.delete(chatId);
+                if (epoch === this.runtimeEpoch && historyGeneration === this.options.state.getHistoryGeneration()) {
+                    const chat = this.options.state.getChat(chatId);
+                    if (startingMode && chat?.activeRunMode === startingMode && !chat.activeTurnId && (chat.status === "idle" || chat.status === "error")) {
+                        this.options.state.updateChat(chatId, { activeRunMode: null }, "immediate");
+                    }
+                    if (chat?.status === "idle")
+                        this.startNextQueuedPrompt(chatId);
+                }
+                this.notifyExperimentalContextAvailability();
+            }
+        }
+    }
+    async steerTurn(chatId, prompt, attachments = [], assertOwner) {
         const epoch = this.runtimeEpoch;
         const expectedTurnId = this.options.state.getChat(chatId)?.activeTurnId;
         const normalized = prompt.trim();
         const validatedAttachments = await this.options.attachments.resolve(attachments);
         this.assertRuntimeEpoch(epoch);
+        assertOwner?.();
         const chat = this.options.state.getChat(chatId);
         if ((!normalized && !validatedAttachments.length) || !chat?.backendThreadId || !chat.activeTurnId || chat.activeTurnId !== expectedTurnId || chat.status !== "running" || chat.archivedAt) {
-            throw new Error("Рекомендацию можно отправить только во время активного запроса.");
+            throw new SteerTurnNotActiveError("Рекомендацию можно отправить только во время активного запроса.");
         }
         const input = [
             ...(normalized ? [{ type: "text", text: normalized, text_elements: [] }] : []),
@@ -1002,18 +1285,22 @@ class CodexRuntimeController {
                 : { type: "mention", name: attachment.displayPath || attachment.name, path: attachment.path })
         ];
         const clientUserMessageId = `steer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        await this.requireRpcClient().request("turn/steer", {
+        const result = await this.requireRpcClient().request("turn/steer", {
             threadId: chat.backendThreadId,
             expectedTurnId: chat.activeTurnId,
             clientUserMessageId,
             input
         }, 15000);
         this.assertRuntimeEpoch(epoch);
+        assertOwner?.();
         if (this.options.state.getChat(chatId)?.backendThreadId !== chat.backendThreadId)
-            return;
+            throw new Error("Серверный диалог изменился во время отправки.");
+        if (!isRecord(result) || getString(result.turnId) !== chat.activeTurnId)
+            throw new Error("Сервер не подтвердил принятие рекомендации для ожидаемого запроса.");
         this.options.state.addTranscriptItem(chatId, "user", normalized, "immediate", chat.activeTurnId, validatedAttachments);
         this.options.logger.info(`turn/steer accepted: chat=${chatId}; turn=${chat.activeTurnId}.`);
         this.notifyChatChange(chatId);
+        return result.turnId;
     }
     async readAccount() {
         if (!this.processManager.isRunning) {
@@ -1092,7 +1379,7 @@ class CodexRuntimeController {
             await this.readAccount();
         }
         if (this.options.state.getSidebarSnapshot().auth.status !== "authenticated") {
-            throw new Error("Codex не авторизован. Сначала выполните DEVICE CODE или API KEY login.");
+            throw new Error("Вы не вошли в Codex. Войдите по коду устройства или укажите ключ API.");
         }
     }
     async ensureBackendThreadReady(chatId, requestedAccessMode) {
@@ -1101,11 +1388,6 @@ class CodexRuntimeController {
         if (chat?.backendThreadId && chat.backendWorkspacePath && !sameWorkspacePath(chat.backendWorkspacePath, cwd)) {
             this.activeThreadChatId.delete(chat.backendThreadId);
             this.loadedThreadIds.delete(chat.backendThreadId);
-            this.options.state.updateChat(chatId, {
-                backendThreadId: null, backendThreadAccessMode: null, backendContextRestored: false, backendWorkspacePath: undefined
-            }, "immediate");
-            await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
-            return;
         }
         if (!chat?.backendThreadId) {
             await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
@@ -1130,10 +1412,13 @@ class CodexRuntimeController {
         }
         catch (error) {
             this.options.logger.warn(`thread/resume failed: ${normalizeErrorMessage(error)}`);
-            return false;
+            if (isResumeThreadNotFoundError(error))
+                return false;
+            throw error;
         }
     }
-    async resumeBackendThread(chatId, accessOverride) {
+    async resumeBackendThread(chatId, accessOverride, assertOwner) {
+        assertOwner?.();
         const epoch = this.runtimeEpoch;
         const rpcClient = this.requireRpcClient();
         const chat = this.options.state.getChat(chatId);
@@ -1141,14 +1426,14 @@ class CodexRuntimeController {
             throw new Error("thread/resume skipped: chat has no backend thread.");
         }
         const cwd = resolveWorkspaceCwd(this.options.context);
-        if (chat.backendWorkspacePath && !sameWorkspacePath(chat.backendWorkspacePath, cwd)) {
-            throw new Error("Refusing to resume a backend conversation from another workspace path.");
-        }
+        const relocated = Boolean(chat.backendWorkspacePath && !sameWorkspacePath(chat.backendWorkspacePath, cwd));
         const accessMode = accessOverride ?? chat.accessMode;
         const model = chat.modelId ?? null;
         const serviceTier = this.resolveServiceTier(chatId);
         const fullPayload = {
             threadId: chat.backendThreadId,
+            // The UI has its own transcript; replaying all turns can exceed the RPC line limit.
+            excludeTurns: true,
             cwd,
             approvalPolicy: getApprovalPolicy(accessMode),
             approvalsReviewer: "user",
@@ -1161,19 +1446,30 @@ class CodexRuntimeController {
             result = await rpcClient.request("thread/resume", fullPayload, 10000);
         }
         catch (error) {
-            if (!isInvalidRequestError(error)) {
+            assertOwner?.();
+            if (!isInvalidRequestError(error) || relocated) {
                 throw error;
             }
-            this.options.logger.warn(`thread/resume full payload rejected; retrying with threadId only: ${normalizeErrorMessage(error)}`);
-            result = await rpcClient.request("thread/resume", { threadId: chat.backendThreadId }, 10000);
+            this.options.logger.warn(`thread/resume full payload rejected; retrying without configuration overrides: ${normalizeErrorMessage(error)}`);
+            result = await rpcClient.request("thread/resume", { threadId: chat.backendThreadId, excludeTurns: true }, 10000);
         }
         const threadId = extractThreadId(result) || chat.backendThreadId;
         this.assertRuntimeEpoch(epoch);
+        assertOwner?.();
+        if (threadId !== chat.backendThreadId)
+            throw new Error("Сервер возобновил другой диалог. Ответ не отправлен.");
+        if (relocated) {
+            const thread = isRecord(result) && isRecord(result.thread) ? result.thread : undefined;
+            const returnedCwd = isRecord(result) && typeof result.cwd === "string" ? result.cwd : thread?.cwd;
+            if (typeof returnedCwd !== "string" || !sameWorkspacePath(returnedCwd, cwd)) {
+                throw new Error("Сервер не подтвердил каталог нового приложения. История сохранена; ответ не отправлен.");
+            }
+        }
         this.options.state.updateChat(chatId, { backendThreadId: threadId, backendThreadAccessMode: accessMode, backendWorkspacePath: cwd });
         this.activeThreadChatId.set(threadId, chatId);
         this.loadedThreadIds.add(threadId);
         this.notifyChatChange(chatId);
-        this.options.logger.info(`thread/resume completed: thread=${threadId}.`);
+        this.options.logger.info(`thread/resume completed: thread=${threadId}; excludeTurns=true.`);
     }
     async startBackendThread(chatId, accessOverride) {
         const epoch = this.runtimeEpoch;
@@ -1218,11 +1514,14 @@ class CodexRuntimeController {
         }
     }
     async startTurn(chatId, prompt, mode, explicitContextBlocks = [], options = {}) {
+        if (this.experimentalContextSaving)
+            throw new Error("Сохраняется режим контекста. Дождитесь завершения и отправьте сообщение снова.");
+        options.assertOwner?.();
         const epoch = this.runtimeEpoch;
         const cancelEpoch = this.cancelEpoch(chatId);
         const chat = this.options.state.getChat(chatId);
         if (!chat?.backendThreadId) {
-            throw new Error("Backend thread не готов.");
+            throw new Error("Серверный диалог ещё не готов.");
         }
         const cwd = resolveWorkspaceCwd(this.options.context);
         const turnContext = await this.options.contextOrchestrator.buildTurnContext({
@@ -1240,6 +1539,7 @@ class CodexRuntimeController {
             attachments: options.attachments
         });
         this.throwIfCancelled(chatId, cancelEpoch, epoch);
+        options.beforeRequest?.();
         const historySeed = chat.backendContextRestored === false ? this.options.state.getConversationHistorySeed(chatId) : "";
         const input = historySeed ? [{
                 type: "text", text_elements: [],
@@ -1260,6 +1560,7 @@ class CodexRuntimeController {
             ...(!options.omitServiceTier ? { serviceTier } : {})
         }, 30000);
         this.assertRuntimeEpoch(epoch);
+        options.assertOwner?.();
         if (extractTurnId(result) && chat.backendContextRestored === false) {
             this.options.state.updateChat(chatId, { backendContextRestored: true }, "immediate");
         }
@@ -1269,12 +1570,12 @@ class CodexRuntimeController {
     async forkChat(chatId, title) {
         const source = this.options.state.getChat(chatId);
         if (!source || source.archivedAt || source.status !== "idle" || source.activeTurnId || !source.backendThreadId || this.promptStarts.has(chatId) || this.queuedDispatches.has(chatId)) {
-            throw new Error("Fork requires an idle chat with an existing backend conversation.");
+            throw new Error("Для разветвления нужен диалог с серверной историей и без выполняющегося запроса.");
         }
         const epoch = this.runtimeEpoch;
         const cwd = resolveWorkspaceCwd(this.options.context);
         if (source.backendWorkspacePath && !sameWorkspacePath(source.backendWorkspacePath, cwd)) {
-            throw new Error("Continue this chat once in the current workspace before forking its backend history.");
+            throw new Error("Перед разветвлением отправьте сообщение в этом диалоге из текущей рабочей области.");
         }
         const cancelEpoch = this.cancelEpoch(chatId);
         await this.ensureBackendProcess();
@@ -1287,12 +1588,12 @@ class CodexRuntimeController {
             sandbox: getThreadSandbox(source.accessMode),
             model: source.modelId,
             serviceTier: this.resolveServiceTier(chatId),
-            excludeTurns: false
+            excludeTurns: true
         }, 15000);
         this.throwIfCancelled(chatId, cancelEpoch, epoch);
         const current = this.options.state.getChat(chatId);
         if (current?.backendThreadId !== source.backendThreadId || current.status !== "idle") {
-            throw new Error("Source chat changed while the backend fork was being created.");
+            throw new Error("Исходный диалог изменился во время разветвления. Повторите действие.");
         }
         const threadId = extractThreadId(result);
         if (!threadId || threadId === source.backendThreadId) {
@@ -1608,6 +1909,10 @@ class CodexRuntimeController {
         }
         this.runtimeEpoch += 1;
         this.lifecycleEpoch += 1;
+        this.experimentalContextScope = (0, crypto_1.randomUUID)();
+        this.experimentalContextView = (0, experimentalContext_1.emptyExperimentalContext)();
+        this.experimentalContextRead = undefined;
+        this.experimentalContextEmitter.fire();
         this.backendStartPromise = undefined;
         this.promptStarts.clear();
         for (const chat of this.options.state.getSidebarSnapshot().chats) {
@@ -1641,10 +1946,12 @@ class CodexRuntimeController {
         return stopping;
     }
     async stopForIdentityChange() {
+        // Invalidate pending settings writes even when another stop is already in progress.
+        this.experimentalContextScope = (0, crypto_1.randomUUID)();
         await this.stop();
         this.restoreAttempted = false;
         this.options.state.setAuth({
-            status: "notAuthenticated", accountType: "none", accountLabel: "", profileLabel: "-", message: "Identity changed; reconnect Codex.",
+            status: "notAuthenticated", accountType: "none", accountLabel: "", profileLabel: "-", message: "Пользователь или проект IDE изменился. Подключите Codex заново.",
             deviceCode: { status: "idle", loginId: "", verificationUrl: "", userCode: "" }, apiKey: { status: "idle" }
         });
         this.options.onDidChange();
@@ -1728,11 +2035,12 @@ class CodexRuntimeController {
         this.cleanupThinking();
         this.rpcClient?.dispose();
         this.integrationsChangedEmitter.dispose();
+        this.experimentalContextEmitter.dispose();
         this.processManager.dispose();
     }
     async ensureBackendProcess() {
         if (this.disposed || this.backendStopPromise) {
-            throw new Error("Codex runtime is stopping or disposed.");
+            throw new Error("Сервер Codex останавливается или уже остановлен.");
         }
         if (this.backendStartPromise) {
             return this.backendStartPromise;
@@ -1805,7 +2113,8 @@ class CodexRuntimeController {
             this.options.logger.info(`Runtime ripgrep configured: path=${toolEnvResult.ripgrepPath}; pathPatched=${pathPatched ? "yes" : "no"}.`);
         }
         const cwd = resolveRuntimeCwd(this.options.context, codexHome);
-        const browserLaunch = this.options.getManagedBrowserLaunch?.();
+        const browserLaunch = await this.options.getManagedBrowserLaunch?.();
+        this.assertLifecycleEpoch(epoch);
         const args = ["app-server", ...(browserLaunch?.args ?? [])];
         this.options.state.setRuntime({
             status: "starting",
@@ -1879,7 +2188,7 @@ class CodexRuntimeController {
         const rpcClient = new jsonRpcClient_1.JsonRpcClient((line) => {
             this.assertRuntimeEpoch(epoch);
             if (this.rpcClient !== rpcClient) {
-                throw new Error("Stale app-server transport.");
+                throw new Error("Подключение к серверу Codex устарело.");
             }
             const payload = JSON.parse(line);
             if (!payload.method && (typeof payload.id === "string" || typeof payload.id === "number") && this.ignoredServerResponses.delete(rpcIdKey(payload.id))) {
@@ -1901,7 +2210,7 @@ class CodexRuntimeController {
             this.handleNotification(notification); }, (request) => {
             this.assertRuntimeEpoch(epoch);
             if (this.rpcClient !== rpcClient)
-                throw new Error("Stale app-server request.");
+                throw new Error("Запрос относится к предыдущему подключению к серверу Codex.");
             return this.handleServerRequest(request);
         });
         this.rpcClient?.dispose();
@@ -1920,7 +2229,13 @@ class CodexRuntimeController {
             onStdout: (line) => {
                 if (epoch !== this.runtimeEpoch || this.rpcClient !== rpcClient)
                     return;
+                const bytes = Buffer.byteLength(line);
+                this.pressure.stdoutLines++;
+                this.pressure.stdoutBytes += bytes;
+                this.pressure.maxLineBytes = Math.max(this.pressure.maxLineBytes, bytes);
+                const started = perf_hooks_1.performance.now();
                 const handled = rpcClient.handleLine(line);
+                this.pressure.maxHandleMs = Math.max(this.pressure.maxHandleMs, perf_hooks_1.performance.now() - started);
                 if (!handled) {
                     this.options.logger.runtime("info", `stdout: ${line}`);
                 }
@@ -2042,6 +2357,7 @@ class CodexRuntimeController {
                 this.hiddenPlannerRunsByItem.delete(itemId);
             }
         }
+        this.notifyExperimentalContextAvailability();
     }
     rejectAllHiddenPlannerRuns(error) {
         for (const run of new Set(this.hiddenPlannerRunsByThread.values())) {
@@ -2052,10 +2368,12 @@ class CodexRuntimeController {
         this.hiddenPlannerRunsByItem.clear();
     }
     handleNotification(notification) {
+        this.pressure.notifications++;
+        if (/delta$|tokenUsage\/updated|mcpToolCall\/progress/i.test(notification.method))
+            this.pressure.streamNotifications++;
         if (this.handleHiddenPlannerNotification(notification)) {
             return;
         }
-        this.options.logger.info(`notification ${notification.method}`);
         const notificationTurnId = extractTurnId(notification.params);
         if (notificationTurnId && this.completedTurnIds.has(notificationTurnId)) {
             return;
@@ -2065,7 +2383,7 @@ class CodexRuntimeController {
                 this.cancelledTurnIds.delete(notificationTurnId);
                 this.rememberCompletedTurn(notificationTurnId);
             }
-            this.options.logger.info(`Ignored notification for cancelled turn ${notificationTurnId}: ${notification.method}.`);
+            this.pressure.ignoredNotifications++;
             return;
         }
         if (notification.method === "skills/changed"
@@ -2130,7 +2448,6 @@ class CodexRuntimeController {
             const chatId = usage ? this.findChatIdForNotification(notification.params) : undefined;
             if (usage && chatId) {
                 this.setContextWindow(chatId, usage.contextWindow);
-                this.options.logger.info(`Thread token usage updated: thread=${usage.threadId || "-"}; contextInputTokens=${usage.contextWindow.usedTokens ?? "-"}; modelContextWindow=${usage.contextWindow.maxTokens ?? "-"}; contextPercent=${usage.contextWindow.usedPercent ?? "-"}; threadTotalTokens=${usage.threadTotalTokens ?? "-"}.`);
             }
             else if (!usage) {
                 this.options.logger.warn(`Thread token usage ignored: unsupported payload shape ${describePayloadShape(notification.params)}.`);
@@ -2167,6 +2484,7 @@ class CodexRuntimeController {
                 });
                 this.scheduleThinking(chatId, turnId);
                 this.notifyChatChange(chatId);
+                this.notifyExperimentalContextAvailability();
             }
             return;
         }
@@ -2213,11 +2531,7 @@ class CodexRuntimeController {
             const turnId = extractTurnId(notification.params);
             const diff = extractDiffText(extractItemRecord(notification.params));
             if (chatId && diff) {
-                if (turnId) {
-                    this.fileChangingTurnIds.add(turnId);
-                }
-                this.options.state.addOrUpdateDiffItem(chatId, turnId, "Изменения", parseUnifiedDiffFiles(diff));
-                this.notifyChatChange(chatId);
+                this.recordDiff(chatId, turnId, diff);
             }
             return;
         }
@@ -2234,13 +2548,13 @@ class CodexRuntimeController {
         if (notification.method === "item/fileChange/patchUpdated") {
             const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
             const turnId = extractTurnId(notification.params);
-            const files = normalizePatchUpdatedFiles(notification.params);
-            if (chatId && files.length) {
-                if (turnId) {
-                    this.fileChangingTurnIds.add(turnId);
+            if (chatId) {
+                try {
+                    this.recordDiff(chatId, turnId, (0, diffPatchStore_1.patchFromChanges)(notification.params));
                 }
-                this.options.state.addOrUpdateDiffItem(chatId, turnId, "Изменения", files);
-                this.notifyChatChange(chatId);
+                catch {
+                    this.pressure.diffFailures++;
+                }
             }
             return;
         }
@@ -2320,16 +2634,18 @@ class CodexRuntimeController {
                 this.worklogNormalizer.forgetItem(notification.params);
             }
             const agentText = extractCompletedAgentMessage(notification.params);
-            if (chatId && agentText) {
+            const completedItem = extractItemRecord(notification.params);
+            if (chatId && itemType === "agentMessage" && completedItem.delivery === "async") {
+                const threadId = extractThreadId(notification.params) || extractThreadId(itemStartedPayload);
+                this.options.state.addAsyncAssistantMessage(chatId, threadId, itemId, agentText, itemTurnId, normalizeAsyncQuestions(completedItem.questions));
+                this.notifyChatChange(chatId);
+            }
+            else if (chatId && agentText) {
                 const classification = classifyCompletedAssistantText(agentText);
                 const completedTurnId = itemTurnId;
-                if (extractItemRecord(notification.params).delivery === "async") {
-                    // Async questions arrive without streaming deltas and must not replace the previous reply.
-                    this.options.state.addTranscriptItem(chatId, "assistant", agentText, "immediate", completedTurnId);
-                }
-                else if (classification.kind === "clarification") {
+                if (classification.kind === "clarification") {
                     this.options.state.removeLastStreamingAssistantMessage(chatId, completedTurnId);
-                    this.options.state.addOrUpdateClarificationItem(chatId, completedTurnId || "", classification.question, classification.options, "immediate");
+                    this.options.state.addOrUpdateClarificationItem(chatId, completedTurnId || "", classification.question, classification.options, "immediate", { backendThreadId: extractThreadId(notification.params) || extractThreadId(itemStartedPayload), backendItemId: itemId });
                 }
                 else if (classification.kind === "plan") {
                     this.options.state.removeLastStreamingAssistantMessage(chatId, completedTurnId);
@@ -2400,6 +2716,7 @@ class CodexRuntimeController {
             else if (!queuedStarted && chatId && turnId && (status === "completed" || !errorMessage)) {
                 void this.maybeStartDiagnosticsAutoFix(chatId, turnId, completedAccessMode, completedRunMode, mayHaveChangedFiles);
             }
+            this.notifyExperimentalContextAvailability();
             return;
         }
         if (notification.method === "serverRequest/resolved") {
@@ -2448,6 +2765,7 @@ class CodexRuntimeController {
             }
             this.options.onDidChange();
             this.options.logger.error(`App-server error: ${message}`);
+            this.notifyExperimentalContextAvailability();
         }
     }
     retryQueuedPrompt(chatId, messageId) {
@@ -2457,7 +2775,7 @@ class CodexRuntimeController {
         return this.dispatchQueuedPrompt(chatId);
     }
     dispatchQueuedPrompt(chatId, messageId) {
-        if (this.queuedDispatches.has(chatId) || this.backendStopPromise || this.disposed) {
+        if (this.experimentalContextSaving || this.queuedDispatches.has(chatId) || this.promptStarts.has(chatId) || this.backendStopPromise || this.disposed) {
             return false;
         }
         const queued = this.options.state.claimQueuedChatMessage(chatId, messageId);
@@ -2486,9 +2804,11 @@ class CodexRuntimeController {
                 if (runtimeEpoch === this.runtimeEpoch && current?.status === "idle" && !current.queuedMessages.some((message) => message.id === queued.id)) {
                     this.startNextQueuedPrompt(chatId);
                 }
+                this.notifyExperimentalContextAvailability();
             }
         });
         this.queuedDispatches.set(chatId, dispatch);
+        this.notifyExperimentalContextAvailability();
         return true;
     }
     async validateQueuedSkills(selected) {
@@ -2538,7 +2858,7 @@ class CodexRuntimeController {
         this.options.logger.info(`Approval requested: method=${request.method}; chat=${chatId}; kind=${approval.kind}; payload=${approval.payloadPreview}.`);
         return new Promise((resolve) => {
             if (this.pendingApprovals.has(approval.id)) {
-                throw new Error("Duplicate approval request ID.");
+                throw new Error("Получен повторный запрос подтверждения.");
             }
             this.pendingApprovals.set(approval.id, {
                 chatId,
@@ -2556,10 +2876,10 @@ class CodexRuntimeController {
         const chatId = this.findChatIdForNotification(request.params, { allowLatestFallback: false });
         const chat = chatId ? this.options.state.getChat(chatId) : undefined;
         if (!chat || chat.archivedAt || !["running", "waitingApproval"].includes(chat.status) || chat.backendThreadId !== params.threadId || chat.activeTurnId !== params.turnId) {
-            throw new Error("Native user input has no matching active chat/turn.");
+            throw new Error("Вопрос сервера не связан с текущим диалогом или выполняющимся запросом.");
         }
         if (this.pendingUserInputs.size >= 64 || [...this.pendingUserInputs.values()].some((pending) => rpcIdKey(pending.request.requestId) === rpcIdKey(request.id))) {
-            throw new Error("Duplicate or excessive pending native user input requests.");
+            throw new Error("Вопрос сервера повторяется или превышено допустимое число ожидающих вопросов.");
         }
         const timeoutMs = params.autoResolutionMs ?? 30 * 60000;
         const now = Date.now();
@@ -2598,7 +2918,7 @@ class CodexRuntimeController {
             activeVisibleTurn: Boolean(chat && !chat.archivedAt && chat.status === "running")
         });
         if (!resolution) {
-            throw new Error("Unsupported MCP elicitation request.");
+            throw new Error("Этот формат уточняющего запроса MCP не поддерживается.");
         }
         if (resolution.autoApproved) {
             this.options.logger.info(`Managed MCP tool call auto-approved: server=${serverName}; chat=${chatId}; turn=${chat?.activeTurnId}.`);
@@ -2610,6 +2930,10 @@ class CodexRuntimeController {
     }
     handleExit(code, signal) {
         this.runtimeEpoch += 1;
+        this.experimentalContextScope = (0, crypto_1.randomUUID)();
+        this.experimentalContextView = (0, experimentalContext_1.emptyExperimentalContext)();
+        this.experimentalContextRead = undefined;
+        this.experimentalContextEmitter.fire();
         for (const chat of this.options.state.getSidebarSnapshot().chats) {
             this.bumpCancelEpoch(chat.id);
             this.rejectUserInputsForChat(chat.id, "Codex app-server exited.");
@@ -2652,7 +2976,7 @@ class CodexRuntimeController {
     }
     requireRpcClient() {
         if (!this.rpcClient) {
-            throw new Error("JSON-RPC client не готов. Запустите backend.");
+            throw new Error("Подключение к серверу Codex не готово. Запустите сервер.");
         }
         return this.rpcClient;
     }
@@ -2718,6 +3042,18 @@ class CodexRuntimeController {
     }
 }
 exports.CodexRuntimeController = CodexRuntimeController;
+function normalizeAsyncQuestions(value) {
+    if (!Array.isArray(value) || !value.length || value.length > 32 || Buffer.byteLength(JSON.stringify(value), "utf8") > 256 * 1024)
+        return undefined;
+    const questions = [];
+    for (const question of value) {
+        if (!isRecord(question) || typeof question.title !== "string" || !question.title.trim() || Buffer.byteLength(question.title, "utf8") > 16 * 1024
+            || (question.options != null && (!Array.isArray(question.options) || question.options.length > 64 || question.options.some(option => typeof option !== "string" || Buffer.byteLength(option, "utf8") > 16 * 1024))))
+            return undefined;
+        questions.push({ title: question.title, options: question.options == null ? null : [...question.options] });
+    }
+    return questions;
+}
 function sameWorkspacePath(left, right) {
     const a = path.resolve(left), b = path.resolve(right);
     return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
@@ -2727,25 +3063,25 @@ function rpcIdKey(id) {
 }
 function normalizeUserInputParams(value) {
     if (!isRecord(value) || !getString(value.threadId) || !getString(value.turnId) || !getString(value.itemId) || typeof value.isBlocking !== "boolean" || !Array.isArray(value.questions) || !value.questions.length || value.questions.length > 32) {
-        throw new Error("Invalid item/tool/requestUserInput parameters.");
+        throw new Error("Сервер передал некорректные параметры вопроса пользователю.");
     }
     const ids = new Set();
     if (Buffer.byteLength(JSON.stringify(value.questions), "utf8") > 256 * 1024) {
-        throw new Error("Native user input questions exceed the display budget.");
+        throw new Error("Вопросы сервера превышают допустимый объём для отображения.");
     }
     const questions = value.questions.map((question) => {
         if (!isRecord(question) || !getString(question.id) || ids.has(getString(question.id)) || typeof question.header !== "string" || typeof question.question !== "string" || [question.id, question.header, question.question].some((field) => String(field).length > 16384) || (question.isOther !== undefined && typeof question.isOther !== "boolean") || (question.isSecret !== undefined && typeof question.isSecret !== "boolean")) {
-            throw new Error("Invalid native user input question.");
+            throw new Error("Сервер передал некорректный вопрос пользователю.");
         }
         ids.add(getString(question.id));
         let options = null;
         if (question.options !== undefined && question.options !== null) {
             if (!Array.isArray(question.options) || question.options.length > 128) {
-                throw new Error("Invalid native user input options.");
+                throw new Error("Сервер передал некорректные варианты ответа.");
             }
             options = question.options.map((option) => {
                 if (!isRecord(option) || typeof option.label !== "string" || typeof option.description !== "string" || option.label.length > 16384 || option.description.length > 16384) {
-                    throw new Error("Invalid native user input option.");
+                    throw new Error("Сервер передал некорректный вариант ответа.");
                 }
                 return { label: option.label, description: option.description };
             });
@@ -2753,7 +3089,7 @@ function normalizeUserInputParams(value) {
         return { id: getString(question.id), header: question.header, question: question.question, isOther: question.isOther === true, isSecret: question.isSecret === true, options };
     });
     if (value.autoResolutionMs !== undefined && value.autoResolutionMs !== null && (typeof value.autoResolutionMs !== "number" || !Number.isSafeInteger(value.autoResolutionMs) || value.autoResolutionMs < 0)) {
-        throw new Error("Invalid native user input timeout.");
+        throw new Error("Сервер передал некорректное время ожидания ответа.");
     }
     return {
         threadId: getString(value.threadId), turnId: getString(value.turnId), itemId: getString(value.itemId), questions, isBlocking: value.isBlocking,
@@ -2762,19 +3098,19 @@ function normalizeUserInputParams(value) {
 }
 function validateUserInputResponse(questions, response) {
     if (!isRecord(response) || !isRecord(response.answers) || Object.keys(response.answers).length !== questions.length) {
-        throw new Error("Provide an answer entry for every native question.");
+        throw new Error("Ответьте на каждый вопрос.");
     }
     const answers = Object.create(null);
     let bytes = 0;
     for (const question of questions) {
         const entry = Object.prototype.hasOwnProperty.call(response.answers, question.id) ? response.answers[question.id] : undefined;
         if (!isRecord(entry) || !Array.isArray(entry.answers) || entry.answers.length > 64 || !entry.answers.every((answer) => typeof answer === "string")) {
-            throw new Error("Invalid native question answer array.");
+            throw new Error("Некорректный формат ответов на вопросы.");
         }
         const values = entry.answers;
         bytes += values.reduce((sum, answer) => sum + Buffer.byteLength(answer, "utf8"), 0);
         if (bytes > 256 * 1024 || (question.options?.length && !question.isOther && values.some((answer) => !question.options?.some((option) => option.label === answer)))) {
-            throw new Error("Native question answer is too large or not an offered option.");
+            throw new Error("Ответ слишком длинный или отсутствует среди предложенных вариантов.");
         }
         answers[question.id] = { answers: [...values] };
     }
@@ -3215,7 +3551,7 @@ function normalizeAccountReadResult(result) {
         return {
             accountType: "none",
             label: "Не авторизованы",
-            message: "OpenAI auth требуется, account еще не подключен."
+            message: "Требуется вход в OpenAI. Учётная запись ещё не подключена."
         };
     }
     const type = getString(account.type).toLowerCase();
@@ -3225,7 +3561,7 @@ function normalizeAccountReadResult(result) {
         return {
             accountType: "apiKey",
             label: "API key",
-            message: "API key принят Codex runtime."
+            message: "Сервер Codex принял ключ API."
         };
     }
     if (type === "chatgpt") {
@@ -3453,7 +3789,7 @@ function normalizeDeviceCodeChallenge(result) {
         throw new Error(`Codex runtime вернул неожиданный тип login response: ${type || "empty"}.`);
     }
     if (!verificationUrl || !userCode) {
-        throw new Error("Codex runtime не вернул verificationUrl/userCode для Device Code.");
+        throw new Error("Сервер Codex не вернул ссылку и код устройства для входа.");
     }
     return {
         loginId: getString(root.loginId),
@@ -3629,6 +3965,12 @@ function normalizeAuthError(error) {
 function isThreadNotFoundError(error) {
     const message = normalizeErrorMessage(error).toLowerCase();
     return message.includes("turn/start") && message.includes("thread not found");
+}
+function isResumeThreadNotFoundError(error) {
+    const message = normalizeErrorMessage(error).toLowerCase();
+    // Only confirmed missing history permits replacement; transport/MCP errors do not.
+    return message.startsWith("thread/resume: no rollout found for thread id") ||
+        message.startsWith("thread/resume: thread not found");
 }
 function isContextWindowError(error) {
     const message = normalizeErrorMessage(error).toLowerCase();
@@ -3874,140 +4216,6 @@ function normalizePlanMarkdown(value) {
         lines.push(`- [${marker}] ${text.trim()}`);
     }
     return lines.join("\n\n").trim();
-}
-function normalizePatchUpdatedFiles(value) {
-    const root = isRecord(value) ? value : {};
-    const changes = Array.isArray(root.changes) ? root.changes : [];
-    const files = [];
-    for (const change of changes) {
-        const record = isRecord(change) ? change : {};
-        const diff = getString(record.diff);
-        const parsed = diff ? parseUnifiedDiffFiles(diff) : [];
-        const pathValue = getString(record.path) || parsed[0]?.path || "unknown";
-        const stats = parsed[0] ?? countDiffStats(pathValue, diff);
-        files.push({
-            path: pathValue,
-            oldPath: stats.oldPath,
-            newPath: stats.newPath,
-            status: normalizeDiffStatus(getString(record.status)) ?? stats.status,
-            additions: stats.additions,
-            deletions: stats.deletions,
-            diff: diff || undefined
-        });
-    }
-    return mergeDiffFiles(files);
-}
-function parseUnifiedDiffFiles(diff) {
-    const lines = diff.split(/\r?\n/);
-    const files = [];
-    let current;
-    for (const line of lines) {
-        const header = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-        if (header) {
-            if (current) {
-                files.push(current);
-            }
-            current = {
-                path: header[2] || header[1],
-                oldPath: header[1],
-                newPath: header[2],
-                status: "modified",
-                additions: 0,
-                deletions: 0,
-                diff: ""
-            };
-            continue;
-        }
-        if (current && line.startsWith("new file mode ")) {
-            current.status = "added";
-        }
-        else if (current && line.startsWith("deleted file mode ")) {
-            current.status = "deleted";
-        }
-        else if (current && line.startsWith("rename from ")) {
-            current.status = "renamed";
-            current.oldPath = line.slice("rename from ".length).trim() || current.oldPath;
-        }
-        else if (current && line.startsWith("rename to ")) {
-            current.status = "renamed";
-            current.newPath = line.slice("rename to ".length).trim() || current.newPath;
-            current.path = current.newPath || current.path;
-        }
-        const plusFile = line.match(/^\+\+\+ b\/(.+)$/);
-        if (!current && plusFile) {
-            current = { path: plusFile[1], newPath: plusFile[1], status: "modified", additions: 0, deletions: 0, diff: "" };
-        }
-        const minusFile = line.match(/^--- a\/(.+)$/);
-        if (!current && minusFile) {
-            current = { path: minusFile[1], oldPath: minusFile[1], status: "modified", additions: 0, deletions: 0, diff: "" };
-        }
-        if (!current) {
-            current = { path: "changes.patch", status: "unknown", additions: 0, deletions: 0, diff: "" };
-        }
-        if (line === "--- /dev/null") {
-            current.status = "added";
-        }
-        else if (line === "+++ /dev/null") {
-            current.status = "deleted";
-        }
-        current.diff = `${current.diff || ""}${line}\n`;
-        if (line.startsWith("+") && !line.startsWith("+++")) {
-            current.additions += 1;
-        }
-        else if (line.startsWith("-") && !line.startsWith("---")) {
-            current.deletions += 1;
-        }
-    }
-    if (current) {
-        files.push(current);
-    }
-    return mergeDiffFiles(files);
-}
-function mergeDiffFiles(files) {
-    const byPath = new Map();
-    for (const file of files) {
-        const key = file.path || "unknown";
-        const existing = byPath.get(key);
-        if (!existing) {
-            byPath.set(key, { ...file, path: key });
-            continue;
-        }
-        existing.additions += file.additions;
-        existing.deletions += file.deletions;
-        existing.diff = [existing.diff, file.diff].filter(Boolean).join("\n");
-        existing.status = mergeDiffStatus(existing.status, file.status);
-        existing.oldPath = existing.oldPath ?? file.oldPath;
-        existing.newPath = existing.newPath ?? file.newPath;
-    }
-    return [...byPath.values()];
-}
-function countDiffStats(pathValue, diff) {
-    let additions = 0;
-    let deletions = 0;
-    for (const line of diff.split(/\r?\n/)) {
-        if (line.startsWith("+") && !line.startsWith("+++")) {
-            additions += 1;
-        }
-        else if (line.startsWith("-") && !line.startsWith("---")) {
-            deletions += 1;
-        }
-    }
-    return { path: pathValue, status: "modified", additions, deletions, diff: diff || undefined };
-}
-function normalizeDiffStatus(value) {
-    if (value === "added" || value === "modified" || value === "deleted" || value === "renamed" || value === "unknown") {
-        return value;
-    }
-    return undefined;
-}
-function mergeDiffStatus(left, right) {
-    if (!left) {
-        return right;
-    }
-    if (!right || left === right) {
-        return left;
-    }
-    return "modified";
 }
 function parseReconnectMessage(message) {
     const match = message.match(/(?:reconnecting|повтор).*?(\d+)\s*\/\s*(\d+)/i) || message.match(/(\d+)\s*\/\s*(\d+)/);

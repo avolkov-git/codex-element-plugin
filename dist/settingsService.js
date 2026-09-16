@@ -69,14 +69,16 @@ class SettingsService {
         };
     }
     getDocsSettingsView() {
-        const docs = this.readSettings().docs;
-        const sourcePath = docs?.sourcePath?.trim() ?? "";
-        const normalizedPath = docs?.normalizedPath?.trim() ?? "";
+        const { sourcePath, normalizedPath } = this.getDocsPathsSnapshot();
         return {
             sourcePath,
             normalizedPath,
             validationMessage: validateDocsPath(normalizedPath)
         };
+    }
+    getDocsPathsSnapshot() {
+        const docs = this.readSettings().docs;
+        return { normalizedPath: docs?.normalizedPath?.trim() ?? "", sourcePath: docs?.sourcePath?.trim() ?? "" };
     }
     async getToolsSettingsView() {
         const tools = this.readSettings().tools;

@@ -64,6 +64,8 @@ async function until(condition) {
   assert.fail("Expected fixture boundary was not reached.");
 }
 const users = Object.fromEntries(["A", "B", "C"].map(name => [name, { id: `user-${name}`, "user-list-id": `realm-${name}`, login: name, presentation: name, "is-active": true }]));
+// A token-authenticated Element user can have NEW status and is-active=false.
+users.B["is-active"] = false;
 const projects = Object.fromEntries(["A", "B", "C"].map(name => [name, { id: `project-${name}`, name: `Project ${name}`, "space-id": "space", deleted: false }]));
 const identities = Object.fromEntries(["A", "B", "C"].map(name => [name, identityFromConsole("https://element.invalid", projects[name].id, users[name], projects[name])]));
 function saved(name) { return { version: 1, activeChatId: `${name}-chat`, chats: [{ id: `${name}-chat`, kind: "project", title: `${name} saved chat`, createdAt: "2026-09-08T00:00:00Z", updatedAt: "2026-09-08T00:00:00Z" }], transcripts: { [`${name}-chat`]: [{ id: `${name}-message`, kind: "message", role: "assistant", text: `${name} private history`, createdAt: "2026-09-08T00:00:00Z" }] } }; }

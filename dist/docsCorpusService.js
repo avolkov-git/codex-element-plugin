@@ -33,12 +33,21 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.docsFragmentChars = docsFragmentChars;
 exports.discoverDocsCorpora = discoverDocsCorpora;
 exports.loadDocsCorpora = loadDocsCorpora;
 exports.fingerprintDocsCorpora = fingerprintDocsCorpora;
 const fs = __importStar(require("fs"));
 const crypto = __importStar(require("crypto"));
 const path = __importStar(require("path"));
+const docsWorkerProtocol_1 = require("./docsWorkerProtocol");
+function docsFragmentChars(fragment) {
+    return fragment.text.length + fragment.excerpt.length + fragment.title.length + fragment.kind.length
+        + fragment.sourcePath.length + fragment.url.length + fragment.indexPath.length
+        + fragment.corpus.length + fragment.corpusLabel.length
+        + fragment.breadcrumbs.reduce((sum, item) => sum + item.length, 0)
+        + fragment.keywords.reduce((sum, item) => sum + item.length, 0);
+}
 const LEGACY_HIGH_PRIORITY = path.join("index", "pages.high-priority.jsonl");
 const LEGACY_PAGES = path.join("index", "pages.jsonl");
 const MAX_DISCOVERY_DEPTH = 4;
@@ -47,6 +56,7 @@ const MAX_TEXT_FILES = 160;
 const MAX_FRAGMENT_TEXT_CHARS = 8000;
 const MAX_TEXT_FILE_BYTES = 2000000;
 const MAX_JSONL_FILE_BYTES = 80000000;
+const MAX_MANIFEST_FILE_BYTES = 1000000;
 const MANIFEST_PRIMARY_ROLES = ["chunks", "documents"];
 const MANIFEST_SECONDARY_ROLES = [
     "operations",
@@ -115,18 +125,32 @@ function discoverDocsCorpora(root) {
             error: "В каталоге документации не найден поддерживаемый корпус: index/pages*.jsonl, manifest.json, *.jsonl или .md/.txt/.html."
         };
 }
-async function loadDocsCorpora(root) {
+async function loadDocsCorpora(root, limits) {
     const discovery = discoverDocsCorpora(root);
     if (discovery.error || !discovery.corpora.length) {
         throw new Error(discovery.error || "Корпус документации не найден.");
     }
+    if (limits && discovery.corpora.length > limits.maxCorpora) {
+        throw new docsWorkerProtocol_1.DocsCapacityError("Too many docs corpora.");
+    }
+    if (limits && discovery.corpora.reduce((sum, corpus) => sum + corpus.files.length, 0) > limits.maxFiles) {
+        throw new docsWorkerProtocol_1.DocsCapacityError("Too many docs corpus files.");
+    }
     const fragments = [];
+    const budget = { limits, inputBytes: 0 };
+    let chars = 0;
     for (const corpus of discovery.corpora) {
         for (const file of corpus.files) {
             const loaded = corpus.format === "text-tree"
-                ? await loadTextFile(corpus, file)
-                : await loadJsonlFile(corpus, file);
-            fragments.push(...loaded);
+                ? await loadTextFile(corpus, file, budget)
+                : loadJsonlFile(corpus, file, budget);
+            for await (const fragment of loaded) {
+                chars += docsFragmentChars(fragment);
+                if (limits && (fragments.length >= limits.maxFragments || chars > limits.maxChars)) {
+                    throw new docsWorkerProtocol_1.DocsCapacityError("Docs corpus exceeds the fragment or text budget.");
+                }
+                fragments.push(fragment);
+            }
         }
     }
     if (!fragments.length) {
@@ -171,7 +195,11 @@ function fingerprintDocsCorpora(root) {
             hash.update("\0");
             hash.update(String(stats.size));
             hash.update("\0");
-            hash.update(String(Math.floor(stats.mtimeMs)));
+            hash.update(String(stats.mtimeMs));
+            hash.update("\0");
+            hash.update(String(stats.ctimeMs));
+            hash.update("\0");
+            hash.update(`${stats.dev}:${stats.ino}:${fs.realpathSync(filePath)}`);
             hash.update("\0");
         }
         catch {
@@ -217,7 +245,7 @@ function findManifestPaths(root) {
 }
 function parseManifestCorpus(manifestPath) {
     try {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+        const manifest = JSON.parse(readManifest(manifestPath));
         const files = manifest.files && typeof manifest.files === "object" ? manifest.files : {};
         const manifestRoot = path.dirname(manifestPath);
         const selected = [];
@@ -255,6 +283,28 @@ function parseManifestCorpus(manifestPath) {
     }
     catch {
         return undefined;
+    }
+}
+function readManifest(manifestPath) {
+    const descriptor = fs.openSync(manifestPath, "r");
+    try {
+        const stats = fs.fstatSync(descriptor);
+        if (!stats.isFile() || stats.size > MAX_MANIFEST_FILE_BYTES)
+            throw new Error("Docs manifest is too large.");
+        const buffer = Buffer.alloc(Math.min(stats.size + 1, MAX_MANIFEST_FILE_BYTES + 1));
+        let size = 0;
+        while (size < buffer.length) {
+            const read = fs.readSync(descriptor, buffer, size, buffer.length - size, null);
+            if (!read)
+                break;
+            size += read;
+        }
+        if (size > stats.size)
+            throw new Error("Docs manifest changed while reading.");
+        return buffer.toString("utf8", 0, size);
+    }
+    finally {
+        fs.closeSync(descriptor);
     }
 }
 function manifestFileExists(root, files, role) {
@@ -313,35 +363,66 @@ function discoverTextCorpus(root) {
         priority: 1
     };
 }
-async function loadJsonlFile(corpus, file) {
+async function* loadJsonlFile(corpus, file, budget) {
     try {
         const safePath = await resolveSafeDocsFilePath(corpus.root, file.path);
         if (!safePath) {
-            return [];
+            return;
         }
         const stats = await fs.promises.stat(safePath);
         if (!stats.isFile() || stats.size > MAX_JSONL_FILE_BYTES) {
-            return [];
+            return;
         }
-        const raw = await fs.promises.readFile(safePath, "utf8");
-        const result = [];
-        for (const line of raw.split(/\r?\n/)) {
-            const trimmed = line.trim();
-            if (!trimmed) {
-                continue;
+        let pending = "";
+        let fileBytes = 0;
+        const stream = fs.createReadStream(safePath, { encoding: "utf8", highWaterMark: 64 * 1024 });
+        try {
+            for await (const chunk of stream) {
+                const value = String(chunk);
+                const bytes = Buffer.byteLength(value);
+                fileBytes += bytes;
+                if (fileBytes > MAX_JSONL_FILE_BYTES)
+                    throw new docsWorkerProtocol_1.DocsCapacityError("Docs JSONL file grew beyond its byte limit.");
+                accountDocsBytes(budget, bytes);
+                pending += value;
+                let start = 0;
+                let newline;
+                while ((newline = pending.indexOf("\n", start)) >= 0) {
+                    const line = pending.slice(start, newline);
+                    checkRecordSize(line, budget);
+                    const fragment = parseJsonlFragment(corpus, file, line.trim());
+                    if (fragment)
+                        yield fragment;
+                    start = newline + 1;
+                }
+                pending = pending.slice(start);
+                checkRecordSize(pending, budget);
             }
-            const fragment = parseJsonlFragment(corpus, file, trimmed);
-            if (fragment) {
-                result.push(fragment);
-            }
+            const fragment = parseJsonlFragment(corpus, file, pending.trim());
+            if (fragment)
+                yield fragment;
         }
-        return result;
+        finally {
+            stream.destroy();
+        }
     }
-    catch {
-        return [];
+    catch (error) {
+        if (error instanceof docsWorkerProtocol_1.DocsCapacityError)
+            throw error;
     }
 }
-async function loadTextFile(corpus, file) {
+function checkRecordSize(value, budget) {
+    if (budget.limits && value.length > budget.limits.maxRecordChars) {
+        throw new docsWorkerProtocol_1.DocsCapacityError("Docs JSONL record exceeds the size budget.");
+    }
+}
+function accountDocsBytes(budget, bytes) {
+    budget.inputBytes += bytes;
+    if (budget.limits && budget.inputBytes > budget.limits.maxInputBytes) {
+        throw new docsWorkerProtocol_1.DocsCapacityError("Docs corpus exceeds the input byte budget.");
+    }
+}
+async function loadTextFile(corpus, file, budget) {
     try {
         const safePath = await resolveSafeDocsFilePath(corpus.root, file.path);
         if (!safePath) {
@@ -351,7 +432,24 @@ async function loadTextFile(corpus, file) {
         if (!stats.isFile() || stats.size > MAX_TEXT_FILE_BYTES) {
             return [];
         }
-        const raw = await fs.promises.readFile(safePath, "utf8");
+        const chunks = [];
+        let fileBytes = 0;
+        const stream = fs.createReadStream(safePath, { encoding: "utf8", highWaterMark: 64 * 1024 });
+        try {
+            for await (const chunk of stream) {
+                const value = String(chunk);
+                const bytes = Buffer.byteLength(value);
+                fileBytes += bytes;
+                accountDocsBytes(budget, bytes);
+                if (fileBytes > MAX_TEXT_FILE_BYTES)
+                    return [];
+                chunks.push(value);
+            }
+        }
+        finally {
+            stream.destroy();
+        }
+        const raw = chunks.join("");
         const text = normalizeWhitespace(stripHtml(raw));
         if (!text) {
             return [];
@@ -371,7 +469,9 @@ async function loadTextFile(corpus, file) {
                 indexPath: corpus.indexPath
             }];
     }
-    catch {
+    catch (error) {
+        if (error instanceof docsWorkerProtocol_1.DocsCapacityError)
+            throw error;
         return [];
     }
 }

@@ -256,7 +256,8 @@ function wireLineStream(stream, onLine, onError, maxLineBytes) {
             failed = true;
             buffer = "";
             bufferBytes = 0;
-            stream.pause();
+            // An unread paused pipe can prevent child.close even after tree termination.
+            stream.destroy();
             onError(error instanceof Error ? error : new Error(String(error)));
         }
     };

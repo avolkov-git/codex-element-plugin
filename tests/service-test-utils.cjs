@@ -22,7 +22,7 @@ function loadSource(relativePath, mocks = {}) {
       if (name.startsWith(".")) return loadSource(path.relative(root, path.resolve(path.dirname(filename), `${name}.ts`)), mocks);
       return localRequire(name);
     },
-    Buffer, URL, process, console, setTimeout, clearTimeout, Error, Date,
+    Buffer, URL, process, console, setTimeout, clearTimeout, Error, Date, AbortController,
   }, { filename });
   return module.exports;
 }

@@ -34,16 +34,94 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BaseContextService = void 0;
+const crypto_1 = require("crypto");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const BASE_CONTEXT_RELATIVE_PATH = path.join("resources", "context", "codex-element-language-rules.md");
 const MAX_BASE_CONTEXT_BYTES = 96 * 1024;
 const MAX_BASE_CONTEXT_CHARS = 18000;
+class BaseContextSettingsError extends Error {
+}
 class BaseContextService {
     constructor(context, logger) {
         this.context = context;
         this.logger = logger;
+        this.saving = false;
+    }
+    async readBaseContext() {
+        try {
+            if (this.saving)
+                throw new BaseContextSettingsError("Сохранение базового контекста еще выполняется. Дождитесь завершения.");
+            const { text, sourcePath, revision } = await this.readSettingsState();
+            return { text, sourcePath, revision };
+        }
+        catch (error) {
+            throw baseContextSettingsError(error, "прочитать");
+        }
+    }
+    async saveBaseContext(text, revision) {
+        if (typeof text !== "string" || typeof revision !== "string" || !/^[a-f0-9]{64}$/.test(revision)) {
+            throw new BaseContextSettingsError("Некорректные данные базового контекста. Загрузите его заново перед сохранением.");
+        }
+        validateBaseContextSize(Buffer.byteLength(text, "utf8"));
+        if (this.saving)
+            throw new BaseContextSettingsError("Сохранение базового контекста еще выполняется. Дождитесь завершения.");
+        this.saving = true;
+        try {
+            const current = await this.readSettingsState();
+            if (current.revision !== revision)
+                throw baseContextConflict();
+            const document = current.document;
+            const bomBytes = current.diskText.startsWith("\uFEFF") ? 3 : 0;
+            const encodedText = text.replace(/\r\n|\r|\n/g, document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n");
+            validateBaseContextSize(Buffer.byteLength(encodedText, "utf8") + bomBytes);
+            if (text !== current.text) {
+                const edit = new vscode.WorkspaceEdit();
+                edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(current.text.length)), text);
+                if (!await vscode.workspace.applyEdit(edit)) {
+                    throw new BaseContextSettingsError("Не удалось изменить базовый контекст. Загрузите его заново перед сохранением.");
+                }
+            }
+            const appliedText = document.getText();
+            const appliedVersion = document.version;
+            if (comparableBaseContext(appliedText) !== comparableBaseContext(text))
+                throw baseContextConflict();
+            validateBaseContextSize(Buffer.byteLength(appliedText, "utf8") + bomBytes);
+            // Check disk again after the editor round-trip; never save over a newer file or editor edit.
+            const disk = await readBaseContextDisk(current.sourcePath);
+            if (disk.revision !== current.diskRevision || document.version !== appliedVersion)
+                throw baseContextConflict();
+            if (!await document.save()) {
+                throw new BaseContextSettingsError("Не удалось сохранить базовый контекст. Проверьте права доступа к файлу. Изменения остались в редакторе.");
+            }
+            const saved = await this.readSettingsState();
+            if (document.isDirty || document.version !== appliedVersion || saved.text !== appliedText
+                || comparableBaseContext(saved.diskText) !== comparableBaseContext(appliedText))
+                throw baseContextConflict();
+            return saved.revision;
+        }
+        catch (error) {
+            throw baseContextSettingsError(error, "сохранить");
+        }
+        finally {
+            this.saving = false;
+        }
+    }
+    async readSettingsState() {
+        const sourcePath = this.resolveBaseContextPath();
+        const before = await readBaseContextDisk(sourcePath);
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
+        const disk = await readBaseContextDisk(sourcePath);
+        const text = document.getText();
+        validateBaseContextSize(Buffer.byteLength(text, "utf8"));
+        if (before.revision !== disk.revision
+            || (!document.isDirty && comparableBaseContext(text) !== comparableBaseContext(disk.text)))
+            throw baseContextConflict();
+        return {
+            text, sourcePath, document, diskRevision: disk.revision, diskText: disk.text,
+            revision: (0, crypto_1.createHash)("sha256").update(JSON.stringify([disk.revision, document.version, text])).digest("hex")
+        };
     }
     async buildContext() {
         const sourcePath = this.resolveBaseContextPath();
@@ -66,9 +144,8 @@ class BaseContextService {
                 matchCount: 1
             };
         }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            this.logger.warn(`Base context skipped: ${message}.`);
+        catch {
+            this.logger.warn("Base context skipped: rules file could not be read.");
             return { sourcePath, matchCount: 0 };
         }
     }
@@ -77,16 +154,22 @@ class BaseContextService {
         try {
             await fs.promises.mkdir(path.dirname(sourcePath), { recursive: true });
             if (!fs.existsSync(sourcePath)) {
-                await fs.promises.writeFile(sourcePath, DEFAULT_BASE_CONTEXT_TEMPLATE, "utf8");
-                this.logger.warn(`Base context file recreated from fallback template: ${sourcePath}.`);
+                try {
+                    await fs.promises.writeFile(sourcePath, DEFAULT_BASE_CONTEXT_TEMPLATE, { encoding: "utf8", flag: "wx" });
+                    this.logger.warn("Base context file recreated from fallback template.");
+                }
+                catch (error) {
+                    if (error.code !== "EEXIST")
+                        throw error;
+                }
             }
             const document = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
             await vscode.window.showTextDocument(document, vscode.ViewColumn.One);
             return sourcePath;
         }
         catch (error) {
-            const message = error instanceof Error ? error.message : "Не удалось открыть базовый контекст.";
-            this.logger.warn(`Base context open failed: ${message}`);
+            const message = baseContextSettingsError(error, "открыть").message;
+            this.logger.warn("Base context open failed.");
             vscode.window.showWarningMessage(message);
             return undefined;
         }
@@ -96,6 +179,58 @@ class BaseContextService {
     }
 }
 exports.BaseContextService = BaseContextService;
+function validateBaseContextSize(bytes) {
+    if (bytes > MAX_BASE_CONTEXT_BYTES)
+        throw new BaseContextSettingsError("Базовый контекст не должен превышать 96 КБ в UTF-8.");
+}
+function baseContextConflict() {
+    return new BaseContextSettingsError("Базовый контекст изменился после загрузки в файле или редакторе. Загрузите его заново перед сохранением.");
+}
+function baseContextSettingsError(error, action) {
+    if (error instanceof BaseContextSettingsError)
+        return error;
+    const code = error?.code;
+    if (code === "EACCES" || code === "EPERM" || code === "EROFS" || code === "NoPermissions") {
+        return new Error(`Недостаточно прав, чтобы ${action} базовый контекст. Проверьте права доступа к файлу.`);
+    }
+    if (code === "ENOENT" || code === "FileNotFound") {
+        return new Error("Файл базового контекста не найден. Откройте базовый контекст в редакторе, чтобы восстановить файл.");
+    }
+    return new Error(`Не удалось ${action} базовый контекст. Проверьте доступность файла и повторите действие.`);
+}
+function comparableBaseContext(text) {
+    return text.replace(/^\uFEFF/, "").replace(/\r\n|\r/g, "\n");
+}
+function baseContextFileStamp(stats) {
+    return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
+}
+async function readBaseContextDisk(sourcePath) {
+    const file = await fs.promises.open(sourcePath, "r");
+    try {
+        const before = await file.stat();
+        if (!before.isFile())
+            throw new BaseContextSettingsError("Базовый контекст должен быть обычным текстовым файлом.");
+        validateBaseContextSize(before.size);
+        const buffer = Buffer.alloc(MAX_BASE_CONTEXT_BYTES + 1);
+        let length = 0;
+        while (length < buffer.length) {
+            const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
+            if (!bytesRead)
+                break;
+            length += bytesRead;
+        }
+        validateBaseContextSize(length);
+        const stamp = baseContextFileStamp(before);
+        if (stamp !== baseContextFileStamp(await file.stat()) || stamp !== baseContextFileStamp(await fs.promises.stat(sourcePath))) {
+            throw baseContextConflict();
+        }
+        const content = buffer.subarray(0, length);
+        return { text: content.toString("utf8"), revision: (0, crypto_1.createHash)("sha256").update(stamp).update(content).digest("hex") };
+    }
+    finally {
+        await file.close();
+    }
+}
 function formatBaseContext(sourcePath, rules) {
     return [
         "[Базовые правила Codex Element]",

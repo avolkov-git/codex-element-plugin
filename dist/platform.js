@@ -133,6 +133,17 @@ function validateRuntimeExecutable(resolution) {
             summary
         };
     }
+    const hostName = process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host";
+    const hostPath = path.join(path.dirname(resolution.path), hostName);
+    const host = summarizeRuntimeExecutable(hostPath);
+    if (!host.isFile || host.kind !== expectedKind || (process.platform !== "win32" && !host.executable)
+        || (expectedArch && host.arch !== expectedArch && host.arch !== "universal")) {
+        return {
+            ok: false,
+            message: `Поставка Codex неполная или повреждена: компонент ${hostName} отсутствует или не подходит для ${resolution.platformId}. Без него не работают вызовы инструментов через Code Mode, включая MCP. Переустановите полный каталог плагина. Ожидаемый файл: ${hostPath}.`,
+            summary
+        };
+    }
     return { ok: true, message: "", summary };
 }
 function summarizeRuntimeExecutable(filePath) {

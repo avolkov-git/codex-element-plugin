@@ -22,6 +22,7 @@
     if (message.type === "sidebar.snapshot") {
       state.snapshot = message.snapshot;
       render();
+      if (Number.isSafeInteger(message.revision)) vscode.postMessage({ type: "sidebar.ack", revision: message.revision });
     }
     if (message.type === "event" && message.event === "shell.notice") {
       state.notice = String(message.payload || "");

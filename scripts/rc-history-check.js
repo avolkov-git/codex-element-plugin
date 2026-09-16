@@ -80,7 +80,9 @@ async function main() {
     await store.save(identity, "/application-a", initial);
     const file = store.file(identity);
     assert.ok(file.includes(`/users/${identity.userKey}/projects/${identity.projectKey}/`));
-    assert.equal((await store.load(redeployed, "/application-b")).chats[0].backendThreadId, null, "redeploy detaches old cwd runtime threads");
+    const relocated = (await store.load(redeployed, "/application-b")).chats[0];
+    assert.equal(relocated.backendThreadId, "thread-a", "same project retains native context after redeploy");
+    assert.equal(relocated.backendWorkspacePath, "/application-a", "runtime must confirm the new cwd before updating it");
     const another = new ProjectHistoryStore(root, normalizeHistory);
     const a = await store.load(identity, "/application-a");
     const b = await another.load(identity, "/application-a");

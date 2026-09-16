@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Codex Settings Integrations Fixture</title>
+    <title>Codex: Настройки (проверка интерфейса)</title>
     <link rel="stylesheet" href="../media/settings.css" />
     <style>
       :root {
@@ -17,8 +17,8 @@
         --vscode-input-background: #ffffff;
         --vscode-input-foreground: #202124;
         --vscode-input-border: #c9c9c9;
-        --vscode-button-background: #0e7fd2;
-        --vscode-button-hoverBackground: #0b70bd;
+        --vscode-button-background: #0879c5;
+        --vscode-button-hoverBackground: #066ba9;
         --vscode-button-foreground: #ffffff;
         --vscode-list-hoverBackground: #eeeeee;
         --vscode-textLink-foreground: #006ab1;
@@ -31,10 +31,12 @@
     <div id="root"></div>
     <script>
       window.__codexElementWebviewAssetMode = "fixture";
+      window.fixtureMessages = [];
       let fixtureWebviewState = {};
       window.acquireVsCodeApi = () => ({
         postMessage(message) {
           document.documentElement.dataset.lastFixtureMessage = JSON.stringify(message);
+          window.fixtureMessages.push(message);
         },
         getState() {
           return fixtureWebviewState;
@@ -44,6 +46,7 @@
         }
       });
     </script>
+    <script src="../media/settings-icons.js"></script>
     <script src="../media/settings.js"></script>
     <script>
       const skills = Array.from({ length: 18 }, (_, index) => ({
@@ -59,21 +62,25 @@
         data: {
           type: "settings.snapshot",
           snapshot: {
-            extensionVersion: "0.1.87",
+            extensionVersion: "1.0.3",
+            system: { platformId: "win32-x64", codexVersion: "0.154.0" },
+            experimentalContext: { status: "ready", enabled: false, runtimeEnabled: false, eligible: true, canChange: true, scopeId: "fixture", revision: "r1", message: "Выключено." },
             proxy: { url: "", username: "", passwordSaved: false },
             docs: { normalizedPath: "/srv/codex/docs", validationMessage: "" },
-            tools: { ripgrepPath: "/srv/codex/tools/rg", ripgrepManaged: true, ripgrepVersion: "14.1.1", ripgrepStatus: "ready", validationMessage: "" },
+            tools: { ripgrepPath: "C:\\ProgramData\\CodexElement\\server\\tools\\ripgrep\\15.1.0\\win32-x64\\rg.exe", ripgrepManaged: true, ripgrepVersion: "15.1.0", ripgrepStatus: "ready", validationMessage: "" },
             browser: {
               enabled: true,
               baseUrl: "http://element.internal:9090/applications/demo",
-              allowedOrigins: ["http://element.internal:9090"],
+              allowedOrigins: [],
+              application: { status: "ready", url: "http://element.internal:9090/applications/demo", name: "Тестовое приложение", message: "Приложение определено по текущей IDE." },
               disableSandbox: false,
               validationMessage: "",
               status: "ready",
-              statusMessage: "Playwright MCP 0.0.78 готов к запуску.",
-              platformId: "linux-x64",
+              statusMessage: "Node.js, Playwright MCP и Chromium найдены в поставке.",
+              platformId: "win32-x64",
               playwrightMcpVersion: "0.0.78",
-              nodeVersion: "v20.19.4",
+              chromiumVersion: "151.0.7922.10",
+              nodeVersion: "v20.20.2",
               managedServerName: "codex-element-browser"
             },
             normalizer: { status: "idle", percent: 0, stage: "idle", message: "" },

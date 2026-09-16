@@ -7,6 +7,7 @@ const childProcess = require("child_process");
 const {
   targets,
   targetPaths,
+  runtimeFileNames,
   validateRuntimeFile
 } = require("./runtime-preflight-lib");
 
@@ -163,23 +164,25 @@ function overlayPreservedRuntimes(backupBin) {
   }
 
   for (const target of targets) {
-    const backupPath = targetPaths(path.dirname(backupBin), target).find((candidate) => fs.existsSync(candidate));
-    if (!backupPath) {
-      continue;
-    }
-    const backupValidation = validateRuntimeFile(backupPath, target);
-    if (backupValidation.errors.length) {
-      continue;
-    }
+    for (const name of runtimeFileNames(target)) {
+      const backupPath = targetPaths(path.dirname(backupBin), target, name).find((candidate) => fs.existsSync(candidate));
+      if (!backupPath) {
+        continue;
+      }
+      const backupValidation = validateRuntimeFile(backupPath, target);
+      if (backupValidation.errors.length) {
+        continue;
+      }
 
-    const destinationPath = targetPaths(targetRoot, target)[0];
-    const destinationValidation = validateRuntimeFile(destinationPath, target);
-    if (destinationValidation.summary.exists && !destinationValidation.errors.length) {
-      continue;
-    }
+      const destinationPath = targetPaths(targetRoot, target, name)[0];
+      const destinationValidation = validateRuntimeFile(destinationPath, target);
+      if (destinationValidation.summary.exists && !destinationValidation.errors.length) {
+        continue;
+      }
 
-    copyFileWithMode(backupPath, destinationPath);
-    warnings.push(`preserved existing valid runtime for ${target.platformId}: ${destinationPath}`);
+      copyFileWithMode(backupPath, destinationPath);
+      warnings.push(`preserved existing valid runtime for ${target.platformId}: ${destinationPath}`);
+    }
   }
 }
 
@@ -189,18 +192,20 @@ function overlayRuntimeRoot() {
   }
 
   for (const target of requestedRuntimeTargets()) {
-    const sourcePath = targetPaths(runtimeRoot, target).find((candidate) => fs.existsSync(candidate));
-    if (!sourcePath) {
-      warnings.push(`runtime root has no binary for ${target.platformId}: expected ${targetPaths(runtimeRoot, target).join(" or ")}`);
-      continue;
+    for (const name of runtimeFileNames(target)) {
+      const sourcePath = targetPaths(runtimeRoot, target, name).find((candidate) => fs.existsSync(candidate));
+      if (!sourcePath) {
+        errors.push(`runtime root has no binary for ${target.platformId}: expected ${targetPaths(runtimeRoot, target, name).join(" or ")}`);
+        continue;
+      }
+      const validation = validateRuntimeFile(sourcePath, target);
+      if (validation.errors.length) {
+        errors.push(...validation.errors.map((error) => `runtime root ${error}`));
+        continue;
+      }
+      const destinationPath = targetPaths(targetRoot, target, name)[0];
+      copyFileWithMode(sourcePath, destinationPath);
     }
-    const validation = validateRuntimeFile(sourcePath, target);
-    if (validation.errors.length) {
-      errors.push(...validation.errors.map((error) => `runtime root ${error}`));
-      continue;
-    }
-    const destinationPath = targetPaths(targetRoot, target)[0];
-    copyFileWithMode(sourcePath, destinationPath);
   }
 }
 

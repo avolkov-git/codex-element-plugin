@@ -1,5 +1,6 @@
 import { ChildProcessWithoutNullStreams, execFile, spawn } from "child_process";
 import * as path from "path";
+import type { Readable } from "stream";
 
 export interface RuntimeStartOptions {
   command: string;
@@ -242,7 +243,7 @@ async function withTimeout(promise: Promise<void>, ms: number, message: string):
 }
 
 function wireLineStream(
-  stream: NodeJS.ReadableStream,
+  stream: Readable,
   onLine: (line: string) => void | Promise<void>,
   onError: (error: Error) => void,
   maxLineBytes: number
@@ -256,7 +257,8 @@ function wireLineStream(
       failed = true;
       buffer = "";
       bufferBytes = 0;
-      stream.pause();
+      // An unread paused pipe can prevent child.close even after tree termination.
+      stream.destroy();
       onError(error instanceof Error ? error : new Error(String(error)));
     }
   };

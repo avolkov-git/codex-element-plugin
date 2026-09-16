@@ -59,9 +59,9 @@ class PluginFeatureService {
     async handle(command, payload, chatId) {
         try {
             if (this.disposed)
-                throw new featureSafety_1.FeatureError("blocked", "Feature service is no longer active.");
+                throw new featureSafety_1.FeatureError("blocked", "Сервис действий остановлен. Откройте панель заново.");
             if (typeof command !== "string" || command.length > 80 || typeof chatId !== "string" || !chatId || chatId.length > 200) {
-                throw new featureSafety_1.FeatureError("blocked", "A valid feature command and originating chat are required.");
+                throw new featureSafety_1.FeatureError("blocked", "Не удалось определить действие или исходный диалог. Откройте панель заново.");
             }
             const context = this.context(chatId);
             const args = payload === undefined || payload === null ? {} : objectPayload(payload);
@@ -89,7 +89,7 @@ class PluginFeatureService {
                 case "browser.artifacts.list": {
                     const root = this.browserRoot(context.scope);
                     const assertArtifactContext = () => { context.assertCurrent(); if (this.browserRoot(context.scope) !== root)
-                        throw new featureSafety_1.FeatureError("conflict", "The browser session changed. Refresh the artifact list."); };
+                        throw new featureSafety_1.FeatureError("conflict", "Сеанс браузера изменился. Обновите список артефактов."); };
                     result = { ok: true, command, status: "ready", ...await this.artifacts.list(context.scope, root, chatId, assertArtifactContext) };
                     assertArtifactContext();
                     break;
@@ -97,13 +97,13 @@ class PluginFeatureService {
                 case "browser.artifacts.open":
                     result = { ok: true, command, status: "opened", ...this.artifacts.open(requiredString(args, "id", 100), context.scope, this.browserRoot(context.scope), chatId) };
                     break;
-                default: throw new featureSafety_1.FeatureError("unsupported", "This command is not handled by the feature backend.");
+                default: throw new featureSafety_1.FeatureError("unsupported", "Сервер плагина не поддерживает это действие.");
             }
             context.assertCurrent();
             return result;
         }
         catch (error) {
-            const known = error instanceof featureSafety_1.FeatureError ? error : new featureSafety_1.FeatureError("error", "The feature could not complete. Refresh and check IDE availability or file permissions; no raw server output is exposed.");
+            const known = error instanceof featureSafety_1.FeatureError ? error : new featureSafety_1.FeatureError("error", "Не удалось выполнить действие. Обновите панель, проверьте доступность IDE и права на файлы. Исходный серверный вывод скрыт.");
             return {
                 ok: false, command: typeof command === "string" ? command.slice(0, 80) : "", status: known.status, message: known.message,
                 error: { category: known.status === "conflict" ? "stale-revision" : known.status === "blocked" ? "needs-attention" : known.status === "unsupported" ? "not-supported" : known.status === "timeout" ? "deadline-exceeded" : "operation-failed", message: known.message, retryable: known.status === "conflict" || known.status === "timeout" }
@@ -119,11 +119,11 @@ class PluginFeatureService {
         if (!requestedScope || !path.isAbsolute(requestedScope)) {
             this.clearScope();
             this.currentScope = undefined;
-            throw new featureSafety_1.FeatureError("blocked", "A verified IDE user/project storage scope is required. No shared-profile fallback is used.");
+            throw new featureSafety_1.FeatureError("blocked", "Сначала подтвердите пользователя и проект IDE. Общее хранилище не используется, чтобы не смешивать данные.");
         }
         const scope = fs.realpathSync(requestedScope);
         if (!fs.statSync(scope).isDirectory())
-            throw new featureSafety_1.FeatureError("blocked", "Authenticated storage is not available.");
+            throw new featureSafety_1.FeatureError("blocked", "Хранилище текущего пользователя недоступно.");
         if (this.currentScope !== scope) {
             this.clearScope();
             this.currentScope = scope;
@@ -133,7 +133,7 @@ class PluginFeatureService {
         const assertCurrent = () => {
             if (this.disposed || this.options.getScopeRoot() !== requestedScope || this.options.getWorkspaceRoot(chatId) !== requestedWorkspace
                 || fs.realpathSync(requestedScope) !== scope || (requestedWorkspace && fs.realpathSync(requestedWorkspace) !== workspace)) {
-                throw new featureSafety_1.FeatureError("conflict", "The authenticated scope or workspace changed. Reopen the feature in the current chat.");
+                throw new featureSafety_1.FeatureError("conflict", "Пользователь, проект или рабочая область изменились. Откройте панель заново в текущем диалоге.");
             }
         };
         return { chatId, scope, workspace, assertCurrent };
@@ -153,7 +153,7 @@ class PluginFeatureService {
     }
     workspace(context) {
         if (!context.workspace)
-            throw new featureSafety_1.FeatureError("blocked", "Open a project workspace for this chat first.");
+            throw new featureSafety_1.FeatureError("blocked", "Сначала откройте рабочую область проекта для этого диалога.");
         return context.workspace;
     }
     async commandNames() {
@@ -165,7 +165,7 @@ class PluginFeatureService {
         const root = this.workspace(context);
         const offset = args.offset === undefined ? 0 : args.offset;
         if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0 || offset > 100000)
-            throw new featureSafety_1.FeatureError("blocked", "Invalid review list offset.");
+            throw new featureSafety_1.FeatureError("blocked", "Некорректная позиция в списке изменений.");
         const discovery = await (0, featureGitReview_1.listReviewPaths)(root);
         const paths = discovery.items;
         const items = [];
@@ -194,14 +194,14 @@ class PluginFeatureService {
         const commands = await this.commandNames().catch(() => new Set());
         return {
             ok: true, command: "review.list", status: "ready", items, truncated: discovery.truncated || paths.length > offset + items.length,
-            message: discovery.truncated ? "Discovery reached its bounded file/byte budget; this is not a complete repository status." : "Raw full-file comparison; Git clean filters are not executed. Unsupported files are marked unavailable.",
+            message: discovery.truncated ? "Достигнуто ограничение по числу или объёму файлов. Показана только часть изменений репозитория." : "Сравнивается полное содержимое файлов без преобразований Git. Неподдерживаемые файлы помечены как недоступные.",
             ...(paths.length > offset + items.length ? { nextOffset: offset + items.length } : {}),
             capabilities: { nativeDiff: { available: !!this.options.diffArtifacts && commands.has("vscode.diff") }, nativeComments: { available: typeof vscode.comments?.createCommentController === "function" } }
         };
     }
     reviewItem(record) {
         const value = record.snapshot;
-        const reason = (0, featureGitReview_1.isDirty)(path.join(value.root, value.path)) ? "Unsaved editor changes are preserved. Save or resolve them before stage/revert." : value.mutationReason;
+        const reason = (0, featureGitReview_1.isDirty)(path.join(value.root, value.path)) ? "Есть несохранённые изменения редактора. Сохраните или отмените их перед действием." : value.mutationReason;
         const changed = value.beforeExists !== value.afterExists || !value.before.equals(value.after) || value.beforeMode !== value.afterMode;
         return { id: record.id, path: value.path, layer: value.layer, change: !value.beforeExists ? "added" : !value.afterExists ? "deleted" : "modified", revision: value.revision, canOpen: true, canStage: !reason && changed, canRevert: !reason && changed, reason };
     }
@@ -209,29 +209,29 @@ class PluginFeatureService {
         this.pruneReviews();
         const record = this.reviews.get(requiredString(args, "id", 100));
         if (!record || record.scope !== context.scope || record.chatId !== context.chatId || record.snapshot.root !== context.workspace) {
-            throw new featureSafety_1.FeatureError("blocked", "This review ID is expired or belongs to another chat/scope. Refresh the review list.");
+            throw new featureSafety_1.FeatureError("blocked", "Сравнение устарело или относится к другому диалогу. Обновите список изменений.");
         }
         if (requireRevision && requiredString(args, "revision", 100) !== record.snapshot.revision)
-            throw new featureSafety_1.FeatureError("conflict", "The requested review revision is stale. Refresh the review list.");
+            throw new featureSafety_1.FeatureError("conflict", "Версия сравнения устарела. Обновите список изменений.");
         return record;
     }
     async openReview(context, args) {
         const record = this.record(context, args, false);
         let opened = false;
-        let message = "Full snapshots captured; the in-chat preview is capped. Unsaved editor content is not included or changed.";
+        let message = "Сохранены полные версии файлов; предпросмотр в чате ограничен. Несохранённый текст редактора не включён в сравнение и не изменён.";
         if (this.options.diffArtifacts && (await this.commandNames().catch(() => new Set())).has("vscode.diff")) {
             context.assertCurrent();
             try {
-                const uris = await (0, featureSafety_1.deadline)(this.options.diffArtifacts.openSnapshots({ path: record.snapshot.path, beforeText: record.snapshot.before.toString("utf8"), afterText: record.snapshot.after.toString("utf8"), beforeLabel: record.snapshot.layer === "index" ? "HEAD" : "Index", afterLabel: record.snapshot.layer === "index" ? "Index" : "Working file", revision: record.snapshot.revision }), this.timeoutMs);
+                const uris = await (0, featureSafety_1.deadline)(this.options.diffArtifacts.openSnapshots({ path: record.snapshot.path, beforeText: record.snapshot.before.toString("utf8"), afterText: record.snapshot.after.toString("utf8"), beforeLabel: record.snapshot.layer === "index" ? "HEAD" : "Индекс", afterLabel: record.snapshot.layer === "index" ? "Индекс" : "Рабочий файл", revision: record.snapshot.revision }), this.timeoutMs);
                 record.afterUri = uris.afterUri;
                 opened = true;
             }
             catch {
-                message = "The native editor did not confirm opening. The bounded in-chat review remains available.";
+                message = "IDE не подтвердила открытие файла. Предпросмотр изменений в чате остаётся доступен.";
             }
         }
         const value = record.snapshot;
-        return { ok: true, command: "review.open", status: opened ? "opened" : "ready", opened, message, review: { ...this.reviewItem(record), full: true, source: "git-and-disk", before: side(value.before, value.beforeExists, value.layer === "index" ? "HEAD" : "Index"), after: side(value.after, value.afterExists, value.layer === "index" ? "Index" : "Working file on disk"), comments: record.comments.map((entry) => ({ ...entry })) } };
+        return { ok: true, command: "review.open", status: opened ? "opened" : "ready", opened, message, review: { ...this.reviewItem(record), full: true, source: "git-and-disk", before: side(value.before, value.beforeExists, value.layer === "index" ? "HEAD" : "Индекс"), after: side(value.after, value.afterExists, value.layer === "index" ? "Индекс" : "Рабочий файл на диске"), comments: record.comments.map((entry) => ({ ...entry })) } };
     }
     async reviewAction(context, command, args) {
         confirm(args);
@@ -239,7 +239,7 @@ class PluginFeatureService {
         const action = command === "review.stage" ? "stage" : "revert";
         const details = await (0, featureGitReview_1.mutateReview)(record.snapshot, action, context.scope, context.assertCurrent);
         this.reviews.delete(record.id);
-        return { ok: true, command, status: "completed", id: record.id, revision: record.snapshot.revision, refreshRequired: true, ...details, message: action === "stage" ? "Only the reviewed file revision was staged. Working files and editor buffers were not changed." : "The working file was restored to its reviewed index version. Staged changes were preserved; a recovery snapshot was retained in authenticated storage." };
+        return { ok: true, command, status: "completed", id: record.id, revision: record.snapshot.revision, refreshRequired: true, ...details, message: action === "stage" ? "В индекс добавлена только проверенная версия файла. Рабочие файлы и текст в редакторе не изменены." : "Рабочий файл восстановлен из проверенной версии индекса. Изменения в индексе сохранены. Копия для восстановления оставлена в хранилище пользователя." };
     }
     async addComment(context, args) {
         const record = this.record(context, args, true);
@@ -247,24 +247,24 @@ class PluginFeatureService {
         const line = args.line;
         const lines = Math.max(1, record.snapshot.after.toString("utf8").split("\n").length);
         if (typeof line !== "number" || !Number.isSafeInteger(line) || line < 1 || line > lines)
-            throw new featureSafety_1.FeatureError("blocked", "Choose a line in the reviewed after revision (line numbers start at 1).");
+            throw new featureSafety_1.FeatureError("blocked", "Выберите строку в версии после изменения. Нумерация начинается с 1.");
         if (args.sendToChat !== undefined && typeof args.sendToChat !== "boolean")
-            throw new featureSafety_1.FeatureError("blocked", "sendToChat must be an explicit boolean.");
+            throw new featureSafety_1.FeatureError("blocked", "Параметр отправки в диалог должен иметь значение «да» или «нет».");
         const key = (0, featureSafety_1.digest)(`${line}\0${text}`);
         let note = record.comments.find((entry) => entry.id === key);
         if (!note) {
             if (record.comments.length >= 50)
-                throw new featureSafety_1.FeatureError("blocked", "This review reached its comment limit.");
+                throw new featureSafety_1.FeatureError("blocked", "Достигнуто ограничение по числу комментариев к этому сравнению.");
             note = { id: key, line, text, revision: record.snapshot.revision, native: false, sentToChat: false };
             if (record.afterUri && typeof vscode.comments?.createCommentController === "function") {
                 try {
-                    this.commentController ?? (this.commentController = vscode.comments.createCommentController(`codex-review-${(0, featureSafety_1.opaqueId)()}`, "Codex Review"));
+                    this.commentController ?? (this.commentController = vscode.comments.createCommentController(`codex-review-${(0, featureSafety_1.opaqueId)()}`, "Изменения Codex"));
                     const body = new vscode.MarkdownString();
                     body.appendText(text);
                     body.isTrusted = false;
-                    const thread = this.commentController.createCommentThread(record.afterUri, new vscode.Range(line - 1, 0, line - 1, 0), [{ body, mode: vscode.CommentMode.Preview, author: { name: "Review" } }]);
+                    const thread = this.commentController.createCommentThread(record.afterUri, new vscode.Range(line - 1, 0, line - 1, 0), [{ body, mode: vscode.CommentMode.Preview, author: { name: "Проверка изменений" } }]);
                     thread.canReply = false;
-                    thread.label = `Review ${record.snapshot.revision.slice(0, 10)}`;
+                    thread.label = `Изменения ${record.snapshot.revision.slice(0, 10)}`;
                     this.commentThreads.push(thread);
                     while (this.commentThreads.length > 100)
                         this.commentThreads.shift()?.dispose();
@@ -274,13 +274,13 @@ class PluginFeatureService {
             }
             record.comments.push(note);
         }
-        const followUp = `Review comment on ${record.snapshot.path}:${line} (snapshot ${record.snapshot.revision}):\n${text}`;
-        let message = note.native ? "Review comment added to the immutable native diff." : "Review comment saved in the in-chat review.";
+        const followUp = `Комментарий к изменению ${record.snapshot.path}:${line} (версия ${record.snapshot.revision}):\n${text}`;
+        let message = note.native ? "Комментарий добавлен к сохранённому сравнению в редакторе IDE." : "Комментарий сохранён в панели изменений чата.";
         if (args.sendToChat === true && !note.sentToChat) {
             if (!this.options.onReviewComment)
-                message = "Review note saved. Sending a follow-up is unavailable in this runtime.";
+                message = "Комментарий сохранён. Отправка в диалог недоступна в этой версии сервера Codex.";
             else if (record.sending.has(key))
-                message = "This review follow-up is already being submitted.";
+                message = "Этот комментарий уже отправляется в диалог.";
             else {
                 context.assertCurrent();
                 record.sending.add(key);
@@ -297,10 +297,10 @@ class PluginFeatureService {
                 }, () => { deliveryNote.sendingToChat = false; record.sending.delete(key); });
                 try {
                     await (0, featureSafety_1.deadline)(delivery, this.timeoutMs);
-                    message = "Review comment submitted as a follow-up to its originating chat.";
+                    message = "Комментарий отправлен в исходный диалог.";
                 }
                 catch (error) {
-                    message = error instanceof featureSafety_1.FeatureError && error.status === "timeout" ? "Review note saved. Follow-up delivery is still pending; duplicate submissions are blocked until the runtime responds." : "Review note saved, but the runtime did not accept the follow-up. It was not marked as sent.";
+                    message = error instanceof featureSafety_1.FeatureError && error.status === "timeout" ? "Комментарий сохранён. Ожидаем подтверждения отправки в диалог. Повторная отправка заблокирована до ответа сервера Codex." : "Комментарий сохранён, но сервер Codex не принял его в диалог. Он не помечен как отправленный.";
                 }
             }
         }
@@ -313,43 +313,43 @@ class PluginFeatureService {
         return {
             ok: true, command: "project.actions", status: "ready",
             items: [
-                { id: "openApplication", label: "Open application", available: commands.has(OPEN_APPLICATION) && readiness, reason: commands.has(OPEN_APPLICATION) && readiness ? undefined : "Element application command or readiness capability is unavailable." },
-                { id: "diagnostics", label: "Current project diagnostics", available: typeof vscode.languages?.getDiagnostics === "function" && readiness, reason: readiness ? "Reads current IDE diagnostics; does not build or publish." : "Element LSP readiness is unavailable." },
-                { id: "rebuild", label: "Rebuild / publish", available: false, reason: "The bundled clean/notify commands do not acknowledge build completion and may run later. Use Element's explicit project workflow." },
-                { id: "worktree", label: "Independent Element worktree", available: false, reason: "Git worktrees do not provision an independent Element workspace, LSP or publication lifecycle." }
+                { id: "openApplication", label: "Открыть приложение", available: commands.has(OPEN_APPLICATION) && readiness, reason: commands.has(OPEN_APPLICATION) && readiness ? undefined : "Команда открытия приложения Element или проверка его готовности недоступна." },
+                { id: "diagnostics", label: "Диагностика проекта", available: typeof vscode.languages?.getDiagnostics === "function" && readiness, reason: readiness ? "Читает текущую диагностику IDE без сборки и публикации." : "Проверка готовности языкового сервера Element недоступна." },
+                { id: "rebuild", label: "Сборка и публикация", available: false, reason: "Команды бандла не подтверждают завершение сборки и могут выполниться позже. Запустите сборку или публикацию штатными средствами Element." },
+                { id: "worktree", label: "Изолированная рабочая копия Element", available: false, reason: "Рабочая копия Git не создаёт отдельную IDE Element, языковой сервер и окружение публикации." }
             ],
-            capabilities: { terminal: { available: false, reason: "Terminal/task execution is not assumed to be permitted in this Element mode." }, worktrees: { available: false, reason: "No branch, worktree, remote push or workspace-switch commands are invoked." } }
+            capabilities: { terminal: { available: false, reason: "В этом режиме Element выполнение команд терминала и задач может быть запрещено." }, worktrees: { available: false, reason: "Команды создания веток, рабочих копий, отправки в репозиторий и переключения рабочей области не запускаются." } }
         };
     }
     async projectAction(context, args) {
         confirm(args);
         const id = requiredString(args, "id", 100);
         if (id !== "openApplication" && id !== "diagnostics")
-            throw new featureSafety_1.FeatureError("unsupported", "Only the listed read-only diagnostics and explicit application-opening actions are supported.");
+            throw new featureSafety_1.FeatureError("unsupported", "Поддерживаются только указанные действия: чтение диагностики и открытие приложения.");
         if (this.projectPending)
-            throw new featureSafety_1.FeatureError("blocked", "A prior Element request is still pending. It was not cancelled by a UI timeout; duplicate actions are blocked.");
+            throw new featureSafety_1.FeatureError("blocked", "Предыдущий запрос Element ещё выполняется. Истечение времени ожидания в интерфейсе его не отменяет. Повторное действие временно заблокировано.");
         const expiry = { expired: false };
         const run = async () => {
             const root = this.workspace(context);
             const commands = await this.commandNames();
             if ((id === "openApplication" && !commands.has(OPEN_APPLICATION)) || (!this.options.isProjectReady && !commands.has(LSP_REQUEST)))
-                throw new featureSafety_1.FeatureError("unsupported", "The required Element command is not registered.");
+                throw new featureSafety_1.FeatureError("unsupported", "Нужная команда Element не зарегистрирована в IDE.");
             context.assertCurrent();
             if (expiry.expired)
-                throw new featureSafety_1.FeatureError("timeout", "The action deadline elapsed before readiness was checked.");
+                throw new featureSafety_1.FeatureError("timeout", "Время ожидания истекло до проверки готовности IDE.");
             const ready = this.options.isProjectReady ? await this.options.isProjectReady() : Array.isArray(await vscode.commands.executeCommand(LSP_REQUEST, READINESS_METHOD));
             // A late readiness reply must never launch an action after its timeout reached the UI.
             if (expiry.expired)
-                throw new featureSafety_1.FeatureError("timeout", "The action deadline elapsed before dispatch; no application action was started.");
+                throw new featureSafety_1.FeatureError("timeout", "Время ожидания истекло до отправки команды. Действие с приложением не запускалось.");
             context.assertCurrent();
             if (!ready)
-                throw new featureSafety_1.FeatureError("blocked", "Element LSP is not ready. No application action was started.");
+                throw new featureSafety_1.FeatureError("blocked", "Языковой сервер Element не готов. Действие с приложением не запускалось.");
             if (id === "openApplication") {
                 await vscode.commands.executeCommand(OPEN_APPLICATION);
-                return { ok: true, command: "project.action.run", status: "dispatched", id, message: "Element accepted the application-opening command. This does not assert application readiness or publication completion." };
+                return { ok: true, command: "project.action.run", status: "dispatched", id, message: "Element принял команду открытия приложения. Готовность приложения и завершение публикации ещё не подтверждены." };
             }
             if (typeof vscode.languages?.getDiagnostics !== "function")
-                throw new featureSafety_1.FeatureError("unsupported", "Current IDE diagnostics are unavailable.");
+                throw new featureSafety_1.FeatureError("unsupported", "Текущая диагностика IDE недоступна.");
             const items = [];
             let errors = 0, warnings = 0, total = 0;
             for (const [uri, diagnostics] of vscode.languages.getDiagnostics()) {
@@ -365,7 +365,7 @@ class PluginFeatureService {
                         items.push({ path: path.relative(root, uri.fsPath).split(path.sep).join("/"), line: diagnostic.range.start.line + 1, severity: diagnostic.severity === 0 ? "error" : diagnostic.severity === 1 ? "warning" : "information", message: (0, featureSafety_1.redactPreview)(diagnostic.message.slice(0, MAX_PREVIEW_CHARS)).slice(0, 800) });
                 }
             }
-            return { ok: true, command: "project.action.run", status: "completed", id, diagnostics: { errors, warnings, total, truncated: total > items.length, freshness: "current-IDE-cache", buildRequested: false, items }, message: "Current IDE diagnostics collected. No build, terminal process or publication was requested." };
+            return { ok: true, command: "project.action.run", status: "completed", id, diagnostics: { errors, warnings, total, truncated: total > items.length, freshness: "current-IDE-cache", buildRequested: false, items }, message: "Текущая диагностика IDE получена. Сборка, команды терминала и публикация не запускались." };
         };
         const pending = run();
         this.projectPending = pending;
@@ -399,17 +399,17 @@ function side(buffer, exists, label) {
 }
 function objectPayload(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))
-        throw new featureSafety_1.FeatureError("blocked", "Feature payload must be an object.");
+        throw new featureSafety_1.FeatureError("blocked", "Некорректный формат параметров действия.");
     return value;
 }
 function requiredString(value, key, limit) {
     const text = value[key];
     if (typeof text !== "string" || !text.trim() || text.length > limit || text.includes("\0"))
-        throw new featureSafety_1.FeatureError("blocked", `A valid ${key} is required.`);
+        throw new featureSafety_1.FeatureError("blocked", `Укажите корректный параметр ${key}.`);
     return text;
 }
 function confirm(value) {
     if (value.confirmed !== true)
-        throw new featureSafety_1.FeatureError("blocked", "This operation requires an explicit user confirmation of the reviewed action.");
+        throw new featureSafety_1.FeatureError("blocked", "Для этого действия требуется ваше явное подтверждение.");
 }
 //# sourceMappingURL=pluginFeatureService.js.map

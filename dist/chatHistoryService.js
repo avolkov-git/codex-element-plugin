@@ -36,39 +36,75 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ChatHistoryService = void 0;
 exports.normalizeHistory = normalizeHistory;
 const vscode = __importStar(require("vscode"));
+const perf_hooks_1 = require("perf_hooks");
 const projectHistoryStore_1 = require("./projectHistoryStore");
 class ChatHistoryService {
-    constructor(context, configRoot, logger, getIdentity, onSaveError = () => undefined) {
+    constructor(context, configRoot, logger, getIdentity, onSaveError = () => undefined, options = {}) {
         this.context = context;
         this.logger = logger;
         this.getIdentity = getIdentity;
         this.onSaveError = onSaveError;
         this.saveChain = Promise.resolve();
+        this.loading = 0;
+        this.metrics = {
+            saveNowRequests: 0, scheduledSaveRequests: 0, coalescedSaves: 0,
+            snapshotCaptures: 0, snapshotMs: 0, snapshotMaxMs: 0, serializations: 0, serializedBytes: 0, serializationMs: 0,
+            savesStarted: 0, savesCompleted: 0, saveFailures: 0, rejectedSaveRequests: 0,
+            saveMs: 0, saveMaxMs: 0, queueCurrent: 0, queueMax: 0, queueWaitMs: 0, queueWaitMaxMs: 0
+        };
         this.store = new projectHistoryStore_1.ProjectHistoryStore(configRoot, normalizeHistory);
+        this.saveDelayMs = options.saveDelayMs ?? 600;
+        this.maxQueuedOperations = options.maxQueuedOperations ?? 32;
+        if (!Number.isFinite(this.saveDelayMs) || this.saveDelayMs < 0 || !Number.isSafeInteger(this.maxQueuedOperations) || this.maxQueuedOperations < 2) {
+            throw new Error("Invalid history save scheduling limits.");
+        }
+    }
+    getMetrics() {
+        const store = this.store.getMetrics();
+        return { ...this.metrics, serializations: this.metrics.serializations + store.serializations,
+            serializedBytes: this.metrics.serializedBytes + store.serializedBytes, serializationMs: this.metrics.serializationMs + store.serializationMs,
+            scheduledSavePending: Boolean(this.pendingSave), store };
     }
     async load(profileId) {
-        const identity = this.getIdentity();
-        if (!identity || identity.userKey !== profileId) {
+        const verified = this.getIdentity();
+        if (!verified || verified.userKey !== profileId) {
             throw new Error("Пользователь IDE не подтвержден. История не открыта.");
         }
+        const identity = { ...verified };
         const workspacePath = this.workspacePath();
+        // An explicit idle reload is recovery. A load behind outstanding saves still observes their failures.
+        if (!this.pendingSave && this.metrics.queueCurrent === 0) {
+            this.saveFailure = undefined;
+        }
         const flushed = this.flush();
-        return this.enqueue(async () => {
-            await flushed;
-            this.identity = undefined;
-            const loaded = await this.store.load(identity, workspacePath);
-            const current = this.getIdentity();
-            if (current?.userKey !== identity.userKey || current.projectKey !== identity.projectKey || this.workspacePath() !== workspacePath) {
-                throw new Error("Пользователь или проект IDE изменился при загрузке истории.");
-            }
-            this.identity = identity;
-            this.logger.info(`Project chat history loaded: ${this.store.file(identity)}.`);
-            return loaded;
-        });
+        this.loading++;
+        try {
+            return await this.enqueue(async () => {
+                this.identity = undefined;
+                this.loadedWorkspacePath = undefined;
+                await flushed;
+                const loaded = await this.store.load(identity, workspacePath);
+                const current = this.getIdentity();
+                if (current?.userKey !== identity.userKey || current.projectKey !== identity.projectKey || this.workspacePath() !== workspacePath) {
+                    throw new Error("Пользователь или проект IDE изменился при загрузке истории.");
+                }
+                this.identity = identity;
+                this.loadedWorkspacePath = workspacePath;
+                this.logger.info(`Project chat history loaded: ${this.store.file(identity)}.`);
+                return loaded;
+            });
+        }
+        finally {
+            this.loading--;
+        }
     }
     scheduleSave(profileId, history) {
         const identity = this.requireLoadedIdentity(profileId);
-        this.pendingSave = { identity, workspacePath: this.workspacePath(), history };
+        this.metrics.scheduledSaveRequests++;
+        if (this.pendingSave) {
+            this.metrics.coalescedSaves++;
+        }
+        this.pendingSave = { identity, workspacePath: this.loadedWorkspacePath, history };
         // A fixed deadline guarantees progress even during a continuous token stream.
         if (this.saveTimer) {
             return;
@@ -76,30 +112,48 @@ class ChatHistoryService {
         this.saveTimer = setTimeout(() => {
             this.saveTimer = undefined;
             void this.flush().catch((error) => this.reportSaveError(error));
-        }, 600);
+        }, this.saveDelayMs);
     }
-    async saveNow(profileId, history) {
-        if (this.saveTimer) {
-            clearTimeout(this.saveTimer);
-            this.saveTimer = undefined;
+    saveNow(profileId, history) {
+        this.metrics.saveNowRequests++;
+        try {
+            const completion = this.writeQueued({ identity: this.requireLoadedIdentity(profileId), workspacePath: this.loadedWorkspacePath, history });
+            this.clearSaveTimer();
+            if (this.pendingSave) {
+                this.metrics.coalescedSaves++;
+            }
+            this.pendingSave = undefined;
+            return completion;
         }
-        this.pendingSave = undefined;
-        await this.writeQueued({ identity: this.requireLoadedIdentity(profileId), workspacePath: this.workspacePath(), history });
+        catch (error) {
+            this.metrics.rejectedSaveRequests++;
+            return Promise.reject(error);
+        }
     }
-    async flush() {
-        const pending = this.pendingSave;
-        if (!pending) {
-            await this.saveChain;
-            return;
+    flush() {
+        try {
+            this.clearSaveTimer();
+            if (this.pendingSave) {
+                this.writeQueued(this.pendingSave);
+                this.pendingSave = undefined;
+            }
+            // Later snapshots must not replace a revision covered by this barrier.
+            this.tailSave = undefined;
+            const barrier = this.saveChain.then(() => { if (this.saveFailure) {
+                throw this.saveFailure.error;
+            } });
+            // load/import may not reach their await until earlier operations finish.
+            void barrier.catch(() => undefined);
+            return barrier;
         }
-        this.pendingSave = undefined;
-        await this.writeQueued(pending);
+        catch (error) {
+            const rejected = Promise.reject(error);
+            void rejected.catch(() => undefined);
+            return rejected;
+        }
     }
     dispose() {
-        if (this.saveTimer) {
-            clearTimeout(this.saveTimer);
-            this.saveTimer = undefined;
-        }
+        this.clearSaveTimer();
         if (this.pendingSave) {
             void this.flush().catch((error) => this.reportSaveError(error));
         }
@@ -121,8 +175,13 @@ class ChatHistoryService {
         if (!identity) {
             throw new Error("Сначала откройте историю текущего проекта.");
         }
-        const workspacePath = this.workspacePath();
-        const snapshot = JSON.parse(JSON.stringify(current));
+        const workspacePath = this.loadedWorkspacePath;
+        const started = perf_hooks_1.performance.now();
+        const serialized = JSON.stringify(current);
+        this.metrics.serializations++;
+        this.metrics.serializedBytes += Buffer.byteLength(serialized);
+        this.metrics.serializationMs += perf_hooks_1.performance.now() - started;
+        const snapshot = JSON.parse(serialized);
         const flushed = this.flush();
         return this.enqueue(async () => {
             await flushed;
@@ -134,19 +193,85 @@ class ChatHistoryService {
     }
     workspacePath() { return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || this.context.globalStorageUri.fsPath; }
     requireLoadedIdentity(profileId) {
-        if (!this.identity || this.identity.userKey !== profileId) {
+        if (this.loading || !this.identity || this.identity.userKey !== profileId) {
             throw new Error("Запись истории до подтверждения пользователя и загрузки проекта запрещена.");
         }
         return this.identity;
     }
-    async writeQueued(pending) {
-        const history = JSON.parse(JSON.stringify(pending.history));
-        await this.enqueue(() => this.store.save(pending.identity, pending.workspacePath, history));
+    writeQueued(pending) {
+        const tail = this.tailSave;
+        const replace = tail?.identity === pending.identity && tail.workspacePath === pending.workspacePath;
+        if (!replace) {
+            this.requireQueueSpace();
+        }
+        const start = perf_hooks_1.performance.now();
+        // Exported transcripts are mutable. Detach now, without a JSON string/parse round-trip.
+        const history = normalizeHistory(pending.history);
+        const elapsed = perf_hooks_1.performance.now() - start;
+        this.metrics.snapshotCaptures++;
+        this.metrics.snapshotMs += elapsed;
+        this.metrics.snapshotMaxMs = Math.max(this.metrics.snapshotMaxMs, elapsed);
+        if (replace) {
+            tail.history = history;
+            this.metrics.coalescedSaves++;
+            return tail.completion;
+        }
+        const batch = { ...pending, history, completion: Promise.resolve() };
+        batch.completion = this.enqueue(async () => {
+            if (this.tailSave === batch) {
+                this.tailSave = undefined;
+            }
+            const started = perf_hooks_1.performance.now();
+            this.metrics.savesStarted++;
+            try {
+                await this.store.save(batch.identity, batch.workspacePath, batch.history);
+                this.saveFailure = undefined;
+                this.metrics.savesCompleted++;
+            }
+            catch (error) {
+                this.saveFailure = { error };
+                this.metrics.saveFailures++;
+                throw error;
+            }
+            finally {
+                const duration = perf_hooks_1.performance.now() - started;
+                this.metrics.saveMs += duration;
+                this.metrics.saveMaxMs = Math.max(this.metrics.saveMaxMs, duration);
+            }
+        });
+        this.tailSave = batch;
+        return batch.completion;
     }
     enqueue(operation) {
-        const result = this.saveChain.then(operation);
+        this.requireQueueSpace();
+        this.tailSave = undefined;
+        const queuedAt = perf_hooks_1.performance.now();
+        this.metrics.queueCurrent++;
+        this.metrics.queueMax = Math.max(this.metrics.queueMax, this.metrics.queueCurrent);
+        const result = this.saveChain.then(async () => {
+            const wait = perf_hooks_1.performance.now() - queuedAt;
+            this.metrics.queueWaitMs += wait;
+            this.metrics.queueWaitMaxMs = Math.max(this.metrics.queueWaitMaxMs, wait);
+            try {
+                return await operation();
+            }
+            finally {
+                this.metrics.queueCurrent--;
+            }
+        });
         this.saveChain = result.then(() => undefined, () => undefined);
         return result;
+    }
+    requireQueueSpace() {
+        if (this.metrics.queueCurrent >= this.maxQueuedOperations) {
+            throw new Error("History persistence queue is full. Await flush() before retrying.");
+        }
+    }
+    clearSaveTimer() {
+        if (this.saveTimer) {
+            clearTimeout(this.saveTimer);
+            this.saveTimer = undefined;
+        }
     }
     reportSaveError(error) {
         const message = normalizeErrorMessage(error);
@@ -387,6 +512,9 @@ function normalizeTranscriptItem(value) {
             id,
             question: value.question,
             options: normalizeClarificationOptions(value.options),
+            answer: typeof value.answer === "string" ? value.answer : undefined,
+            backendThreadId: typeof value.backendThreadId === "string" ? value.backendThreadId : undefined,
+            backendItemId: typeof value.backendItemId === "string" ? value.backendItemId : undefined,
             createdAt,
             updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
             turnId: typeof value.turnId === "string" ? value.turnId : undefined
@@ -439,8 +567,19 @@ function normalizeTranscriptItem(value) {
         status: value.status === "streaming" ? "streaming" : "complete",
         completedAt: typeof value.completedAt === "string" ? value.completedAt : undefined,
         durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-        attachments: normalizeAttachments(value.attachments)
+        attachments: normalizeAttachments(value.attachments),
+        questions: normalizeMessageQuestions(value.questions),
+        backendThreadId: typeof value.backendThreadId === "string" ? value.backendThreadId : undefined,
+        backendItemId: typeof value.backendItemId === "string" ? value.backendItemId : undefined
     };
+}
+function normalizeMessageQuestions(value) {
+    if (!Array.isArray(value))
+        return undefined;
+    return value.map((question) => ({
+        id: question.id, title: question.title, options: question.options === null ? null : [...question.options],
+        answer: typeof question.answer === "string" ? question.answer : undefined
+    }));
 }
 function normalizeClarificationOptions(value) {
     if (!Array.isArray(value)) {
@@ -597,9 +736,21 @@ function normalizeDiffFile(value) {
         status: normalizeDiffStatus(value.status),
         additions: typeof value.additions === "number" ? value.additions : 0,
         deletions: typeof value.deletions === "number" ? value.deletions : 0,
-        diff: typeof value.diff === "string" ? value.diff : undefined,
-        truncated: value.truncated === true
+        diff: typeof value.diff === "string" ? value.diff.slice(0, 2048) : undefined,
+        truncated: value.truncated === true || typeof value.diff === "string" && value.diff.length > 2048,
+        patchArtifact: normalizePatchArtifact(value.patchArtifact)
     };
+}
+function normalizePatchArtifact(value) {
+    const maxBytes = 8 * 1024 * 1024;
+    if (!isObject(value) || typeof value.id !== "string" || !/^[a-f0-9]{64}$/.test(value.id)
+        || typeof value.scope !== "string" || !/^[a-f0-9]{64}$/.test(value.scope)
+        || typeof value.start !== "number" || !Number.isSafeInteger(value.start) || value.start < 0 || value.start > maxBytes
+        || typeof value.length !== "number" || !Number.isSafeInteger(value.length) || value.length < 0 || value.length > maxBytes
+        || value.start + value.length > maxBytes) {
+        return undefined;
+    }
+    return { id: value.id, scope: value.scope, start: value.start, length: value.length };
 }
 function normalizeDiffStatus(value) {
     if (value === "added" || value === "modified" || value === "deleted" || value === "renamed" || value === "unknown") {

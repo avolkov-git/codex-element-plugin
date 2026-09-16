@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ChatPanelManager = exports.CHAT_PANEL_VIEW_TYPE = void 0;
 const vscode = __importStar(require("vscode"));
+const perf_hooks_1 = require("perf_hooks");
 const markdownFileLink_1 = require("./markdownFileLink");
 const panelIcon_1 = require("./panelIcon");
 const webviewHtml_1 = require("./webviewHtml");
@@ -59,11 +60,18 @@ class ChatPanelManager {
         this.dirty = false;
         this.viewportOffset = -1;
         this.inFlight = false;
+        this.pendingPost = false;
+        this.sentAt = 0;
+        this.pressure = { frames: 0, bytes: 0, maxFrameBytes: 0, postFailures: 0, ackTimeouts: 0, ackMaxMs: 0, serializeMaxMs: 0, frontendLagMs: 0, frontendReceiveMs: 0 };
         this.lastMeta = "";
         this.lastTurns = "";
         this.lastTotal = -1;
         this.previousRows = new Map();
         this.featureRequests = new Set();
+    }
+    getMetrics() {
+        return { ...this.pressure, pendingPosts: Number(this.pendingPost), pendingAck: Number(this.inFlight),
+            ackAgeMs: this.inFlight ? Date.now() - this.sentAt : 0, visible: this.visible && this.panel?.visible !== false, ready: this.ready };
     }
     registerSerializer() {
         return vscode.window.registerWebviewPanelSerializer(exports.CHAT_PANEL_VIEW_TYPE, {
@@ -134,7 +142,7 @@ class ChatPanelManager {
     }
     postActiveSnapshot() {
         this.dirty = true;
-        if (this.flushTimer || this.inFlight || !this.ready || !this.visible || this.panel?.visible === false) {
+        if (this.flushTimer || this.inFlight || this.pendingPost || !this.ready || !this.visible || this.panel?.visible === false) {
             return;
         }
         this.flushTimer = setTimeout(() => {
@@ -155,8 +163,9 @@ class ChatPanelManager {
     }
     async flushSnapshot() {
         const panel = this.panel;
-        if (!panel || !this.ready || !this.visible || panel.visible === false || this.inFlight || !this.dirty)
+        if (!panel || !this.ready || !this.visible || panel.visible === false || this.inFlight || this.pendingPost || !this.dirty)
             return;
+        const startedAt = perf_hooks_1.performance.now();
         this.dirty = false;
         const snapshot = this.state.getActiveChatSnapshot();
         const chatId = snapshot?.chat.id ?? "";
@@ -225,22 +234,42 @@ class ChatPanelManager {
         this.lastTotal = frame.totalCount;
         this.revision = frame.revision;
         this.inFlight = true;
+        this.pendingPost = true;
+        this.sentAt = Date.now();
+        const frameBytes = Buffer.byteLength(JSON.stringify(frame), "utf8");
+        this.pressure.frames++;
+        this.pressure.bytes += frameBytes;
+        this.pressure.maxFrameBytes = Math.max(this.pressure.maxFrameBytes, frameBytes);
+        this.pressure.serializeMaxMs = Math.max(this.pressure.serializeMaxMs, perf_hooks_1.performance.now() - startedAt);
         const epoch = this.epoch;
-        // One unacknowledged frame at a time. A timeout starts a new epoch, never a patch over a gap.
+        // Silence is not permission to enqueue another frame. Resume on ACK or an explicit resync.
         this.ackTimer = setTimeout(() => {
             if (this.panel !== panel || this.epoch !== epoch)
                 return;
-            this.resetBridge();
-            this.postActiveSnapshot();
+            this.pressure.ackTimeouts++;
+            this.dirty = true;
         }, 3000);
         try {
             const delivered = await panel.webview.postMessage(frame);
-            if (!delivered && this.epoch === epoch)
+            if (!delivered && this.epoch === epoch) {
+                this.pressure.postFailures++;
+                this.ready = false;
+                this.resetBridge();
                 this.dirty = true;
+            }
         }
         catch {
-            if (this.epoch === epoch)
+            this.pressure.postFailures++;
+            if (this.epoch === epoch) {
+                this.ready = false;
+                this.resetBridge();
                 this.dirty = true;
+            }
+        }
+        finally {
+            this.pendingPost = false;
+            if (this.dirty)
+                this.postActiveSnapshot();
         }
     }
     setupPanel(panel) {
@@ -270,7 +299,7 @@ class ChatPanelManager {
                 const restore = message.type === "command" && ["chat.send", "chat.queue.add", "chat.steer"].includes(message.command) && isObject(message.payload)
                     ? { restorePrompt: message.payload.prompt, restoreAttachments: message.payload.attachments } : {};
                 void panel.webview.postMessage({ type: "event", event: "chat.error", chatId: message.chatId,
-                    payload: { message: error instanceof Error ? error.message : "Command failed.", ...restore } });
+                    payload: { message: error instanceof Error ? error.message : "Не удалось выполнить команду.", ...restore } });
             });
         });
         panel.onDidChangeViewState(() => {
@@ -292,7 +321,7 @@ class ChatPanelManager {
         });
     }
     async handleMessage(panel, message) {
-        if (!message || typeof message !== "object") {
+        if (panel !== this.panel || !message || typeof message !== "object") {
             return;
         }
         if (message.type === "ready") {
@@ -312,6 +341,12 @@ class ChatPanelManager {
         }
         if (message.type === "chat.ack") {
             if (message.epoch === this.epoch && message.revision === this.revision && message.chatId === this.panelChatId) {
+                this.pressure.ackMaxMs = Math.max(this.pressure.ackMaxMs, Date.now() - this.sentAt);
+                for (const [source, target] of [["eventLoopLagMs", "frontendLagMs"], ["receiveMs", "frontendReceiveMs"]]) {
+                    const value = message.metrics?.[source];
+                    if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 3600000)
+                        this.pressure[target] = Math.max(this.pressure[target], value);
+                }
                 clearTimeout(this.ackTimer);
                 this.ackTimer = undefined;
                 this.inFlight = false;
@@ -323,6 +358,8 @@ class ChatPanelManager {
         if (message.type === "chat.resync" || message.type === "chat.visibility") {
             if (message.type === "chat.visibility")
                 this.visible = message.visible !== false;
+            if (this.visible)
+                this.ready = true;
             this.resetBridge();
             this.postActiveSnapshot();
             return;
@@ -335,6 +372,27 @@ class ChatPanelManager {
             return;
         }
         const originChatId = message.chatId ?? this.panelChatId;
+        if (message.type === "command" && message.command === "chat.question.respond") {
+            const payload = isObject(message.payload) ? message.payload : {};
+            const messageId = typeof payload.messageId === "string" ? payload.messageId : "";
+            const questionId = typeof payload.questionId === "string" ? payload.questionId : "";
+            let result = { messageId, questionId, accepted: false };
+            try {
+                if (!message.chatId || message.chatId !== this.panelChatId || !this.state.getChat(message.chatId))
+                    throw new Error("Вопрос относится к другому или закрытому диалогу.");
+                if (!messageId || messageId.length > 1024 || !questionId || questionId.length > 1024 || typeof payload.answer !== "string")
+                    throw new Error("Некорректные данные ответа на вопрос.");
+                if (!this.handlers.respondToQuestion)
+                    throw new Error("Отправка ответа на вопрос недоступна.");
+                const response = await this.handlers.respondToQuestion(message.chatId, messageId, questionId, payload.answer);
+                result = { ...result, accepted: response?.accepted === true, error: response?.accepted === true ? undefined : response?.error || "Сервер не подтвердил принятие ответа." };
+            }
+            catch (error) {
+                result.error = error instanceof Error ? error.message : "Не удалось отправить ответ на вопрос.";
+            }
+            await panel.webview.postMessage({ type: "event", event: "chat.question.result", chatId: typeof originChatId === "string" ? originChatId : this.panelChatId, payload: result });
+            return;
+        }
         if ((!originChatId || !this.state.getChat(originChatId))
             && !(message.type === "features.request" && message.command?.startsWith("history.")))
             return;
@@ -343,16 +401,16 @@ class ChatPanelManager {
             if (!requestId || requestId.length > 128 || this.featureRequests.has(requestId))
                 return;
             if (this.featureRequests.size >= 32) {
-                await panel.webview.postMessage({ type: "features.result", requestId, error: "Too many pending requests." });
+                await panel.webview.postMessage({ type: "features.result", requestId, error: "Слишком много запросов. Дождитесь завершения текущих." });
                 return;
             }
             this.featureRequests.add(requestId);
             try {
                 if (!message.command || !FEATURE_COMMANDS.has(message.command) || !this.handlers.featureRequest) {
-                    throw new Error("This action is unavailable in this runtime.");
+                    throw new Error("Действие недоступно в этой версии сервера Codex.");
                 }
                 if (JSON.stringify(message.payload ?? null).length > 262144)
-                    throw new Error("Request is too large.");
+                    throw new Error("Запрос превышает допустимый размер.");
                 const result = await this.handlers.featureRequest(message.command, message.payload, originChatId);
                 if (message.command === "history.jump" && isObject(result) && typeof result.index === "number" && typeof result.chatId === "string") {
                     this.panelChatId = result.chatId;
@@ -365,7 +423,7 @@ class ChatPanelManager {
             }
             catch (error) {
                 await panel.webview.postMessage({ type: "features.result", requestId, chatId: originChatId,
-                    error: error instanceof Error ? error.message : "Action failed." });
+                    error: error instanceof Error ? error.message : "Не удалось выполнить действие." });
             }
             finally {
                 this.featureRequests.delete(requestId);
@@ -392,17 +450,17 @@ class ChatPanelManager {
             const payload = isObject(message.payload) ? message.payload : {};
             try {
                 if (typeof payload.id !== "string" || !this.handlers.resolveUserInput)
-                    throw new Error("Question handler unavailable.");
+                    throw new Error("Обработка ответа на вопрос недоступна.");
                 const response = payload.response === null ? null : payload.response;
                 if (response !== null && (!isObject(response) || !isObject(response.answers)))
-                    throw new Error("Invalid answer.");
+                    throw new Error("Некорректный ответ.");
                 const accepted = await this.handlers.resolveUserInput(originChatId, payload.id, response);
                 await panel.webview.postMessage({ type: "event", event: "chat.userInput.result", chatId: originChatId,
                     payload: { id: payload.id, accepted, error: accepted ? undefined : "Вопрос уже закрыт или относится к другому запросу." } });
             }
             catch (error) {
                 await panel.webview.postMessage({ type: "event", event: "chat.userInput.result", chatId: originChatId,
-                    payload: { id: payload.id, accepted: false, error: error instanceof Error ? error.message : "Invalid answer." } });
+                    payload: { id: payload.id, accepted: false, error: error instanceof Error ? error.message : "Некорректный ответ." } });
             }
             return;
         }

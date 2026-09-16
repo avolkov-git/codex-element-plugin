@@ -71,6 +71,8 @@ jobs:
           npm run check:markdown-links
           npm run check:transcript-window
           npm run check:runtime
+          npm run check:runtime-payload
+          npm run check:browser-runtime
           npm run check:features
           npm run eval:context
           node --check media/chat.js
@@ -90,6 +92,8 @@ jobs:
           RUNTIME="bin/${{ matrix.platform }}/codex"
           if [[ "${{ matrix.platform }}" == win32-* ]]; then RUNTIME="${RUNTIME}.exe"; fi
           node scripts/app-server-smoke.js "$RUNTIME"
+          node scripts/code-mode-mcp-smoke.cjs "$RUNTIME"
+          node scripts/code-mode-mcp-smoke.cjs "$RUNTIME" --expect-missing-host
 
       - name: Prepare managed Playwright MCP browser runtime
         shell: bash
@@ -97,6 +101,8 @@ jobs:
           node scripts/prepare-browser-runtime.js \
             --root "${RUNNER_TEMP}/codex-browser-runtime" \
             --platform "${{ matrix.platform }}"
+          node scripts/browser-runtime-smoke.cjs \
+            "${RUNNER_TEMP}/codex-browser-runtime/browser/${{ matrix.platform }}"
 
       - name: Build platform packages
         shell: bash

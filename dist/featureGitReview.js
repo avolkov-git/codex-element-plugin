@@ -60,7 +60,7 @@ async function git(root, args, input, indexFile, allowFailure = false) {
             env: gitEnvironment(indexFile), encoding: "buffer", timeout: 8000, maxBuffer: MAX_GIT_OUTPUT, windowsHide: true
         }, (error, stdout) => {
             if (error && !(allowFailure && typeof error.code === "number")) {
-                reject(new featureSafety_1.FeatureError("error", "Git could not complete this bounded local operation. No remote command was requested."));
+                reject(new featureSafety_1.FeatureError("error", "Git не смог выполнить локальную операцию. Проверьте доступность Git и права на файлы. Запросы к удалённому репозиторию не отправлялись."));
             }
             else {
                 resolve(error ? Buffer.alloc(0) : stdout);
@@ -93,36 +93,36 @@ function isDirty(file) {
 async function repository(root) {
     const top = (await git(root, ["rev-parse", "--show-toplevel"])).toString("utf8").trim();
     if (!top || fs.realpathSync(top) !== root) {
-        throw new featureSafety_1.FeatureError("blocked", "Review requires the current workspace to be the repository root; parent repositories are not used.");
+        throw new featureSafety_1.FeatureError("blocked", "Чтобы посмотреть изменения, откройте в IDE корневой каталог Git-репозитория. Репозитории в родительских каталогах здесь не используются.");
     }
     const gitDir = fs.realpathSync((await git(root, ["rev-parse", "--absolute-git-dir"])).toString("utf8").trim());
     const indexPath = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).toString("utf8").trim());
     if (path.dirname(indexPath) !== gitDir) {
-        throw new featureSafety_1.FeatureError("unsupported", "A nonstandard Git index location is not supported.");
+        throw new featureSafety_1.FeatureError("unsupported", "Нестандартное расположение индекса Git не поддерживается.");
     }
     const partial = await git(root, ["config", "--get", "extensions.partialClone"], undefined, undefined, true);
     const promisor = await git(root, ["config", "--get-regexp", "^remote\\..*\\.promisor$"], undefined, undefined, true);
     if (partial.length || /\s(?:true|yes|on|1)\s*$/im.test(promisor.toString("utf8"))) {
-        throw new featureSafety_1.FeatureError("unsupported", "Partial-clone review is disabled because reading missing objects may trigger a remote fetch.");
+        throw new featureSafety_1.FeatureError("unsupported", "Просмотр частично клонированного репозитория отключён: чтение недостающих объектов может потребовать скачивания с сервера.");
     }
     return { gitDir, indexPath };
 }
 async function currentHead(root) {
     const value = (await git(root, ["rev-parse", "--verify", "HEAD"], undefined, undefined, true)).toString("utf8").trim();
     if (value && !/^[a-f\d]{40,64}$/.test(value))
-        throw new featureSafety_1.FeatureError("blocked", "Invalid Git revision.");
+        throw new featureSafety_1.FeatureError("blocked", "Некорректная ревизия Git.");
     return value;
 }
 async function entry(root, relative, head) {
     const output = await git(root, head === undefined ? ["ls-files", "--stage", "-z", "--", relative] : ["ls-tree", "-z", head, "--", relative]);
     const records = output.toString("utf8").split("\0").filter(Boolean);
     if (records.length > 1)
-        throw new featureSafety_1.FeatureError("blocked", "Resolve this file's merge conflict in the IDE before review actions.");
+        throw new featureSafety_1.FeatureError("blocked", "Сначала разрешите конфликт слияния этого файла в IDE.");
     if (!records.length)
         return undefined;
     const match = /^(\d{6}) (?:blob )?([a-f\d]{40,64})(?: (\d))?\t/.exec(records[0]);
     if (!match || (head === undefined && match[3] !== "0") || !["100644", "100755"].includes(match[1])) {
-        throw new featureSafety_1.FeatureError("unsupported", "Symlinks, submodules, and unmerged index entries cannot be changed by review.");
+        throw new featureSafety_1.FeatureError("unsupported", "В этой панели нельзя изменять символические ссылки, подмодули и записи индекса с конфликтами слияния.");
     }
     return { mode: match[1], oid: match[2] };
 }
@@ -131,7 +131,7 @@ async function blob(root, value) {
         return Buffer.alloc(0);
     const size = Number((await git(root, ["cat-file", "-s", value.oid])).toString("utf8").trim());
     if (!Number.isSafeInteger(size) || size > MAX_FILE_BYTES)
-        throw new featureSafety_1.FeatureError("unsupported", "This file exceeds the full-text review size limit (512 KiB).");
+        throw new featureSafety_1.FeatureError("unsupported", "Файл слишком велик для полного сравнения. Ограничение: 512 КиБ.");
     const content = await git(root, ["cat-file", "blob", value.oid]);
     (0, featureSafety_1.plainText)(content);
     return content;
@@ -140,15 +140,15 @@ async function filterReason(root, relative) {
     const attributes = (await git(root, ["check-attr", "-z", "filter", "text", "eol", "working-tree-encoding", "ident", "--", relative])).toString("utf8").split("\0");
     for (let index = 2; index < attributes.length; index += 3) {
         if (attributes[index] !== "unspecified" && attributes[index] !== "unset") {
-            return "Git content conversion is configured for this file. Use the IDE Git workflow to preserve filter/EOL semantics.";
+            return "Для файла настроено преобразование содержимого Git. Выполните действие через Git в IDE, чтобы сохранить фильтры и окончания строк.";
         }
     }
     const autocrlf = (await git(root, ["config", "--get", "core.autocrlf"], undefined, undefined, true)).toString("utf8").trim();
     if (autocrlf && autocrlf !== "false")
-        return "Git automatic line-ending conversion requires the IDE Git workflow.";
+        return "В Git включено автоматическое преобразование окончаний строк. Выполните действие через Git в IDE.";
     const flags = (await git(root, ["ls-files", "-v", "-z", "--", relative])).toString("utf8");
     if (flags && !flags.startsWith("H "))
-        return "Skip-worktree or assume-unchanged index entries require the IDE Git workflow.";
+        return "У файла установлен флаг skip-worktree или assume-unchanged. Выполните действие через Git в IDE.";
     return undefined;
 }
 async function listReviewPaths(root) {
@@ -200,7 +200,7 @@ function parseEntries(output) {
     for (const record of output.toString("utf8").split("\0").filter(Boolean)) {
         const match = /^(\d{6}) (?:blob |tree |commit )?([a-f\d]{40,64})(?: (\d))?\t([\s\S]+)$/.exec(record);
         if (!match)
-            throw new featureSafety_1.FeatureError("unsupported", "The Git index format could not be safely inspected.");
+            throw new featureSafety_1.FeatureError("unsupported", "Не удалось безопасно прочитать формат индекса Git.");
         result.set(match[4], { mode: match[1], oid: match[2] });
     }
     return result;
@@ -229,13 +229,13 @@ async function captureReview(root, relative, layer) {
     const diskMode = disk === undefined ? 0 : fs.statSync(file).mode & 0o777;
     const afterMode = layer === "index" ? indexed?.mode ?? "100644"
         : !trackFileMode ? indexed?.mode ?? "100644" : disk === undefined ? "100644" : (diskMode & 0o111 ? "100755" : "100644");
-    const mutationReason = layer === "index" ? "Staged revisions are read-only here. Revert applies only to working changes and preserves the index." : await filterReason(root, relative);
+    const mutationReason = layer === "index" ? "Изменения в индексе здесь доступны только для чтения. Отмена применяется только к рабочим файлам и не меняет индекс." : await filterReason(root, relative);
     const dirty = isDirty(file);
     const diskHash = stateHash(disk);
     const revision = (0, featureSafety_1.digest)(JSON.stringify([root, relative, layer, head, indexHash, headFileHash, stateHash(beforeExists ? before : undefined), stateHash(afterExists ? after : undefined), beforeMode, afterMode, diskHash, diskMode, trackFileMode]));
     if (indexHash !== stateHash(indexContent(repo.indexPath)) || head !== await currentHead(root)
         || diskHash !== stateHash((0, featureSafety_1.readRegular)((0, featureSafety_1.safeFile)(root, relative), MAX_FILE_BYTES))) {
-        throw new featureSafety_1.FeatureError("conflict", "The repository changed while the review was captured. Refresh the list.");
+        throw new featureSafety_1.FeatureError("conflict", "Репозиторий изменился во время сравнения. Обновите список.");
     }
     const gitHashLength = indexed?.oid.length ?? original?.oid.length ?? (head.length || 40);
     return { path: relative, layer, root, ...repo, head, indexHash, headFileHash, gitHashLength, before, after, beforeExists, afterExists, beforeMode, afterMode, diskHash, diskMode, trackFileMode, revision, dirty, mutationReason };
@@ -243,23 +243,23 @@ async function captureReview(root, relative, layer) {
 function assertDiskAndIndex(review) {
     const file = (0, featureSafety_1.safeFile)(review.root, review.path);
     if (isDirty(file))
-        throw new featureSafety_1.FeatureError("blocked", "This file has unsaved editor changes. Save or resolve them explicitly before stage/revert; no buffer was changed.");
+        throw new featureSafety_1.FeatureError("blocked", "В редакторе есть несохранённые изменения этого файла. Сохраните или отмените их перед действием. Текст в редакторе не изменён.");
     if (stateHash(indexContent(review.indexPath)) !== review.indexHash
         || stateHash((0, featureSafety_1.readRegular)(path.join(review.gitDir, "HEAD"), 4096)) !== review.headFileHash
         || stateHash((0, featureSafety_1.readRegular)(file, MAX_FILE_BYTES)) !== review.diskHash
         || (review.afterExists && (fs.statSync(file).mode & 0o777) !== review.diskMode)) {
-        throw new featureSafety_1.FeatureError("conflict", "The file or Git index changed since review. Refresh before applying an action.");
+        throw new featureSafety_1.FeatureError("conflict", "Файл или индекс Git изменился после сравнения. Обновите список перед действием.");
     }
     return file;
 }
 async function mutateReview(review, operation, scopeRoot, assertContext) {
     if (review.layer !== "worktree" || review.mutationReason)
-        throw new featureSafety_1.FeatureError("unsupported", review.mutationReason ?? "Only working changes can be staged or reverted.");
+        throw new featureSafety_1.FeatureError("unsupported", review.mutationReason ?? "Добавить в индекс или отменить можно только изменения рабочих файлов.");
     if (operation === "revert" && (0, featureSafety_1.contained)(review.root, scopeRoot))
-        throw new featureSafety_1.FeatureError("blocked", "Recovery storage must be outside the watched project tree.");
+        throw new featureSafety_1.FeatureError("blocked", "Каталог восстановления должен находиться вне дерева проекта.");
     const repo = await repository(review.root);
     if (repo.gitDir !== review.gitDir || repo.indexPath !== review.indexPath)
-        throw new featureSafety_1.FeatureError("conflict", "The repository identity changed.");
+        throw new featureSafety_1.FeatureError("conflict", "Подключённый репозиторий изменился. Обновите список.");
     assertContext();
     const lockPath = `${review.indexPath}.lock`;
     let lock;
@@ -267,7 +267,7 @@ async function mutateReview(review, operation, scopeRoot, assertContext) {
         lock = fs.openSync(lockPath, "wx", 0o600);
     }
     catch {
-        throw new featureSafety_1.FeatureError("blocked", "The Git index is busy. Another Git operation may be running; its lock was not removed.");
+        throw new featureSafety_1.FeatureError("blocked", "Индекс Git занят другой операцией. Дождитесь её завершения. Файл блокировки не удалён.");
     }
     const lockIdentity = fs.fstatSync(lock);
     const ownsLock = () => {
@@ -285,11 +285,11 @@ async function mutateReview(review, operation, scopeRoot, assertContext) {
     try {
         assertDiskAndIndex(review);
         if (review.head !== await currentHead(review.root))
-            throw new featureSafety_1.FeatureError("conflict", "HEAD changed since review. Refresh the list.");
+            throw new featureSafety_1.FeatureError("conflict", "Текущая ревизия HEAD изменилась после сравнения. Обновите список.");
         if (review.trackFileMode !== await tracksFileMode(review.root))
-            throw new featureSafety_1.FeatureError("conflict", "Git executable-bit handling changed since review.");
+            throw new featureSafety_1.FeatureError("conflict", "Настройка учёта права на исполнение в Git изменилась после сравнения. Обновите список.");
         if (await filterReason(review.root, review.path))
-            throw new featureSafety_1.FeatureError("conflict", "Git content conversion or index flags changed since review.");
+            throw new featureSafety_1.FeatureError("conflict", "Настройки преобразования файлов или флаги индекса Git изменились после сравнения. Обновите список.");
         if (operation === "stage") {
             temporaryIndex = path.join(review.gitDir, `codex-review-${(0, featureSafety_1.opaqueId)()}.index`);
             const previous = indexContent(review.indexPath);
@@ -299,19 +299,19 @@ async function mutateReview(review, operation, scopeRoot, assertContext) {
                 await git(review.root, ["read-tree", "--empty"], undefined, temporaryIndex);
             const oid = review.afterExists ? (await git(review.root, ["hash-object", "-w", "--stdin"], review.after)).toString("utf8").trim() : "0".repeat(review.gitHashLength);
             if (!/^[a-f\d]{40,64}$/.test(oid))
-                throw new featureSafety_1.FeatureError("error", "Git did not return a valid blob revision.");
+                throw new featureSafety_1.FeatureError("error", "Git не вернул корректную ревизию содержимого файла.");
             await git(review.root, ["update-index", "-z", "--index-info"], Buffer.from(`${review.afterExists ? review.afterMode : "0"} ${oid}\t${review.path}\0`), temporaryIndex);
             const updated = indexContent(temporaryIndex);
             if (!updated)
-                throw new featureSafety_1.FeatureError("error", "Git did not produce an updated index.");
+                throw new featureSafety_1.FeatureError("error", "Git не создал обновлённый индекс.");
             fs.writeFileSync(lock, updated);
             fs.fsyncSync(lock);
             if (review.head !== await currentHead(review.root))
-                throw new featureSafety_1.FeatureError("conflict", "HEAD changed during staging.");
+                throw new featureSafety_1.FeatureError("conflict", "Текущая ревизия HEAD изменилась во время добавления в индекс.");
             assertContext();
             assertDiskAndIndex(review);
             if (!ownsLock())
-                throw new featureSafety_1.FeatureError("conflict", "The owned Git index lock was replaced. No index update was published.");
+                throw new featureSafety_1.FeatureError("conflict", "Блокировка индекса Git была заменена другой операцией. Индекс не обновлён.");
             fs.closeSync(lock);
             lock = -1;
             fs.renameSync(lockPath, review.indexPath);
@@ -348,11 +348,11 @@ async function mutateReview(review, operation, scopeRoot, assertContext) {
             }
         }
         if (review.head !== await currentHead(review.root))
-            throw new featureSafety_1.FeatureError("conflict", "HEAD changed during revert.");
+            throw new featureSafety_1.FeatureError("conflict", "Текущая ревизия HEAD изменилась во время отмены изменения.");
         assertContext();
         file = assertDiskAndIndex(review);
         if (!ownsLock())
-            throw new featureSafety_1.FeatureError("conflict", "The owned Git index lock was replaced. No working-file replacement was performed.");
+            throw new featureSafety_1.FeatureError("conflict", "Блокировка индекса Git была заменена другой операцией. Рабочий файл не заменён.");
         if (!review.beforeExists) {
             if (review.afterExists)
                 fs.unlinkSync(file);

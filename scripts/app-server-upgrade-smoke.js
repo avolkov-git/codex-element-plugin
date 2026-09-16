@@ -7,6 +7,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { createInterface } = require("node:readline");
 const { JsonRpcClient } = require("../dist/jsonRpcClient");
+const { version: runtimeVersion } = require("../bin/runtime-manifest.json");
 
 function session(binary, home) {
   const env = { ...process.env, CODEX_HOME: home };
@@ -75,13 +76,13 @@ async function main() {
     console.log("PASS 0.144.5 created a persisted conversation");
 
     active = session(path.resolve(newBinary), home);
-    await active.initialize("0.153.4");
+    await active.initialize(runtimeVersion);
     const resumed = await active.request("thread/resume", { threadId: created.thread.id, cwd: home, model: "gpt-6-astra", sandbox: "read-only", approvalPolicy: "on-request", approvalsReviewer: "user", serviceTier: null });
     assert.equal(resumed.thread.id, created.thread.id);
     assert.ok(resumed.thread.turns.some((turn) => turn.items.some((item) => item.type === "agentMessage" && item.text.includes("LEGACY-OK"))), "previous answer must survive runtime upgrade");
     const newAnswer = await active.turn(created.thread.id, "gpt-6-astra", "Reply with only the marker from my previous message. Do not use tools.");
     assert.ok(newAnswer.includes(marker), "Astra must receive the conversation context from 0.144.5");
-    console.log("PASS 0.153.4 resumed the same thread; Astra recalled the previous context");
+    console.log(`PASS ${runtimeVersion} resumed the same thread; Astra recalled the previous context`);
   } finally {
     try { await active?.close(); } finally { fs.rmSync(home, { recursive: true, force: true }); }
   }

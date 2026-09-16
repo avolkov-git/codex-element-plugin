@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as crypto from "crypto";
 import * as path from "path";
+import { DocsCapacityError } from "./docsWorkerProtocol";
 
 export type DocsCorpusFormat = "legacy-pages" | "manifest-jsonl" | "generic-jsonl" | "text-tree";
 
@@ -56,6 +57,28 @@ export interface DocsCorpusFingerprint {
   totalBytes: number;
 }
 
+export interface DocsLoadLimits {
+  maxFragments: number;
+  maxChars: number;
+  maxCorpora: number;
+  maxFiles: number;
+  maxInputBytes: number;
+  maxRecordChars: number;
+}
+
+interface DocsLoadBudget {
+  limits?: DocsLoadLimits;
+  inputBytes: number;
+}
+
+export function docsFragmentChars(fragment: DocsFragment): number {
+  return fragment.text.length + fragment.excerpt.length + fragment.title.length + fragment.kind.length
+    + fragment.sourcePath.length + fragment.url.length + fragment.indexPath.length
+    + fragment.corpus.length + fragment.corpusLabel.length
+    + fragment.breadcrumbs.reduce((sum, item) => sum + item.length, 0)
+    + fragment.keywords.reduce((sum, item) => sum + item.length, 0);
+}
+
 interface ManifestFileEntry {
   path?: unknown;
   description?: unknown;
@@ -82,6 +105,7 @@ const MAX_TEXT_FILES = 160;
 const MAX_FRAGMENT_TEXT_CHARS = 8000;
 const MAX_TEXT_FILE_BYTES = 2_000_000;
 const MAX_JSONL_FILE_BYTES = 80_000_000;
+const MAX_MANIFEST_FILE_BYTES = 1_000_000;
 
 const MANIFEST_PRIMARY_ROLES = ["chunks", "documents"];
 const MANIFEST_SECONDARY_ROLES = [
@@ -157,19 +181,33 @@ export function discoverDocsCorpora(root: string): DocsCorpusDiscovery {
       };
 }
 
-export async function loadDocsCorpora(root: string): Promise<LoadedDocsCorpus> {
+export async function loadDocsCorpora(root: string, limits?: DocsLoadLimits): Promise<LoadedDocsCorpus> {
   const discovery = discoverDocsCorpora(root);
   if (discovery.error || !discovery.corpora.length) {
     throw new Error(discovery.error || "Корпус документации не найден.");
   }
+  if (limits && discovery.corpora.length > limits.maxCorpora) {
+    throw new DocsCapacityError("Too many docs corpora.");
+  }
+  if (limits && discovery.corpora.reduce((sum, corpus) => sum + corpus.files.length, 0) > limits.maxFiles) {
+    throw new DocsCapacityError("Too many docs corpus files.");
+  }
 
   const fragments: DocsFragment[] = [];
+  const budget: DocsLoadBudget = { limits, inputBytes: 0 };
+  let chars = 0;
   for (const corpus of discovery.corpora) {
     for (const file of corpus.files) {
       const loaded = corpus.format === "text-tree"
-        ? await loadTextFile(corpus, file)
-        : await loadJsonlFile(corpus, file);
-      fragments.push(...loaded);
+        ? await loadTextFile(corpus, file, budget)
+        : loadJsonlFile(corpus, file, budget);
+      for await (const fragment of loaded) {
+        chars += docsFragmentChars(fragment);
+        if (limits && (fragments.length >= limits.maxFragments || chars > limits.maxChars)) {
+          throw new DocsCapacityError("Docs corpus exceeds the fragment or text budget.");
+        }
+        fragments.push(fragment);
+      }
     }
   }
 
@@ -220,7 +258,11 @@ export function fingerprintDocsCorpora(root: string): DocsCorpusFingerprint | un
       hash.update("\0");
       hash.update(String(stats.size));
       hash.update("\0");
-      hash.update(String(Math.floor(stats.mtimeMs)));
+      hash.update(String(stats.mtimeMs));
+      hash.update("\0");
+      hash.update(String(stats.ctimeMs));
+      hash.update("\0");
+      hash.update(`${stats.dev}:${stats.ino}:${fs.realpathSync(filePath)}`);
       hash.update("\0");
     } catch {
       hash.update(filePath);
@@ -271,7 +313,7 @@ function findManifestPaths(root: string): string[] {
 
 function parseManifestCorpus(manifestPath: string): DocsCorpusInfo | undefined {
   try {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as ManifestJson;
+    const manifest = JSON.parse(readManifest(manifestPath)) as ManifestJson;
     const files = manifest.files && typeof manifest.files === "object" ? manifest.files : {};
     const manifestRoot = path.dirname(manifestPath);
     const selected: DocsCorpusFile[] = [];
@@ -313,6 +355,25 @@ function parseManifestCorpus(manifestPath: string): DocsCorpusInfo | undefined {
     };
   } catch {
     return undefined;
+  }
+}
+
+function readManifest(manifestPath: string): string {
+  const descriptor = fs.openSync(manifestPath, "r");
+  try {
+    const stats = fs.fstatSync(descriptor);
+    if (!stats.isFile() || stats.size > MAX_MANIFEST_FILE_BYTES) throw new Error("Docs manifest is too large.");
+    const buffer = Buffer.alloc(Math.min(stats.size + 1, MAX_MANIFEST_FILE_BYTES + 1));
+    let size = 0;
+    while (size < buffer.length) {
+      const read = fs.readSync(descriptor, buffer, size, buffer.length - size, null);
+      if (!read) break;
+      size += read;
+    }
+    if (size > stats.size) throw new Error("Docs manifest changed while reading.");
+    return buffer.toString("utf8", 0, size);
+  } finally {
+    fs.closeSync(descriptor);
   }
 }
 
@@ -384,35 +445,63 @@ function discoverTextCorpus(root: string): DocsCorpusInfo | undefined {
   };
 }
 
-async function loadJsonlFile(corpus: DocsCorpusInfo, file: DocsCorpusFile): Promise<DocsFragment[]> {
+async function* loadJsonlFile(corpus: DocsCorpusInfo, file: DocsCorpusFile, budget: DocsLoadBudget): AsyncGenerator<DocsFragment> {
   try {
     const safePath = await resolveSafeDocsFilePath(corpus.root, file.path);
     if (!safePath) {
-      return [];
+      return;
     }
     const stats = await fs.promises.stat(safePath);
     if (!stats.isFile() || stats.size > MAX_JSONL_FILE_BYTES) {
-      return [];
+      return;
     }
-    const raw = await fs.promises.readFile(safePath, "utf8");
-    const result: DocsFragment[] = [];
-    for (const line of raw.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
+    let pending = "";
+    let fileBytes = 0;
+    const stream = fs.createReadStream(safePath, { encoding: "utf8", highWaterMark: 64 * 1024 });
+    try {
+      for await (const chunk of stream) {
+        const value = String(chunk);
+        const bytes = Buffer.byteLength(value);
+        fileBytes += bytes;
+        if (fileBytes > MAX_JSONL_FILE_BYTES) throw new DocsCapacityError("Docs JSONL file grew beyond its byte limit.");
+        accountDocsBytes(budget, bytes);
+        pending += value;
+        let start = 0;
+        let newline: number;
+        while ((newline = pending.indexOf("\n", start)) >= 0) {
+          const line = pending.slice(start, newline);
+          checkRecordSize(line, budget);
+          const fragment = parseJsonlFragment(corpus, file, line.trim());
+          if (fragment) yield fragment;
+          start = newline + 1;
+        }
+        pending = pending.slice(start);
+        checkRecordSize(pending, budget);
       }
-      const fragment = parseJsonlFragment(corpus, file, trimmed);
-      if (fragment) {
-        result.push(fragment);
-      }
+      const fragment = parseJsonlFragment(corpus, file, pending.trim());
+      if (fragment) yield fragment;
+    } finally {
+      stream.destroy();
     }
-    return result;
-  } catch {
-    return [];
+  } catch (error) {
+    if (error instanceof DocsCapacityError) throw error;
   }
 }
 
-async function loadTextFile(corpus: DocsCorpusInfo, file: DocsCorpusFile): Promise<DocsFragment[]> {
+function checkRecordSize(value: string, budget: DocsLoadBudget): void {
+  if (budget.limits && value.length > budget.limits.maxRecordChars) {
+    throw new DocsCapacityError("Docs JSONL record exceeds the size budget.");
+  }
+}
+
+function accountDocsBytes(budget: DocsLoadBudget, bytes: number): void {
+  budget.inputBytes += bytes;
+  if (budget.limits && budget.inputBytes > budget.limits.maxInputBytes) {
+    throw new DocsCapacityError("Docs corpus exceeds the input byte budget.");
+  }
+}
+
+async function loadTextFile(corpus: DocsCorpusInfo, file: DocsCorpusFile, budget: DocsLoadBudget): Promise<DocsFragment[]> {
   try {
     const safePath = await resolveSafeDocsFilePath(corpus.root, file.path);
     if (!safePath) {
@@ -422,7 +511,22 @@ async function loadTextFile(corpus: DocsCorpusInfo, file: DocsCorpusFile): Promi
     if (!stats.isFile() || stats.size > MAX_TEXT_FILE_BYTES) {
       return [];
     }
-    const raw = await fs.promises.readFile(safePath, "utf8");
+    const chunks: string[] = [];
+    let fileBytes = 0;
+    const stream = fs.createReadStream(safePath, { encoding: "utf8", highWaterMark: 64 * 1024 });
+    try {
+      for await (const chunk of stream) {
+        const value = String(chunk);
+        const bytes = Buffer.byteLength(value);
+        fileBytes += bytes;
+        accountDocsBytes(budget, bytes);
+        if (fileBytes > MAX_TEXT_FILE_BYTES) return [];
+        chunks.push(value);
+      }
+    } finally {
+      stream.destroy();
+    }
+    const raw = chunks.join("");
     const text = normalizeWhitespace(stripHtml(raw));
     if (!text) {
       return [];
@@ -441,7 +545,8 @@ async function loadTextFile(corpus: DocsCorpusInfo, file: DocsCorpusFile): Promi
       text: trimFragmentText(text),
       indexPath: corpus.indexPath
     }];
-  } catch {
+  } catch (error) {
+    if (error instanceof DocsCapacityError) throw error;
     return [];
   }
 }

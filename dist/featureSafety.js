@@ -67,7 +67,7 @@ function safeRelative(value) {
     if (!value || value.length > 2048 || path.isAbsolute(value) || /^[a-z]:/i.test(value)
         || /[\\\x00-\x1f\x7f]/.test(value)
         || value.split("/").some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")) {
-        throw new FeatureError("blocked", "This path is outside the supported project file boundary.");
+        throw new FeatureError("blocked", "Путь находится за пределами доступных файлов проекта.");
     }
     return value;
 }
@@ -81,10 +81,10 @@ function safeFile(root, relative) {
         try {
             const stat = fs.lstatSync(current);
             if (stat.isSymbolicLink() || (index < parts.length - 1 && !stat.isDirectory())) {
-                throw new FeatureError("blocked", "Symlinks and non-directory path parents are not supported.");
+                throw new FeatureError("blocked", "Путь содержит символическую ссылку или файл вместо родительского каталога. Такие пути не поддерживаются.");
             }
             if (!contained(root, fs.realpathSync(current))) {
-                throw new FeatureError("blocked", "The file resolved outside its scope.");
+                throw new FeatureError("blocked", "Файл находится за пределами доступной области.");
             }
         }
         catch (error) {
@@ -109,7 +109,7 @@ function readRegular(file, maxBytes) {
     try {
         const stat = fs.fstatSync(descriptor);
         if (!stat.isFile() || stat.size > maxBytes || stat.nlink !== 1) {
-            throw new FeatureError("unsupported", "Only bounded regular files without hard links are supported.");
+            throw new FeatureError("unsupported", "Поддерживаются только обычные файлы допустимого размера без жёстких ссылок.");
         }
         const buffer = Buffer.alloc(stat.size + 1);
         let count = 0;
@@ -121,7 +121,7 @@ function readRegular(file, maxBytes) {
         }
         const after = fs.fstatSync(descriptor);
         if (count !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) {
-            throw new FeatureError("conflict", "The file changed while it was being read. Refresh and try again.");
+            throw new FeatureError("conflict", "Файл изменился во время чтения. Обновите список и повторите действие.");
         }
         return buffer.subarray(0, count);
     }
@@ -135,7 +135,7 @@ async function deadline(operation, milliseconds) {
         return await Promise.race([
             Promise.resolve(operation),
             new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new FeatureError("timeout", "Element did not respond before the deadline. A dispatched IDE request may still finish; it was not cancelled.")), milliseconds);
+                timer = setTimeout(() => reject(new FeatureError("timeout", "Element не ответил вовремя. Отправленная команда IDE не отменена и ещё может завершиться.")), milliseconds);
             })
         ]);
     }
@@ -147,7 +147,7 @@ async function deadline(operation, milliseconds) {
 function plainText(buffer) {
     const text = buffer.toString("utf8");
     if (buffer.includes(0) || !Buffer.from(text, "utf8").equals(buffer)) {
-        throw new FeatureError("unsupported", "Binary and non-UTF-8 files are not supported by text review.");
+        throw new FeatureError("unsupported", "Текстовое сравнение не поддерживает двоичные файлы и файлы с кодировкой, отличной от UTF-8.");
     }
     return text;
 }

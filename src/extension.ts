@@ -14,6 +14,7 @@ import { CodexRuntimeController } from "./codexRuntimeController";
 import { DiagnosticsContextService } from "./diagnosticsContextService";
 import { DiagnosticsToolsService } from "./diagnosticsToolsService";
 import { DiffArtifactService } from "./diffArtifactService";
+import { DiffPatchStore } from "./diffPatchStore";
 import { DocsContextService } from "./docsContextService";
 import { DocsRetrievalLoopService } from "./docsRetrievalLoopService";
 import { DocsNormalizerService } from "./docsNormalizerService";
@@ -21,11 +22,13 @@ import { DocsToolsService } from "./docsToolsService";
 import { EditorContextKind, EditorContextService } from "./editorContextService";
 import { ElementMcpIdeBridgeService } from "./elementMcpIdeBridgeService";
 import { ElementIdentityService, identityScopeRoot } from "./elementIdentityService";
+import { ElementApplicationService } from "./elementApplicationService";
 import { searchHistory } from "./historySearch";
 import { Logger } from "./logger";
 import { ManagedContextToolLoopService } from "./managedContextToolLoopService";
 import { NativeContextToolLoopService } from "./nativeContextToolLoopService";
 import { PerfMarks } from "./performance";
+import { PressureMonitor } from "./pressureMonitor";
 import { ProjectContextService } from "./projectContextService";
 import { ProjectToolsService } from "./projectToolsService";
 import { PluginFeatureService } from "./pluginFeatureService";
@@ -52,7 +55,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   logger.enableFileLogging(path.join(settings.getConfigRoot(), "logs"));
   logger.info("ripgrep discovery deferred until settings/runtime usage.");
   const elementMcpIdeBridge = new ElementMcpIdeBridgeService(logger);
-  const identity = new ElementIdentityService();
+  const identity = new ElementIdentityService(undefined, undefined, logger);
   const getScopeRoot = (): string | undefined => {
     const current = identity.getCurrent();
     return current ? identityScopeRoot(settings.getConfigRoot(), current) : undefined;
@@ -65,8 +68,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const root = getScopeRoot();
     return root ? path.join(root, "attachments") : undefined;
   });
-  const diffArtifacts = new DiffArtifactService(logger);
-  const docsCorpusContext = new DocsContextService(settings, logger);
+  const diffPatches = new DiffPatchStore(getScopeRoot, logger);
+  const diffArtifacts = new DiffArtifactService(logger, undefined, (file) => diffPatches.read(file));
+  const docsCorpusContext = new DocsContextService(settings, logger, { getDocsSettingsSnapshot: () => settings.getDocsPathsSnapshot() });
   const nativeContextTools = new NativeContextToolLoopService(logger);
   const editorContext = new EditorContextService();
   const projectContext = new ProjectContextService(context, settings.getConfigRoot(), logger);
@@ -91,7 +95,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     void vscode.window.showErrorMessage(message);
   };
   const history = new ChatHistoryService(context, settings.getConfigRoot(), logger, () => identity.getCurrent(), reportHistoryError);
-  context.subscriptions.push(history, projectContext, diffArtifacts, attachments);
+  context.subscriptions.push(history, projectContext, diffArtifacts, diffPatches, docsCorpusContext, attachments);
   let historyProfileId: string | undefined;
   let historyScopeKey: string | undefined;
   let historyLoadPromise: Promise<void> | undefined;
@@ -103,6 +107,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let chatPanels: ChatPanelManager;
   let features: PluginFeatureService;
   let approvalAttention: ApprovalAttentionService | undefined;
+  let pressureMonitor: PressureMonitor | undefined;
   const docsContext = new DocsRetrievalLoopService(
     docsCorpusContext,
     logger,
@@ -135,6 +140,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     queuePrompt: async (chatId: string, prompt: string, mode?: ChatRunMode, skills?: readonly SkillSelection[], selectedAttachments?: readonly ChatAttachment[]) => { await ensureHistoryLoaded(); return runtime.queuePrompt(chatId, prompt, mode, skills, selectedAttachments); },
     steerTurn: async (chatId: string, prompt: string, selectedAttachments?: readonly ChatAttachment[]) => { await ensureHistoryLoaded(); await runtime.steerTurn(chatId, prompt, selectedAttachments); },
     resolveUserInput: (chatId, id, response) => runtime.resolveUserInput(chatId, id, response),
+    respondToQuestion: async (chatId, messageId, questionId, answer) => {
+      await ensureHistoryLoaded();
+      return runtime.respondToQuestion(chatId, messageId, questionId, answer);
+    },
     retryQueuedPrompt: (chatId, messageId) => runtime.retryQueuedPrompt(chatId, messageId),
     featureRequest: async (command, value, chatId) => {
       await ensureHistoryLoaded();
@@ -370,6 +379,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     profiles,
     state,
     logger,
+    diffPatches,
     onDidChange: () => {
       sidebar?.postSnapshot();
       chatPanels.postSnapshot();
@@ -377,7 +387,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     onDidChangeChat: (chatId: string) => chatPanels.postSnapshot(chatId),
     onDidResolveProfile: ensureHistoryLoaded,
-    getManagedBrowserLaunch: () => browserRuntime.prepareRuntimeLaunch(),
+    getManagedBrowserLaunch: async () => {
+      if (browserRuntime.getSettingsView().enabled) await browserRuntime.refreshApplication(true);
+      return browserRuntime.prepareRuntimeLaunch();
+    },
     beforeQueuedDispatch: async () => {
       await ensureHistoryLoaded();
       if (!historyProfileId) { throw new Error("История проекта не открыта."); }
@@ -385,14 +398,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   });
   context.subscriptions.push(runtime);
-  shutdown = async () => { await runtime.stop(); await history.flush(); };
+  shutdown = async () => {
+    pressureMonitor?.dispose();
+    docsCorpusContext.dispose();
+    try { await runtime.stop(); await diffPatches.flush(); await history.flush(); }
+    finally { await logger.flush(); }
+  };
   integrations = new CodexIntegrationsService(context, settings, profiles, runtime, logger);
   context.subscriptions.push(integrations);
   const browserSessionId = crypto.randomUUID();
+  const elementApplication = new ElementApplicationService(logger);
+  context.subscriptions.push(elementApplication);
   const browserRuntime = new BrowserRuntimeService(context, settings, logger, () => {
     const root = getScopeRoot();
     return root ? path.join(root, "sessions", browserSessionId) : undefined;
-  }, getScopeRoot);
+  }, getScopeRoot, elementApplication);
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration("1C.applicationId") || event.affectsConfiguration("1C.serverExternalUri")) {
+      void runtime.stop().catch(() => logger.warn("Runtime stop failed after the IDE application changed."));
+    }
+  }));
   features = new PluginFeatureService({
     getWorkspaceRoot: (chatId) => state.getChat(chatId) ? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath : undefined,
     getScopeRoot,
@@ -417,7 +442,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     sidebar?.postSnapshot();
     chatPanels.postSnapshot();
-  });
+  }, runtime);
   sidebar = new SidebarProvider(context, state, logger, {
     createChat: async (kind: ChatKind): Promise<void> => createChat(kind, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
     openChat: async (chatId: string): Promise<void> => openChat(chatId, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded),
@@ -472,6 +497,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await openChat(pendingChat.id, state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded);
   });
   approvalAttention.sync();
+  pressureMonitor = new PressureMonitor(logger, {
+    runtime: () => runtime.getMetrics(),
+    ownedCodexPid: () => runtime.getMetrics().pid,
+    chat: () => ({ ...chatPanels.getMetrics(), sidebar: sidebar?.getMetrics() }),
+    logger: () => logger.getMetrics(),
+    history: () => {
+      const m = history.getMetrics();
+      return { queueCurrent: m.queueCurrent, queueMax: m.queueMax, coalescedSaves: m.coalescedSaves, saveFailures: m.saveFailures,
+        snapshotMaxMs: m.snapshotMaxMs, savesCompleted: m.savesCompleted, serializedBytes: m.serializedBytes, serializationMs: m.serializationMs,
+        saveMaxMs: m.saveMaxMs, store: { persistedBytes: m.store.persistedBytes, writtenBytes: m.store.writtenBytes, historyWrites: m.store.historyWrites,
+          skippedWrites: m.store.skippedWrites, serializationMaxMs: m.store.serializationMaxMs } };
+    },
+    docs: () => docsCorpusContext.getMetrics(),
+    diff: () => diffPatches.getMetrics()
+  });
+  context.subscriptions.push(pressureMonitor);
   const invalidateIdentity = (): void => {
     const epoch = ++identityEpoch;
     const previous = historyProfileId;

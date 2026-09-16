@@ -37,7 +37,22 @@ export class ChatStore {
   private viewport = 0;
   private pinned = new Set<number>();
   private requestCounter = 0;
+  private receiveMs = 0;
+  private eventLoopLagMs = 0;
+  private lagTimer: ReturnType<typeof setInterval> | undefined;
   private requests = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  constructor() {
+    let expected = performance.now() + 1000;
+    let wasVisible = document.visibilityState === "visible";
+    this.lagTimer = setInterval(() => {
+      const now = performance.now();
+      // Background-tab timer clamping is not a foreground UI stall.
+      const visible = document.visibilityState === "visible";
+      if (visible && wasVisible) this.eventLoopLagMs = Math.max(this.eventLoopLagMs, Math.min(3_600_000, Math.max(0, now - expected)));
+      wasVisible = visible;
+      expected = now + 1000;
+    }, 1000);
+  }
   subscribe = (fn: Subscriber): (() => void) => { this.subscribers.add(fn); return () => this.subscribers.delete(fn); };
   getSnapshot = (): ChatView => this.view;
   onEvent = (fn: (event: HostEvent) => void): (() => void) => { this.events.add(fn); return () => this.events.delete(fn); };
@@ -89,6 +104,7 @@ export class ChatStore {
       return;
     }
     const frame = raw as ChatBridgeFrame;
+    const startedAt = performance.now();
     if (!Array.isArray(frame.rows) || !Array.isArray(frame.appends) || !Number.isSafeInteger(frame.revision)
       || !Number.isSafeInteger(frame.totalCount) || frame.totalCount < 0 || typeof frame.epoch !== "string") return;
     if (this.retiredEpochs.has(frame.epoch)) return;
@@ -134,12 +150,18 @@ export class ChatStore {
       total: frame.totalCount, revision: frame.revision, rows, turns };
     if (changedChat) { saved.activeChatId = frame.chatId; vscode.setState(saved); }
     for (const fn of this.subscribers) fn();
+    this.receiveMs = Math.max(this.receiveMs, performance.now() - startedAt);
     // ACK means the bounded entity store accepted the frame, not durable history storage.
     this.ack();
   };
   private distance(index: number, total: number): number { return Math.min(Math.abs(index - this.viewport), Math.abs(total - index)); }
-  private ack(): void { vscode.postMessage({ type: "chat.ack", chatId: this.view.chatId, epoch: this.epoch, revision: this.revision }); }
+  private ack(): void {
+    vscode.postMessage({ type: "chat.ack", chatId: this.view.chatId, epoch: this.epoch, revision: this.revision,
+      metrics: { eventLoopLagMs: this.eventLoopLagMs, receiveMs: this.receiveMs } });
+    this.eventLoopLagMs = 0; this.receiveMs = 0;
+  }
   dispose(): void {
+    clearInterval(this.lagTimer);
     for (const request of this.requests.values()) { clearTimeout(request.timer); request.reject(new Error("Панель закрыта.")); }
     this.requests.clear(); this.subscribers.clear(); this.events.clear();
   }

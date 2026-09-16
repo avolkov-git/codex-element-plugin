@@ -34,7 +34,8 @@ function browserFixture(t) {
     getConfigRoot: () => configRoot,
     getBrowserSettingsView: () => ({ enabled: true, baseUrl: "http://project.local/app", allowedOrigins: [], disableSandbox: false }),
   };
-  return { root, runtimeRoot, files, configRoot, settings };
+  const application = { getView: () => ({ status: "ready", url: "http://project.local/app", name: "Test", message: "" }), resolve: async () => application.getView() };
+  return { root, runtimeRoot, files, configRoot, settings, application };
 }
 
 test("F03: sparse 900 MiB runtime reads at most 384 header bytes, caches checks and invalidates replacement", (t) => {
@@ -83,12 +84,13 @@ test("browser preparation fails closed without trusted scope; artifacts always f
   assert(!fs.existsSync(fixture.configRoot));
   let scope = path.join(fixture.configRoot, "user-a", "project-a", "session-a");
   let persistent = path.join(fixture.configRoot, "user-a", "project-a");
-  const scoped = new BrowserRuntimeService(context, fixture.settings, logger, () => scope, () => persistent);
+  const scoped = new BrowserRuntimeService(context, fixture.settings, logger, () => scope, () => persistent, fixture.application);
   assert.equal(scoped.getSettingsView().enabled, false, "server-global browser settings must not be inherited");
   scoped.saveSettings(fixture.settings.getBrowserSettingsView());
   const first = scoped.prepareMcpServer();
   const firstConfig = JSON.parse(fs.readFileSync(first.args[2], "utf8"));
   assert.equal(firstConfig.outputDir, scoped.getBrowserArtifactsRoot());
+  assert.equal(firstConfig.network, undefined, "plugin must not restrict browser origins or paths");
   assert(firstConfig.outputDir.startsWith(`${scope}${path.sep}`));
   if (process.platform !== "win32") assert.equal(fs.statSync(first.args[2]).mode & 0o777, 0o600);
   scope = path.join(fixture.configRoot, "user-b", "project-b", "session-b");
@@ -130,7 +132,7 @@ test("native Codex CLI launch overrides replace a saved foreign browser entry an
   const { BrowserRuntimeService } = loadSource("src/browserRuntimeService.ts", { vscode });
   let scope = path.join(fixture.configRoot, "user", "project", "session-a");
   const service = new BrowserRuntimeService({ extensionUri: { fsPath: fixture.root } }, fixture.settings, logger, () => scope,
-    () => path.join(fixture.configRoot, "user", "project"));
+    () => path.join(fixture.configRoot, "user", "project"), fixture.application);
   service.saveSettings(fixture.settings.getBrowserSettingsView());
   function inspect(launch) {
     const output = execFileSync(binary, ["mcp", "list", "--json", ...launch.args], { env: { ...process.env, CODEX_HOME: home }, encoding: "utf8", timeout: 10000 });
@@ -167,14 +169,18 @@ test("browser project preferences persist across sessions, fail closed on corrup
   const context = { extensionUri: { fsPath: fixture.root } };
   const persistent = path.join(fixture.configRoot, "user", "project");
   const first = new BrowserRuntimeService(context, fixture.settings, logger,
-    () => path.join(persistent, "sessions", "first"), () => persistent);
+    () => path.join(persistent, "sessions", "first"), () => persistent, fixture.application);
   const second = new BrowserRuntimeService(context, fixture.settings, logger,
-    () => path.join(persistent, "sessions", "second"), () => persistent);
+    () => path.join(persistent, "sessions", "second"), () => persistent, fixture.application);
   assert.equal(first.getSettingsView().enabled, false);
   first.saveSettings(fixture.settings.getBrowserSettingsView());
   assert.equal(second.getSettingsView().enabled, true);
   assert.notEqual(first.getBrowserArtifactsRoot(), second.getBrowserArtifactsRoot());
   const preferences = path.join(persistent, "browser-settings.json");
+  const saved = JSON.parse(fs.readFileSync(preferences, "utf8"));
+  assert.equal(saved.schemaVersion, 2);
+  assert.equal(saved.baseUrl, undefined, "application address is not a project preference");
+  assert.equal(saved.allowedOrigins, undefined, "origin restrictions must not persist");
   fs.writeFileSync(preferences, "{corrupt");
   assert.equal(first.getSettingsView().enabled, false);
   assert(first.prepareRuntimeLaunch().disabledReason);
@@ -196,7 +202,7 @@ test("native app-server reload keeps the legacy browser disabled after concurren
   fs.writeFileSync(configPath, source);
   const { BrowserRuntimeService } = loadSource("src/browserRuntimeService.ts", { vscode });
   const service = new BrowserRuntimeService({ extensionUri: { fsPath: fixture.root } }, fixture.settings, logger,
-    () => path.join(persistent, "sessions", "current"), () => persistent);
+    () => path.join(persistent, "sessions", "current"), () => persistent, fixture.application);
   service.saveSettings(fixture.settings.getBrowserSettingsView());
   const launch = service.prepareRuntimeLaunch();
   const child = spawn(binary, ["app-server", ...launch.args], { cwd: home, env: { ...process.env, CODEX_HOME: home }, stdio: "pipe" });

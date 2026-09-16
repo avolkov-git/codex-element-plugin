@@ -43,9 +43,10 @@ const PATCH_SCHEME = "codex-diff-patch";
 const MAX_VIRTUAL_DIFF_CHARS = 2000000;
 const MAX_CACHE_CHARS = 8000000;
 class DiffArtifactService {
-    constructor(logger, resolveSnapshot) {
+    constructor(logger, resolveSnapshot, resolvePatch) {
         this.logger = logger;
         this.resolveSnapshot = resolveSnapshot;
+        this.resolvePatch = resolvePatch;
         this.artifacts = new Map();
         this.chars = 0;
         this.disposables = [BEFORE_SCHEME, AFTER_SCHEME, PATCH_SCHEME].map((scheme) => vscode.workspace.registerTextDocumentContentProvider(scheme, this));
@@ -59,7 +60,7 @@ class DiffArtifactService {
     }
     async openSnapshots(snapshot) {
         if (snapshot.beforeText.length + snapshot.afterText.length > MAX_VIRTUAL_DIFF_CHARS)
-            throw new Error("Full review exceeds the native snapshot limit.");
+            throw new Error("Полное сравнение превышает допустимый объём для редактора IDE.");
         const id = this.store({ beforeText: snapshot.beforeText, afterText: snapshot.afterText });
         const fileName = sanitizeFileName(snapshot.path);
         const beforeUri = vscode.Uri.from({ scheme: BEFORE_SCHEME, path: `/${id}/${fileName}` });
@@ -74,13 +75,15 @@ class DiffArtifactService {
             await this.openSnapshots(full);
             return;
         }
-        const patch = file.diff;
+        const recorded = await this.resolvePatch?.(file);
+        const patch = recorded?.text ?? file.diff;
         if (!patch?.trim() || patch.length > MAX_VIRTUAL_DIFF_CHARS) {
             await vscode.window.showWarningMessage("The recorded patch is unavailable or exceeds the preview limit.");
             return;
         }
         // Hunk fragments cannot establish either full file revision. Keep them as a patch.
-        const id = this.store({ beforeText: "", afterText: "", patch: `# Recorded patch fragment; not full-file revisions${file.truncated ? " (truncated)" : ""}.\n${patch}` });
+        const truncated = recorded ? recorded.truncated : file.truncated;
+        const id = this.store({ beforeText: "", afterText: "", patch: `# Recorded patch fragment; not full-file revisions${truncated ? " (truncated)" : ""}.${file.patchArtifact && !recorded ? " Full recording unavailable or expired." : ""}\n${patch}` });
         const uri = vscode.Uri.from({ scheme: PATCH_SCHEME, path: `/${id}/${sanitizeFileName(file.path)}.patch` });
         const document = await vscode.workspace.openTextDocument(uri);
         await vscode.window.showTextDocument(document, { preview: false });

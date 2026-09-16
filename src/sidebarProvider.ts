@@ -6,6 +6,14 @@ import { renderWebviewHtml } from "./webviewHtml";
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
+  private ready = false;
+  private dirty = false;
+  private sending = false;
+  private waitingAck = 0;
+  private revision = 0;
+  private lastSnapshot = "";
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private readonly metrics = { frames: 0, bytes: 0, maxFrameBytes: 0, failures: 0 };
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -14,8 +22,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     private readonly handlers: SidebarHandlers
   ) {}
 
+  getMetrics(): object { return { ...this.metrics, pendingPosts: Number(this.sending), pendingAck: Number(Boolean(this.waitingAck)), ready: this.ready }; }
+
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
+    this.ready = false;
+    this.waitingAck = 0;
+    this.lastSnapshot = "";
     this.logger.info("Sidebar webview resolved.");
 
     webviewView.webview.options = {
@@ -33,7 +46,22 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       title: "Codex"
     });
 
-    webviewView.webview.onDidReceiveMessage((message: WebviewCommand) => {
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView === this.view && webviewView.visible) {
+        this.ready = true; this.waitingAck = 0; this.lastSnapshot = ""; this.postSnapshot();
+      }
+    });
+    webviewView.onDidDispose(() => {
+      if (webviewView !== this.view) return;
+      this.ready = false; this.view = undefined; this.waitingAck = 0; this.lastSnapshot = "";
+      clearTimeout(this.timer); this.timer = undefined;
+    });
+    webviewView.webview.onDidReceiveMessage((message: WebviewCommand | { type: "sidebar.ack"; revision: number }) => {
+      if (webviewView !== this.view) return;
+      if (message?.type === "sidebar.ack") {
+        if (message.revision === this.waitingAck) { this.waitingAck = 0; if (this.dirty) this.postSnapshot(); }
+        return;
+      }
       void this.handleMessage(message).catch((error) => {
         const detail = error instanceof Error ? error.message : "Не удалось выполнить действие.";
         this.logger.warn(`Sidebar action failed: ${detail}`);
@@ -43,10 +71,38 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   postSnapshot(): void {
-    this.view?.webview.postMessage({
-      type: "sidebar.snapshot",
-      snapshot: this.state.getSidebarSnapshot()
-    });
+    this.dirty = true;
+    if (this.timer || !this.ready || !this.view || this.view.visible === false || this.sending || this.waitingAck) return;
+    this.timer = setTimeout(() => { this.timer = undefined; void this.flushSnapshot(); }, 100);
+  }
+
+  private async flushSnapshot(): Promise<void> {
+    const view = this.view;
+    if (!view || !this.ready || view.visible === false || this.sending || this.waitingAck || !this.dirty) return;
+    this.dirty = false;
+    const raw = this.state.getSidebarSnapshot();
+    // The list does not need queued prompt bodies, attachments, approvals or backend identifiers.
+    const snapshot = { kind: raw.kind, auth: raw.auth, proxy: raw.proxy, activeChatId: raw.activeChatId, rateLimits: raw.rateLimits,
+      chats: raw.chats.map(chat => ({ id: chat.id, title: chat.title, kind: chat.kind, status: chat.status, hasUnread: chat.hasUnread,
+        archivedAt: chat.archivedAt, updatedAt: chat.updatedAt })) };
+    const key = JSON.stringify({ ...snapshot, chats: snapshot.chats.map(chat => ({ ...chat,
+      updatedAt: ["running", "cancelling", "waitingApproval"].includes(chat.status) ? "" : chat.updatedAt })) });
+    if (key === this.lastSnapshot) return;
+    this.lastSnapshot = key;
+    const frame = { type: "sidebar.snapshot", revision: ++this.revision, snapshot };
+    const bytes = Buffer.byteLength(JSON.stringify(frame));
+    this.metrics.frames++; this.metrics.bytes += bytes; this.metrics.maxFrameBytes = Math.max(this.metrics.maxFrameBytes, bytes);
+    this.sending = true;
+    this.waitingAck = frame.revision;
+    try {
+      if (!await view.webview.postMessage(frame)) {
+        this.metrics.failures++;
+        if (this.view === view) { this.ready = false; this.waitingAck = 0; this.lastSnapshot = ""; this.dirty = true; }
+      }
+    } catch {
+      this.metrics.failures++;
+      if (this.view === view) { this.ready = false; this.waitingAck = 0; this.lastSnapshot = ""; this.dirty = true; }
+    } finally { this.sending = false; if (this.dirty) this.postSnapshot(); }
   }
 
   postEvent(event: string, payload?: unknown): void {
@@ -59,6 +115,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     if (message.type === "ready") {
+      this.ready = true;
+      this.waitingAck = 0;
+      this.lastSnapshot = "";
       this.logger.info("Sidebar webview ready.");
       this.logger.info(`Sidebar webview assets: ${message.assetMode ?? "unknown"}.`);
       this.postSnapshot();

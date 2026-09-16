@@ -108,6 +108,25 @@ function action(entry) { return { id: entry.id, revision: entry.revision, confir
 function changed(f, value = "after") { put(f.root, "file.txt", `first unchanged line\n${value}\nlast unchanged line\n`); }
 
 async function main() {
+  await run("Russian feature guidance preserves structured error/status contracts", async () => {
+    const f = fixture();
+    try {
+      const actions = await f.service.handle("project.actions", {}, "chat-a");
+      assert.equal(actions.ok, true);
+      for (const entry of actions.items) {
+        assert.match(entry.label, /[А-Яа-яЁё]/);
+        if (entry.reason) assert.match(entry.reason, /[А-Яа-яЁё]/);
+      }
+      const nested = path.join(f.root, "nested"); fs.mkdirSync(nested); f.current.root = nested;
+      const result = await f.service.handle("review.list", {}, "chat-a");
+      assert.equal(result.ok, false);
+      assert.equal(result.status, "blocked");
+      assert.equal(result.error.category, "needs-attention");
+      assert.match(result.message, /корневой каталог Git-репозитория/);
+      assert.match(result.message, /родительских каталогах/);
+      assert.equal(result.error.message, result.message);
+    } finally { f.dispose(); }
+  });
   await run("full index/disk snapshots include unchanged lines and native immutable URIs", async () => {
     const f = fixture();
     try {

@@ -127,14 +127,17 @@ export class SettingsService {
   }
 
   getDocsSettingsView(): DocsSettingsView {
-    const docs = this.readSettings().docs;
-    const sourcePath = docs?.sourcePath?.trim() ?? "";
-    const normalizedPath = docs?.normalizedPath?.trim() ?? "";
+    const { sourcePath, normalizedPath } = this.getDocsPathsSnapshot();
     return {
       sourcePath,
       normalizedPath,
       validationMessage: validateDocsPath(normalizedPath)
     };
+  }
+
+  getDocsPathsSnapshot(): Pick<DocsSettingsView, "normalizedPath" | "sourcePath"> {
+    const docs = this.readSettings().docs;
+    return { normalizedPath: docs?.normalizedPath?.trim() ?? "", sourcePath: docs?.sourcePath?.trim() ?? "" };
   }
 
   async getToolsSettingsView(): Promise<ToolsSettingsView> {

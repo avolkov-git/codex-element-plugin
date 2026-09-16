@@ -6,9 +6,7 @@ const os = require("os");
 const path = require("path");
 const childProcess = require("child_process");
 const {
-  targetForPlatform,
-  targetPaths,
-  validateRuntimeFile
+  verifyRuntimeManifest
 } = require("./runtime-preflight-lib");
 
 const sourceRoot = path.resolve(__dirname, "..");
@@ -97,18 +95,12 @@ function buildReleaseTarget(workingRoot, releaseTarget) {
 }
 
 function selectRuntimeRoot(platformId) {
-  const target = targetForPlatform(platformId);
   for (const root of [sourceRoot, fallbackRuntimeRoot]) {
-    const candidate = targetPaths(root, target).find((item) => fs.existsSync(item));
-    if (!candidate) {
-      continue;
-    }
-    const validation = validateRuntimeFile(candidate, target);
-    if (!validation.errors.length) {
+    if (!verifyRuntimeManifest(root, [platformId]).length) {
       return root;
     }
   }
-  throw new Error(`No valid ${platformId} runtime found in ${sourceRoot} or ${fallbackRuntimeRoot}.`);
+  throw new Error(`No complete, verified ${platformId} runtime found in ${sourceRoot} or ${fallbackRuntimeRoot}.`);
 }
 
 function verifyArchive(workingRoot, releaseTarget, archivePath) {

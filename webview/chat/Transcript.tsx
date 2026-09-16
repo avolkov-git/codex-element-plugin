@@ -1,15 +1,27 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowLeft, ArrowRight, ChevronDown, ChevronRight, ExternalLink, File, FileDiff, LoaderCircle, Terminal, Check, CircleAlert, Copy, Lightbulb } from "lucide-react";
-import type { ChatTranscriptItem, ChatTurnRunTranscriptItem } from "../../src/types";
+import type { ChatMessageTranscriptItem, ChatTranscriptItem, ChatTurnRunTranscriptItem } from "../../src/types";
 import { command, saved, store, vscode, type ChatView } from "./bridge";
 import { BoundedText, IconButton } from "./controls";
 import { Markdown } from "./Markdown";
+import { NativeQuestions, QuestionDraftScope, TranscriptQuestion } from "./Questions";
 
 const operational = (item: ChatTranscriptItem) => ["activity", "worklog", "diff", "compaction"].includes(item.kind);
 const groupedOperation = (item: ChatTranscriptItem) => ["activity", "worklog", "compaction"].includes(item.kind) && (!("status" in item) || item.status !== "running");
 const labels = { running: "Выполняется", completed: "Завершено", error: "Ошибка" };
-const time = (value?: string) => value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+
+function questionMessageBody(item: ChatMessageTranscriptItem): string {
+  if (!item.questions?.length) return item.text;
+  const lines = item.text.split(/\r?\n/);
+  const content = lines.map((text, index) => ({ text: text.trim(), index })).filter(line => line.text);
+  const questionText = item.questions.flatMap(question => [question.title, ...(question.options ?? []).map(option => `- ${option}`)]).join("\n");
+  const echo = questionText.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const start = content.length - echo.length;
+  // Remove only the exact trailing metadata echo, retaining any preceding explanation.
+  return start >= 0 && echo.length && echo.every((line, index) => content[start + index].text === line)
+    ? lines.slice(0, content[start].index).join("\n").trimEnd() : item.text;
+}
 
 export function formatElapsed(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -75,6 +87,7 @@ function Operation({ item, chatId }: { item: ChatTranscriptItem; chatId: string 
     {item.files.slice(start, start + 20).map((file, relativeIndex) => <details key={`${file.path}-${relativeIndex}`} className="diff-file" onToggle={event => { if (event.currentTarget.open) setOpened(true); }}><summary><span className="file-path">{file.path}</span><span className="added">+{file.additions}</span><span className="removed">-{file.deletions}</span>
       <IconButton icon={ExternalLink} label={`Открыть diff ${file.path}`} onClick={event => { event.preventDefault(); command(chatId, "diff.openNative", { diffId: item.id, fileIndex: page * 20 + relativeIndex }); }} /></summary>
       <BoundedText>{notice || file.diff || "Diff недоступен."}</BoundedText>
+      {file.truncated && <p className="row-status">Превью сокращено.</p>}
     </details>)}<Pager page={page} total={detailCount ?? item.files.length} size={20} setPage={value => { setOpened(true); setPage(value); }} />
   </section>;
   if (item.kind === "compaction") return <div className="compaction"><span>{item.label}</span></div>;
@@ -104,11 +117,10 @@ function Turn({ item, chatId }: { item: ChatTurnRunTranscriptItem; chatId: strin
     timer = setTimeout(() => setError("Журнал не загружен. Закройте и откройте его повторно."), 10000);
     return () => { clearTimeout(timer); dispose(); };
   }, [expanded, offset, chatId, item.id, item.turnId, item.status, item.updatedAt]);
-  const count = Object.values(item.counts ?? {}).reduce((sum, value) => sum + (value ?? 0), 0);
   return <section className="turn-run"><button className="turn-run-line" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
-    {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-    {item.status === "running" ? <LoaderCircle className="spin" size={15} /> : item.status === "error" ? <CircleAlert size={15} /> : <Check size={15} />}
-    <span><Elapsed createdAt={item.createdAt} completedAt={item.completedAt} running={item.status === "running"} prefix={item.status === "running" ? "Работает уже " : item.status === "error" ? "Работа прервана через " : "Работал на протяжении "} />{count ? ` · ${count} операций` : ""}</span>
+    {item.status === "running" ? <LoaderCircle className="spin" size={15} /> : item.status === "error" ? <CircleAlert size={15} /> : <Terminal size={15} />}
+    <Elapsed createdAt={item.createdAt} completedAt={item.completedAt} running={item.status === "running"} prefix={item.status === "running" ? "Работает уже " : item.status === "error" ? "Работа прервана через " : "Работал на протяжении "} />
+    {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
   </button>{expanded && <div className="turn-children">
     {window ? <>{window.items.slice(0, 40).filter(child => child.kind !== "diff" && operational(child)).map(child => <Operation key={child.id} item={child} chatId={chatId} />)}
       {!window.items.length && <p className="muted">Нет операций.</p>}
@@ -116,20 +128,31 @@ function Turn({ item, chatId }: { item: ChatTurnRunTranscriptItem; chatId: strin
   </div>}</section>;
 }
 
-const TranscriptRow = memo(function TranscriptRow({ item, chatId, syntheticTurn }: { item?: ChatTranscriptItem; chatId: string; syntheticTurn?: ChatTurnRunTranscriptItem }) {
+const TranscriptRow = memo(function TranscriptRow({ item, chatId, syntheticTurn, archived }: { item?: ChatTranscriptItem; chatId: string; syntheticTurn?: ChatTurnRunTranscriptItem; archived: boolean }) {
   if (syntheticTurn) return <><Turn item={syntheticTurn} chatId={chatId} />{item && (syntheticTurn.status === "running" || !groupedOperation(item)) && <Operation item={item} chatId={chatId} />}</>;
   if (!item) return <div className="history-placeholder" aria-label="Загрузка сообщения" />;
-  if (item.kind === "message") return <article className={`message message-${item.role}`} data-item-id={item.id}>
-    <div className="message-meta"><span>{item.role === "assistant" ? "Codex" : item.role === "user" ? "Вы" : "Система"}</span><time>{time(item.createdAt)}</time>
-      <IconButton icon={Copy} label="Копировать сообщение" onClick={() => command(chatId, "clipboard.write", { text: item.text })} /></div>
-    <Markdown text={item.text} chatId={chatId} streaming={item.status === "streaming"} />
-    {!!item.attachments?.length && <div className="message-attachments">{item.attachments.map(attachment => <button key={attachment.id} className="message-attachment" onClick={() => command(chatId, "chat.attachment.open", { attachment })}><File size={14} />{attachment.name}</button>)}</div>}
-    {item.durationMs !== undefined && <span className="message-duration">{Math.round(item.durationMs / 1000)} с</span>}
+  if (item.kind === "message") {
+    const body = item.role === "assistant" && item.questions?.length ? questionMessageBody(item) : item.text;
+    return <article className={`message message-${item.role}`} data-item-id={item.id}>
+    <div className={item.role === "user" ? "user-bubble" : "message-content"}>
+      {item.role === "system" && <div className="system-role">Система</div>}
+      {item.role === "assistant" && item.durationMs !== undefined && <span className="message-duration">{formatElapsed(item.durationMs)}</span>}
+      {item.role === "assistant" && item.questions?.length ? <>
+        {!!body && <div className="question-message-context"><Markdown text={body} chatId={chatId} /></div>}
+        {item.questions.map(question => <TranscriptQuestion key={question.id}
+        chatId={chatId} messageId={item.id} questionId={question.id} title={question.title} answer={question.answer} archived={archived}
+        options={(question.options ?? []).map(label => ({ label, value: label }))} />)}</> :
+        <Markdown text={item.text} chatId={chatId} streaming={item.status === "streaming"} />}
+      {!!item.attachments?.length && <div className="message-attachments">{item.attachments.map(attachment => <button key={attachment.id} className="message-attachment" onClick={() => command(chatId, "chat.attachment.open", { attachment })}><File size={14} />{attachment.name}</button>)}</div>}
+    </div>
+    <IconButton className="message-copy" icon={Copy} label="Копировать сообщение" onClick={() => command(chatId, "clipboard.write", { text: item.text })} />
   </article>;
+  }
   if (item.kind === "turn-run") return <Turn item={item} chatId={chatId} />;
   if (operational(item)) return <Operation item={item} chatId={chatId} />;
   if (item.kind === "plan") return <section className="plan-block"><Markdown text={item.markdown} chatId={chatId} /><div className="plan-actions"><button onClick={() => command(chatId, "chat.plan.revise", { planText: item.markdown })}>Изменить план</button><button className="primary" onClick={() => command(chatId, "chat.plan.implement", { planText: item.markdown })}>Реализовать</button></div></section>;
-  if (item.kind === "clarification") return <section className="clarification"><Markdown text={item.question} chatId={chatId} /><div className="clarification-options">{item.options.map((option, index) => <button key={index} onClick={() => command(chatId, "chat.send", { prompt: option.answer, mode: "planning" })}><strong>{option.title}</strong>{option.description && <span>{option.description}</span>}</button>)}</div></section>;
+  if (item.kind === "clarification") return <TranscriptQuestion chatId={chatId} messageId={item.id} questionId={item.id} title={item.question}
+    answer={item.answer} archived={archived} options={item.options.map(option => ({ label: option.title, value: option.answer, description: option.description }))} />;
   if (item.kind === "connection") return <div className={`connection-state ${item.status}`} role="status">{item.message}{item.attempt ? ` (${item.attempt}/${item.maxAttempts ?? "?"})` : ""}</div>;
   if (item.kind === "error") return <div className="error-state" role="alert"><p>{item.message}</p>{item.details && <details><summary>Подробности</summary><BoundedText>{item.details}</BoundedText></details>}</div>;
   return null;
@@ -141,6 +164,9 @@ export function Transcript({ view }: { view: ChatView }) {
   const [showBottom, setShowBottom] = useState(!following.current);
   const [pinned, setPinned] = useState<number[]>([]);
   const pinnedRows = useRef(new Map<number, ChatTranscriptItem>());
+  const primaryQuestion = view.meta?.pendingUserInput ?? view.meta?.chat.pendingUserInput;
+  const pendingQuestions = (view.meta?.pendingUserInputs?.length ? view.meta.pendingUserInputs : primaryQuestion ? [primaryQuestion] : [])
+    .filter(request => request.chatId === view.chatId);
   const firstByTurn = useMemo(() => {
     const result = new Map<string, number>();
     const parents = new Set([...view.rows.values()].filter(item => item.kind === "turn-run").map(item => item.id));
@@ -219,8 +245,9 @@ export function Transcript({ view }: { view: ChatView }) {
   const scroll = () => {
     const element = ref.current!;
     const near = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
-    if (!document.getSelection()?.toString()) following.current = near;
-    setShowBottom(!near);
+    const answering = element.contains(document.activeElement) && !!document.activeElement?.closest(".inline-questions");
+    if (!document.getSelection()?.toString()) following.current = near && !answering;
+    setShowBottom(!near || answering);
     if (first) {
       saved.anchors ??= {};
       saved.anchors[view.chatId] = { index: first.index, offset: element.scrollTop - first.start, following: following.current };
@@ -231,22 +258,26 @@ export function Transcript({ view }: { view: ChatView }) {
     }
   };
   useEffect(() => () => { vscode.setState(saved); }, []);
-  return <div className="transcript-region"><div ref={ref} className="body" data-role="transcript" tabIndex={0} aria-label="История диалога"
+  return <QuestionDraftScope key={view.chatId} chatId={view.chatId}><div className="transcript-region"><div ref={ref} className="body" data-role="transcript" tabIndex={0} aria-label="История диалога"
+    onFocusCapture={event => { if ((event.target as HTMLElement).closest(".inline-questions")) { following.current = false; setShowBottom(true); } }}
     onScroll={scroll} onWheel={event => { if (event.deltaY < 0) { following.current = false; setShowBottom(true); } }}
     onTouchStart={() => { following.current = false; }} onKeyDown={event => { if (["PageUp", "Home", "ArrowUp"].includes(event.key)) following.current = false; }}>
-    <div className="virtual-transcript" style={{ height: virtualizer.getTotalSize() }}>
+    <div className="transcript-content"><div className="virtual-transcript" style={{ height: virtualizer.getTotalSize() }}>
       {virtualItems.map(row => {
         const item = pinnedRows.current.get(row.index) ?? view.rows.get(row.index);
         const parent = item && "turnId" in item && item.turnId && firstByTurn.get(item.turnId) === row.index ? view.turns.get(item.turnId) : undefined;
         const hide = hidden(row.index) && !pinnedRows.current.has(row.index);
         return <div key={row.key} data-index={row.index} ref={virtualizer.measureElement} data-row-id={item?.id} className={`virtual-row${hide ? " hidden-row" : ""}`} style={{ transform: `translateY(${row.start}px)` }}>
-          {!hide && <TranscriptRow item={item} chatId={view.chatId} syntheticTurn={parent} />}
+          {!hide && <TranscriptRow item={item} chatId={view.chatId} syntheticTurn={parent} archived={!!view.meta?.chat.archivedAt} />}
         </div>;
       })}
     </div>
-    {!view.total && <div className="empty-transcript">Новый диалог</div>}
+    {!!pendingQuestions.length && <div className="pending-questions">{pendingQuestions.map(request => <NativeQuestions key={request.id} request={request} />)}</div>}
+    {!view.total && !pendingQuestions.length && <div className="empty-transcript">Новый диалог</div>}</div>
   </div>{showBottom && <IconButton className="scroll-to-bottom" icon={ArrowDown} label="К последнему сообщению" onClick={() => {
     following.current = true; store.setViewport(Math.max(0, view.total - 100));
-    virtualizer.scrollToIndex(Math.max(0, view.total - 1), { align: "end" }); setShowBottom(false);
-  }} />}</div>;
+    virtualizer.scrollToIndex(Math.max(0, view.total - 1), { align: "end" });
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+    setShowBottom(false);
+  }} />}</div></QuestionDraftScope>;
 }

@@ -100,19 +100,19 @@ export class FeatureBrowserArtifacts {
     this.prune();
     const record = this.records.get(id);
     if (!record || record.scope !== scope || record.chatId !== chatId || !root || this.validateRoot(scope, root) !== record.root) {
-      throw new FeatureError("blocked", "This artifact ID is unavailable in the current authenticated session. Refresh the artifact list.");
+      throw new FeatureError("blocked", "Артефакт недоступен в текущем сеансе. Обновите список.");
     }
     const file = safeFile(record.root, record.relative);
     const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
     try {
       const stat = fs.fstatSync(fd);
       if (!stat.isFile() || stat.nlink !== 1 || fingerprint(stat) !== record.fingerprint) {
-        throw new FeatureError("conflict", "The artifact changed. Refresh its list before opening it.");
+        throw new FeatureError("conflict", "Артефакт изменился. Обновите список перед открытием.");
       }
-      if (record.item.kind === "image" && !record.item.previewAvailable) return { artifact: record.item, preview: { kind: "unavailable", truncated: true, redacted: false, message: "Only bounded PNG/JPEG raster previews are enabled; other images remain listed without exposing raw paths." } };
+      if (record.item.kind === "image" && !record.item.previewAvailable) return { artifact: record.item, preview: { kind: "unavailable", truncated: true, redacted: false, message: "Предпросмотр доступен для изображений PNG и JPEG допустимого размера. Остальные изображения остаются в списке; серверные пути не раскрываются." } };
       const limit = record.item.kind === "image" ? MAX_IMAGE_BYTES : record.item.kind === "console" ? MAX_PREVIEW_BYTES : MAX_JSON_BYTES;
       if (stat.size > limit && record.item.kind !== "console") {
-        return { artifact: record.item, preview: { kind: "unavailable", truncated: true, redacted: false, message: "This artifact exceeds the safe inline preview limit. No raw file or server path was exposed." } };
+        return { artifact: record.item, preview: { kind: "unavailable", truncated: true, redacted: false, message: "Артефакт слишком велик для предпросмотра. Исходный файл и серверный путь не раскрываются." } };
       }
       const buffer = Buffer.alloc(Math.min(stat.size, limit));
       let count = 0;
@@ -121,17 +121,17 @@ export class FeatureBrowserArtifacts {
         if (!read) break;
         count += read;
       }
-      if (count !== buffer.length || fingerprint(fs.fstatSync(fd)) !== record.fingerprint) throw new FeatureError("conflict", "The artifact changed while its preview was read.");
+      if (count !== buffer.length || fingerprint(fs.fstatSync(fd)) !== record.fingerprint) throw new FeatureError("conflict", "Артефакт изменился во время чтения предпросмотра.");
       return { artifact: record.item, preview: preview(record.item.kind, buffer, stat.size > limit) };
     } finally { fs.closeSync(fd); }
   }
 
   private validateRoot(scope: string, root: string, allowMissing = false): string {
     const relative = path.relative(scope, root).split(path.sep).join("/");
-    if (!path.isAbsolute(root) || !relative || !contained(scope, root)) throw new FeatureError("blocked", "Browser artifacts must be in a dedicated directory within the authenticated scope.");
+    if (!path.isAbsolute(root) || !relative || !contained(scope, root)) throw new FeatureError("blocked", "Артефакты браузера должны находиться в отдельном каталоге текущего пользователя и проекта.");
     const resolved = safeFile(scope, relative);
     if (allowMissing && !fs.existsSync(resolved)) return resolved;
-    if (!fs.statSync(resolved).isDirectory()) throw new FeatureError("blocked", "The browser artifact directory is unavailable.");
+    if (!fs.statSync(resolved).isDirectory()) throw new FeatureError("blocked", "Каталог артефактов браузера недоступен.");
     return resolved;
   }
 
@@ -145,17 +145,17 @@ export class FeatureBrowserArtifacts {
 function preview(kind: BrowserArtifactItem["kind"], buffer: Buffer, truncated: boolean): BrowserArtifactPreview {
   if (kind === "image") {
     const mimeType = imageType(buffer);
-    if (!mimeType) throw new FeatureError("unsupported", "The artifact does not contain a supported raster image.");
-    return { kind: "image", dataUrl: `data:${mimeType};base64,${buffer.toString("base64")}`, mimeType, truncated: false, redacted: false, message: "Screenshot pixels are not redacted; visible application data may be sensitive." };
+    if (!mimeType) throw new FeatureError("unsupported", "Артефакт не содержит изображение поддерживаемого формата.");
+    return { kind: "image", dataUrl: `data:${mimeType};base64,${buffer.toString("base64")}`, mimeType, truncated: false, redacted: false, message: "Содержимое скриншота не скрывается. На нём могут быть конфиденциальные данные приложения." };
   }
   const text = buffer.toString("utf8");
   if (kind === "console") {
     const limited = truncated ? text.slice(0, Math.max(0, text.lastIndexOf("\n"))) : text;
-    return { kind: "text", text: redactPreview(limited).slice(0, MAX_PREVIEW_BYTES), truncated, redacted: true, message: "Common credential fields and URL query strings are removed. Application text may still be sensitive; this is a bounded preview, not raw log output." };
+    return { kind: "text", text: redactPreview(limited).slice(0, MAX_PREVIEW_BYTES), truncated, redacted: true, message: "Типовые поля с секретами и параметры URL удалены. Текст приложения всё ещё может содержать конфиденциальные данные. Показан ограниченный предпросмотр, а не исходный лог." };
   }
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch {
-    return { kind: "unavailable", truncated: false, redacted: true, message: "Invalid structured artifact; raw contents are not displayed." };
+    return { kind: "unavailable", truncated: false, redacted: true, message: "Некорректный формат артефакта. Исходное содержимое не отображается." };
   }
   const data = asObject(parsed);
   const log = asObject(data.log);
@@ -171,25 +171,25 @@ function preview(kind: BrowserArtifactItem["kind"], buffer: Buffer, truncated: b
       const status = typeof response.status === "number" && Number.isFinite(response.status) ? response.status : "?";
       return `${method} ${origin}  ${status}`;
     });
-    return { kind: "summary", text: lines.join("\n"), truncated: entries.length > 100, redacted: true, message: "Network summary only; headers, cookies, paths, queries, request bodies and response bodies are omitted." };
+    return { kind: "summary", text: lines.join("\n"), truncated: entries.length > 100, redacted: true, message: "Показана только сводка сетевых запросов. Заголовки, cookies, пути, параметры и содержимое запросов и ответов скрыты." };
   }
-  return { kind: "summary", text: Array.isArray(parsed) ? `Structured artifact: ${parsed.length} entries.` : "Structured browser artifact.", truncated: false, redacted: true, message: "Arbitrary JSON fields may contain credentials and are not exposed as raw output." };
+  return { kind: "summary", text: Array.isArray(parsed) ? `Структурированный артефакт: записей ${parsed.length}.` : "Структурированный артефакт браузера.", truncated: false, redacted: true, message: "Поля JSON могут содержать секреты, поэтому исходное содержимое не отображается." };
 }
 
 function asObject(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 
 function imageType(value: Buffer): string | undefined {
   if (value.length >= 24 && value.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-    if (value.readUInt32BE(8) !== 13 || value.toString("ascii", 12, 16) !== "IHDR") throw new FeatureError("unsupported", "The PNG header is not valid.");
+    if (value.readUInt32BE(8) !== 13 || value.toString("ascii", 12, 16) !== "IHDR") throw new FeatureError("unsupported", "Повреждён заголовок изображения PNG.");
     let offset = 8;
     while (offset + 12 <= value.length) {
       const length = value.readUInt32BE(offset);
       if (length > value.length - offset - 12) break;
-      if (value.toString("ascii", offset + 4, offset + 8) === "acTL") throw new FeatureError("unsupported", "Animated image previews are not enabled.");
+      if (value.toString("ascii", offset + 4, offset + 8) === "acTL") throw new FeatureError("unsupported", "Предпросмотр анимированных изображений не поддерживается.");
       offset += length + 12;
     }
     const width = value.readUInt32BE(16), height = value.readUInt32BE(20);
-    if (!width || !height || width * height > 24_000_000) throw new FeatureError("unsupported", "Image dimensions exceed the safe preview limit.");
+    if (!width || !height || width * height > 24_000_000) throw new FeatureError("unsupported", "Размеры изображения превышают ограничение для предпросмотра.");
     return "image/png";
   }
   if (value.length > 3 && value[0] === 0xff && value[1] === 0xd8) {
@@ -205,7 +205,7 @@ function imageType(value: Buffer): string | undefined {
       if (length < 2 || offset + length > value.length) break;
       if ([0xc0, 0xc1, 0xc2].includes(marker) && length >= 8) {
         const height = value.readUInt16BE(offset + 3), width = value.readUInt16BE(offset + 5);
-        if (!width || !height || width * height > 24_000_000) throw new FeatureError("unsupported", "Image dimensions exceed the safe preview limit.");
+        if (!width || !height || width * height > 24_000_000) throw new FeatureError("unsupported", "Размеры изображения превышают ограничение для предпросмотра.");
         return "image/jpeg";
       }
       offset += length;

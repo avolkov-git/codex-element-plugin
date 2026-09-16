@@ -15,11 +15,17 @@ function targetForPlatform(platformId) {
   return targets.find((target) => target.platformId === platformId || target.legacyPlatformId === platformId);
 }
 
-function targetPaths(root, target) {
+function runtimeFileNames(target) {
+  return target.platformId.startsWith("win32-")
+    ? ["codex.exe", "codex-command-runner.exe", "codex-windows-sandbox-setup.exe", "codex-code-mode-host.exe"]
+    : ["codex", "codex-code-mode-host"];
+}
+
+function targetPaths(root, target, executableName = target.executableName) {
   const binRoot = path.join(root, "bin");
-  const paths = [path.join(binRoot, target.platformId, target.executableName)];
+  const paths = [path.join(binRoot, target.platformId, executableName)];
   if (target.legacyPlatformId) {
-    paths.push(path.join(binRoot, target.legacyPlatformId, target.executableName));
+    paths.push(path.join(binRoot, target.legacyPlatformId, executableName));
   }
   return paths;
 }
@@ -266,13 +272,17 @@ function verifyRuntimeManifest(root, platformIds, { allowLfsPointer = false } = 
     if (!manifest.version || !Array.isArray(manifest.files)) throw new Error("invalid runtime manifest");
     for (const platformId of platformIds) {
       const target = targetForPlatform(platformId);
-      const expected = target.platformId.startsWith("win32-")
-        ? ["codex.exe", "codex-command-runner.exe", "codex-windows-sandbox-setup.exe"] : ["codex"];
-      for (const name of expected) {
+      if (!target) throw new Error(`unknown runtime platform: ${platformId}`);
+      for (const name of runtimeFileNames(target)) {
         const relative = `bin/${target.platformId}/${name}`;
         const entry = manifest.files.find((file) => file.path === relative);
         if (!entry || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error(`missing checksum for ${relative}`);
         const filePath = path.join(root, relative);
+        const validation = validateRuntimeFile(filePath, target, { required: true, allowLfsPointer });
+        if (validation.errors.length) {
+          errors.push(...validation.errors);
+          continue;
+        }
         const header = readHeader(filePath).toString("utf8");
         if (allowLfsPointer && header.startsWith("version https://git-lfs.github.com/spec/v1")) {
           if (!header.includes(`oid sha256:${entry.sha256}\n`) || !header.includes(`size ${entry.size}\n`)) errors.push(`${relative} points to a different runtime version`);
@@ -304,6 +314,7 @@ function sha256File(filePath) {
 
 module.exports = {
   resolveRuntime,
+  runtimeFileNames,
   targetForPlatform,
   targetPaths,
   targets,

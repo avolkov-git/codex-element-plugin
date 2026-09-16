@@ -13,6 +13,8 @@ script cannot acquire the VS Code API twice after the nonce inline fallback.
 - `npx tsc -p webview/chat/tsconfig.json`: type-check without emitting files.
 - `node scripts/chat-ui-check.cjs`: native Chrome through the bundled Playwright
   runtime, no dev server; screenshots go to a temporary output directory.
+- `node scripts/chat-questions-check.cjs`: inline native and async questions,
+  answer routing, errors, secret handling and drafts across virtual scrolling.
 - `node scripts/build-chat-ui.js`: emit only `media/chat.js` and
   `media/chat.NOTICES.txt`. React, Markdown, icons and virtualization packages are
   development dependencies used at build time, not extension-host requirements.
@@ -58,6 +60,10 @@ chat becomes active while a request is being handled.
 - `chat.userInput.respond {id,response}` -> `chat.userInput.result`, where
   response is exactly `{answers:{questionId:{answers:["answer"]}}}` or `null`
   to cancel. Native answers are never written to webview draft state.
+- `chat.question.respond {messageId,questionId,answer}` -> `chat.question.result`
+  for persisted async questions and planning clarifications. The host validates
+  ownership and sends the answer to the originating chat, never the active chat
+  inferred later. Success is reported only after the runtime accepts the input.
 - `clipboard.write {text,requestId?}` -> `clipboard.result`, using the host API
   even on insecure HTTP where browser clipboard access is unavailable.
 - Existing send, queue, steer, stop, attachment upload/pick/paste, plan, model,
@@ -80,6 +86,25 @@ from arbitrary profile names in this UI.
 The frontend fixture uses the real `ChatPanelManager` and browser bundle with
 in-memory host data. It covers 1,000/10,000 variable-height histories, streaming
 while reading/selecting, draft restoration, epoch/ACK/visibility backpressure,
-origin-chat routing, native dialog focus/inertness/secret handling, paginated
+origin-chat routing, approval dialog focus/inertness, inline question/secret handling, paginated
 operations, clipboard, upload/paste, and feature controls. It is not a claim of
 Windows/Element server end-to-end acceptance or authorization to deploy.
+
+## Вопросы в истории
+
+`agentMessage.questions` используется только для структурированных асинхронных
+вопросов app-server. Кнопка варианта отправляет ответ сразу; свободный текст
+отправляется кнопкой «Ответить» или Enter. Служебные вопросы планирования
+используют те же элементы управления. Произвольный текст Markdown не разбирается
+эвристически, даже если в нём есть вопросительный знак и список.
+
+Черновики асинхронных ответов живут в памяти текущего чата отдельно от виртуальных
+строк. Прокрутка и новые токены не удаляют их; результат отправки обрабатывается
+и когда строка за пределами окна. Они не записываются в `vscode.setState`.
+
+Активные RPC-формы `item/tool/requestUserInput` расположены после виртуальной
+истории внутри того же скроллера. Они не размонтируются при прокрутке и не
+перехватывают фокус при появлении. Несколько вопросов одного RPC отправляются
+вместе после заполнения; отдельные запросы независимы. При закрытии запроса его
+секретные ответы удаляются вместе с формой. Модальные подтверждения разрешений
+не относятся к этим вопросам и сохраняют прежнее поведение.

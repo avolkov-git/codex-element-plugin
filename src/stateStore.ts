@@ -1,5 +1,6 @@
 import { ChatActivityDetail, ChatActivityKind, ChatActivityTranscriptItem, ChatAttachment, ChatClarificationOption, ChatClarificationTranscriptItem, ChatDiffFileSummary, ChatDiffTranscriptItem, ChatEffort, ChatHeaderMode, ChatKind, ChatMessageTranscriptItem, ChatPanelSnapshot, ChatQueuedMessage, ChatRunMode, ChatSpeed, ChatSummary, ChatTranscriptItem, ChatTranscriptWindow, ChatTurnRunCounterKind, ChatTurnRunTranscriptItem, ChatWorklogTranscriptItem, ContextWindowUsage, ModelOption, PersistedChatHistory, SidebarSnapshot, WorklogChild } from "./types";
-import { NativeUserInputRequest } from "./types";
+import { ChatMessageQuestion, NativeUserInputRequest } from "./types";
+import { createHash } from "crypto";
 
 type AuthPatch = Omit<Partial<SidebarSnapshot["auth"]>, "deviceCode" | "apiKey"> & {
   deviceCode?: Partial<SidebarSnapshot["auth"]["deviceCode"]>;
@@ -32,6 +33,7 @@ const EMPTY_CONTEXT_WINDOW: ContextWindowUsage = {
 
 export class StateStore {
   private version = 1;
+  private historyGeneration = 0;
   private activeChatId: string | undefined;
   private chats: ChatSummary[] = [];
   private transcripts = new Map<string, ChatTranscriptItem[]>();
@@ -283,7 +285,7 @@ export class StateStore {
         return undefined;
       }
       if (item.kind === "clarification") {
-        return item;
+        return item.answer === undefined ? item : undefined;
       }
     }
     return undefined;
@@ -816,6 +818,55 @@ export class StateStore {
     return item;
   }
 
+  addAsyncAssistantMessage(
+    chatId: string, backendThreadId: string, backendItemId: string, text: string, turnId?: string,
+    questions?: Array<Pick<ChatMessageQuestion, "title" | "options">>
+  ): ChatMessageTranscriptItem | undefined {
+    const chat = this.getChat(chatId);
+    if (!chat || chat.archivedAt || chat.backendThreadId !== backendThreadId || !backendThreadId || !backendItemId
+      || backendThreadId.length > 1024 || backendItemId.length > 1024) return undefined;
+    const id = `async-${createHash("sha256").update(JSON.stringify([backendThreadId, backendItemId])).digest("hex")}`;
+    const transcript = this.transcripts.get(chatId) ?? [];
+    const index = transcript.findIndex(item => item.id === id);
+    const existing = index >= 0 ? transcript[index] as ChatMessageTranscriptItem : undefined;
+    const item: ChatMessageTranscriptItem = {
+      kind: "message", id, role: "assistant", text, turnId, backendThreadId, backendItemId,
+      status: "complete", createdAt: existing?.createdAt ?? new Date().toISOString(),
+      // Completed items can be replayed with missing metadata. The first question set, including answers, wins.
+      questions: existing?.questions ?? questions?.map((question, questionIndex) => ({
+        id: `${id}:question:${questionIndex}`, title: question.title, options: question.options ? [...question.options] : null
+      }))
+    };
+    this.transcripts.set(chatId, index >= 0
+      ? [...transcript.slice(0, index), item, ...transcript.slice(index + 1)] : [...transcript, item]);
+    this.updateChat(chatId, { hasUnread: true }, "immediate");
+    return item;
+  }
+
+  getChatQuestion(chatId: string, messageId: string, questionId: string): {
+    kind: "message" | "clarification"; title: string; answer?: string; backendThreadId?: string; backendItemId?: string; turnId?: string;
+  } | undefined {
+    const item = (this.transcripts.get(chatId) ?? []).find(item => item.id === messageId);
+    const question = item?.kind === "message" && item.role === "assistant"
+      ? item.questions?.find(question => question.id === questionId)
+      : item?.kind === "clarification" && item.id === questionId ? { title: item.question, answer: item.answer } : undefined;
+    if (!question || (item?.kind !== "message" && item?.kind !== "clarification")) return undefined;
+    return { kind: item.kind, title: question.title, answer: question.answer, backendThreadId: item.backendThreadId, backendItemId: item.backendItemId, turnId: item.turnId };
+  }
+
+  answerChatQuestion(chatId: string, messageId: string, questionId: string, answer: string): boolean {
+    const question = this.getChatQuestion(chatId, messageId, questionId);
+    if (!question || question.answer !== undefined) return false;
+    const transcript = this.transcripts.get(chatId) ?? [];
+    this.transcripts.set(chatId, transcript.map(item => item.id !== messageId ? item
+      : item.kind === "message" ? { ...item, questions: item.questions?.map(question => question.id === questionId ? { ...question, answer } : question) }
+      : item.kind === "clarification" ? { ...item, answer } : item));
+    this.updateChat(chatId, {}, "immediate");
+    return true;
+  }
+
+  getHistoryGeneration(): number { return this.historyGeneration; }
+
   appendAssistantDelta(chatId: string, delta: string, turnId?: string): void {
     const chat = this.getChat(chatId);
     if (!chat || !delta) {
@@ -1132,15 +1183,20 @@ export class StateStore {
     turnId: string,
     question: string,
     options: ChatClarificationOption[],
-    mode: StateMutationMode = "immediate"
+    mode: StateMutationMode = "immediate",
+    source?: { backendThreadId: string; backendItemId: string }
   ): void {
     if (!this.getChat(chatId) || !question.trim()) {
       return;
     }
-    const id = turnId ? `clarification-${turnId}` : `${chatId}-clarification`;
+    const boundSource = source?.backendThreadId && source.backendItemId && source.backendThreadId.length <= 1024 && source.backendItemId.length <= 1024 ? source : undefined;
+    const id = boundSource
+      ? `clarification-${createHash("sha256").update(JSON.stringify([boundSource.backendThreadId, boundSource.backendItemId])).digest("hex")}`
+      : turnId ? `clarification-${turnId}` : `${chatId}-clarification`;
     const now = new Date().toISOString();
     const transcript = this.transcripts.get(chatId) ?? [];
     const index = transcript.findIndex((item) => item.kind === "clarification" && item.id === id);
+    const previous = index >= 0 ? transcript[index] as ChatClarificationTranscriptItem : undefined;
     const normalizedOptions = options
       .map((option) => ({
         title: option.title.trim(),
@@ -1152,8 +1208,11 @@ export class StateStore {
     const item: ChatTranscriptItem = {
       kind: "clarification",
       id,
-      question: question.trim(),
-      options: normalizedOptions,
+      backendThreadId: previous?.backendThreadId ?? boundSource?.backendThreadId,
+      backendItemId: previous?.backendItemId ?? boundSource?.backendItemId,
+      answer: previous?.answer,
+      question: previous?.answer !== undefined ? previous.question : question.trim(),
+      options: previous?.answer !== undefined ? previous.options : normalizedOptions,
       createdAt: index >= 0 ? transcript[index].createdAt : now,
       updatedAt: now,
       turnId
@@ -1255,6 +1314,7 @@ export class StateStore {
   }
 
   replaceChatHistory(history: PersistedChatHistory | undefined): void {
+    this.historyGeneration += 1;
     this.contextWindows.clear();
     this.pendingUserInputs.clear();
     this.chats = history?.chats.map((chat) => ({
@@ -1553,7 +1613,7 @@ function limitActivityOutput(output: string): string {
 function findLastAssistantMessageIndex(items: ChatTranscriptItem[], turnId?: string): number {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
-    if (item.kind === "message" && item.role === "assistant" && (!turnId || !item.turnId || item.turnId === turnId)) {
+    if (item.kind === "message" && item.role === "assistant" && !item.backendItemId && (!turnId || !item.turnId || item.turnId === turnId)) {
       return index;
     }
   }

@@ -1,14 +1,26 @@
 "use strict";
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const Module = require("node:module");
+const { createHash } = require("node:crypto");
+const { execFileSync } = require("node:child_process");
+const ts = require("typescript");
 const Ajv = require("ajv");
-const contracts = ["0.144.5", "0.153.4"].map((version) => require(`./fixtures/app-server/${version}.json`));
+const manifest = require("../bin/runtime-manifest.json");
+if (process.argv[2] === "--generate-fixture") {
+  assert.ok(process.argv[3], "Usage: --generate-fixture <native-runtime>");
+  generateFixture(path.resolve(process.argv[3]));
+  process.exit(0);
+}
+const contracts = ["0.144.5", "0.153.4", "0.154.0"].map((version) => require(`./fixtures/app-server/${version}.json`));
+assert.equal(contracts.at(-1).version, manifest.version, "protocol fixture must cover the shipped runtime");
+assert.ok(manifest.files.some((file) => file.sha256 === contracts.at(-1).source.runtimeSha256), "fixture must come from a pinned runtime binary");
 const validators = new Map();
 const validationFailures = [];
-function check(group, name, payload) {
-  for (const contract of contracts) {
+function check(group, name, payload, checkedContracts = contracts) {
+  for (const contract of checkedContracts) {
     const key = `${contract.version}:${group}:${name}`;
     if (!validators.has(key)) {
       assert.ok(contract[group][name], `${key} is missing`);
@@ -20,6 +32,55 @@ function check(group, name, payload) {
   }
 }
 
+function generateFixture(runtime) {
+  const { targetForPlatform, validateRuntimeFile } = require("./runtime-preflight-lib");
+  const target = targetForPlatform(`${process.platform}-${process.arch}`);
+  assert.ok(target, "unsupported schema-generation host");
+  assert.deepEqual(validateRuntimeFile(runtime, target, { required: true }).errors, [], "schema generation requires a native executable");
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-protocol-schema-"));
+  try {
+    const env = { ...process.env, CODEX_HOME: temp };
+    const version = execFileSync(runtime, ["--version"], { encoding: "utf8", env }).trim().match(/^codex-cli (\d+\.\d+\.\d+)$/)?.[1];
+    assert.equal(version, manifest.version, "generate from the pinned release");
+    const runtimeSha256 = createHash("sha256").update(fs.readFileSync(runtime)).digest("hex");
+    assert.ok(manifest.files.some((file) => file.sha256 === runtimeSha256), "runtime checksum is not pinned");
+    const out = path.join(temp, "schema");
+    execFileSync(runtime, ["app-server", "generate-json-schema", "--experimental", "--out", out], { env });
+    const fixture = { version, source: { command: "app-server generate-json-schema --experimental", runtimeSha256 }, definitions: {}, requests: {}, notifications: {}, serverRequests: {}, responses: {} };
+    function normalize(value, fieldMap = false) {
+      if (Array.isArray(value)) return value.map((entry) => normalize(entry));
+      if (!value || typeof value !== "object") return value;
+      return Object.fromEntries(Object.entries(value)
+        .filter(([key]) => fieldMap || !["$schema", "title", "description", "default", "examples"].includes(key))
+        .map(([key, entry]) => [key, normalize(entry, ["properties", "definitions", "patternProperties"].includes(key))]));
+    }
+    function read(name) {
+      const schema = normalize(JSON.parse(fs.readFileSync(path.join(out, `${name}.json`), "utf8")));
+      for (const [key, definition] of Object.entries(schema.definitions || {})) {
+        if (Object.hasOwn(fixture.definitions, key)) assert.deepEqual(fixture.definitions[key], definition, `conflicting definition ${key}`);
+        fixture.definitions[key] = definition;
+      }
+      delete schema.definitions;
+      return schema;
+    }
+    for (const [group, name] of Object.entries({ requests: "ClientRequest", notifications: "ServerNotification", serverRequests: "ServerRequest" })) {
+      for (const entry of read(name).oneOf) fixture[group][entry.properties.method.enum[0]] = entry;
+    }
+    const responseNames = [...Object.keys(require("./fixtures/app-server/0.153.4.json").responses),
+      "ThreadForkResponse", "ToolRequestUserInputResponse", "ConfigReadResponse", "ConfigWriteResponse", "ExperimentalFeatureListResponse"];
+    for (const name of responseNames) {
+      const relative = [name, `v2/${name}`, `v1/${name}`].find((candidate) => fs.existsSync(path.join(out, `${candidate}.json`)));
+      assert.ok(relative, `missing response schema ${name}`);
+      fixture.responses[name] = read(relative);
+    }
+    const target = path.join(__dirname, "fixtures/app-server", `${version}.json`);
+    fs.writeFileSync(target, `${JSON.stringify(fixture)}\n`);
+    console.log(`Generated ${target} from sha256:${runtimeSha256}`);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+}
+
 const cwd = process.cwd();
 const vscode = {
   EventEmitter: class { event() {} fire() {} dispose() {} },
@@ -27,21 +88,28 @@ const vscode = {
   env: { openExternal: async () => true },
   Uri: { parse: (url) => url }
 };
-// Load the production controller, exposing pure normalizers only in this test module.
-const filename = path.resolve(__dirname, "../dist/codexRuntimeController.js");
+// Load current sources in memory; protocol checks must not depend on stale dist or a full build.
+const filename = path.resolve(__dirname, "../src/codexRuntimeController.ts");
 const runtimeModule = new Module(filename, module);
 runtimeModule.filename = filename;
 runtimeModule.paths = Module._nodeModulePaths(path.dirname(filename));
 const originalLoad = Module._load;
+const originalTs = Module._extensions[".ts"];
+const compile = (source, fileName) => ts.transpileModule(source, { fileName,
+  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
+let StateStore, resolveManagedMcpElicitation;
 try {
   Module._load = function (name, ...args) { return name === "vscode" ? vscode : originalLoad.call(this, name, ...args); };
-  runtimeModule._compile(fs.readFileSync(filename, "utf8") + "\nexports.testHelpers = { normalizeModelOptions, normalizeRateLimitsResult, normalizeDeviceCodeChallenge, normalizeSkillsList, normalizeMcpStatusPage, normalizeApprovalRequest };", filename);
+  Module._extensions[".ts"] = (mod, file) => mod._compile(compile(fs.readFileSync(file, "utf8"), file), file);
+  runtimeModule._compile(compile(fs.readFileSync(filename, "utf8"), filename) + "\nexports.testHelpers = { normalizeModelOptions, normalizeRateLimitsResult, normalizeDeviceCodeChallenge, normalizeSkillsList, normalizeMcpStatusPage, normalizeApprovalRequest };", filename);
+  ({ StateStore } = require("../src/stateStore.ts"));
+  ({ resolveManagedMcpElicitation } = require("../src/mcpElicitationPolicy.ts"));
 } finally {
   Module._load = originalLoad;
+  if (originalTs) Module._extensions[".ts"] = originalTs;
+  else delete Module._extensions[".ts"];
 }
 const { CodexRuntimeController, testHelpers } = runtimeModule.exports;
-const { StateStore } = require("../dist/stateStore");
-const { resolveManagedMcpElicitation } = require("../dist/mcpElicitationPolicy");
 const model = {
   id: "gpt-6-astra", model: "gpt-6-astra", displayName: "GPT-6 Astra", description: "Fixture",
   hidden: false, isDefault: true, defaultReasoningEffort: "medium",
@@ -89,6 +157,22 @@ async function checkConcurrentStartup() {
 
 async function main() {
   await checkConcurrentStartup();
+  check("requests", "config/read", { id: 1, method: "config/read", params: { includeLayers: true, cwd } });
+  for (const value of [true, false]) {
+    check("requests", "config/value/write", { id: 1, method: "config/value/write", params: {
+      keyPath: "features.context_management.experimental_mode", value, mergeStrategy: "upsert",
+      filePath: path.join(cwd, "config.toml"), expectedVersion: `sha256:${"0".repeat(64)}`
+    } });
+  }
+  for (const threadId of [undefined, "thread-1"]) {
+    check("requests", "experimentalFeature/list", { id: 1, method: "experimentalFeature/list", params: { cursor: null, limit: 20, threadId } });
+  }
+  check("serverRequests", "item/tool/requestUserInput", { id: 8, method: "item/tool/requestUserInput", params: {
+    threadId: "thread-1", turnId: turn.id, itemId: "question-1", isBlocking: true,
+    questions: [{ id: "environment", header: "Environment", question: "Which environment?", isOther: true, isSecret: false,
+      options: [{ label: "Test", description: "Use the test environment." }] }]
+  } });
+  check("responses", "ToolRequestUserInputResponse", { answers: { environment: { answers: ["Test"] } } }, [contracts.at(-1)]);
   check("responses", "ModelListResponse", modelResponse);
   check("responses", "GetAccountRateLimitsResponse", rateResponse);
   check("responses", "GetAccountResponse", account);
@@ -114,6 +198,8 @@ async function main() {
   });
   controller.ensureBackendProcess = async () => {};
   controller.processManager = { isRunning: true, stop: async () => {}, dispose() {} };
+  let rejectResumeOverrides = false;
+  const resumePayloads = [];
   controller.rpcClient = {
     request: async (method, params) => {
       check("requests", method, { id: 1, method, ...(params === undefined ? {} : { params }) });
@@ -123,7 +209,17 @@ async function main() {
       if (method === "account/read") return account;
       if (method === "account/rateLimits/read") return rateResponse;
       if (method === "account/login/start") return params.type === "chatgptDeviceCode" ? challenge : { type: "apiKey" };
-      if (method === "thread/start" || method === "thread/resume") return { thread: { id: "thread-1" } };
+      if (method === "thread/resume") {
+        assert.equal(params.excludeTurns, true, "resume must not return the full server transcript");
+        resumePayloads.push(params);
+        if (rejectResumeOverrides && Object.hasOwn(params, "cwd")) throw new Error("invalid request: fixture override rejection");
+        return { thread: { id: "thread-1" } };
+      }
+      if (method === "thread/fork") {
+        assert.equal(params.excludeTurns, true, "fork must not return the full server transcript");
+        return { thread: { id: "thread-fork" } };
+      }
+      if (method === "thread/start") return { thread: { id: "thread-1" } };
       if (method === "turn/start") { turnRequests.push(params); return { turn }; }
       if (method === "turn/steer") return { turnId: turn.id };
       if (method === "skills/list" || method === "mcpServerStatus/list") return { data: [], nextCursor: null };
@@ -161,6 +257,10 @@ async function main() {
   assert.equal(state.getChat(chat.id).modelId, "gpt-6-astra");
   await controller.loadModelOptions(true);
   await controller.resumeBackendThread(chat.id);
+  rejectResumeOverrides = true;
+  await controller.resumeBackendThread(chat.id);
+  assert.deepEqual(resumePayloads.at(-1), { threadId: "thread-1", excludeTurns: true });
+  await controller.forkChat(chat.id, "Protocol fixture fork");
   state.updateChat(chat.id, { status: "running", activeTurnId: turn.id });
   await controller.steerTurn(chat.id, "Additional instruction");
   await controller.requestTurnInterrupt("thread-1", turn.id);
@@ -201,10 +301,20 @@ async function main() {
   notify("turn/diff/updated", { ...ids, diff });
   notify("turn/plan/updated", { ...ids, plan: [{ step: "Fixture", status: "completed" }], explanation: null });
   notify("item/completed", { ...ids, item: { ...message, text: "Fixture streamed answer" }, completedAtMs: 1800000000003 });
-  const question = { type: "agentMessage", id: "question-1", text: "Which environment?\n- Test\n- Production", phase: "final_answer", delivery: "async", questions: [{ title: "Which environment?", options: ["Test", "Production"] }] };
+  const question = { type: "agentMessage", id: "question-1", text: "Which environment?\n- Test\n- Production", phase: "final_answer", delivery: "async", questions: [
+    { title: "Which environment?", options: ["Test", "Production"] }, { title: "Details?", options: null }, { title: "Additional context?" }
+  ] };
   notify("item/started", { ...ids, item: question, startedAtMs: 1800000000004 });
   notify("item/completed", { ...ids, item: question, completedAtMs: 1800000000004 });
   assert.equal(state.getChat(chat.id).status, "running", "async question must not complete or pause the turn");
+  const structured = state.exportChatHistory().transcripts[chat.id].find(item => item.backendItemId === question.id);
+  assert.deepEqual(structured.questions.map(item => item.options), [["Test", "Production"], null, null]);
+  assert.equal(structured.backendThreadId, ids.threadId);
+  assert.equal(new Set(structured.questions.map(item => item.id)).size, 3);
+  assert.equal((await controller.respondToQuestion(chat.id, structured.id, structured.questions[0].id, "Custom environment")).accepted, true);
+  notify("item/completed", { ...ids, item: { ...question, questions: null }, completedAtMs: 1800000000004 });
+  assert.equal(state.getChatQuestion(chat.id, structured.id, structured.questions[0].id).answer, "Custom environment");
+  assert.equal((await controller.respondToQuestion(chat.id, structured.id, structured.questions[0].id, "duplicate")).accepted, false);
   const continuation = { type: "agentMessage", id: "message-2", text: "", phase: "final_answer" };
   notify("item/started", { ...ids, item: continuation, startedAtMs: 1800000000005 });
   notify("item/agentMessage/delta", { ...ids, itemId: continuation.id, delta: "Fixture final answer" });
@@ -226,8 +336,11 @@ async function main() {
   assert.equal(nextQueued, true, "completed turn must still advance the local queue");
   controller.dispose();
   assert.deepEqual(validationFailures, [], "production catch handlers must not hide contract violations");
-  assert.ok(seen.size >= 15, `only ${seen.size} request methods tested`);
-  console.log(`App-server protocol checks passed against BOTH runtimes: ${seen.size} production request methods, model metadata, account, limits, approvals and MCP elicitation.`);
+  for (const method of ["initialize", "account/read", "account/rateLimits/read", "account/login/start", "model/list", "skills/list", "skills/config/write",
+    "mcpServerStatus/list", "config/mcpServer/reload", "mcpServer/oauth/login", "thread/start", "thread/resume", "thread/fork", "turn/start", "turn/steer", "turn/interrupt"]) {
+    assert.ok(seen.has(method), `production request was not exercised: ${method}`);
+  }
+  console.log(`App-server protocol checks passed against ${contracts.map((contract) => contract.version).join(", ")}: ${seen.size} production request methods, native context config requests, excludeTurns on resume/fork, structured async questions/answers, model metadata, account, limits, approvals and MCP elicitation.`);
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });

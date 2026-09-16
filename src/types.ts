@@ -101,7 +101,7 @@ export interface NativeUserInputRequest {
   expiresAt: string;
 }
 
-/** app-server 0.153.4 ToolRequestUserInputResponse. Never persist secret answers. */
+/** app-server 0.154.0 ToolRequestUserInputResponse. Never persist secret answers. */
 export interface NativeUserInputResponse {
   answers: Record<string, { answers: string[] }>;
 }
@@ -379,6 +379,23 @@ export interface ChatMessageTranscriptItem {
   completedAt?: string;
   durationMs?: number;
   attachments?: ChatAttachment[];
+  questions?: ChatMessageQuestion[];
+  backendThreadId?: string;
+  backendItemId?: string;
+}
+
+export interface ChatMessageQuestion {
+  id: string;
+  title: string;
+  options: string[] | null;
+  answer?: string;
+}
+
+export interface ChatQuestionResult {
+  messageId: string;
+  questionId: string;
+  accepted: boolean;
+  error?: string;
 }
 
 export interface ChatClarificationOption {
@@ -395,6 +412,9 @@ export interface ChatClarificationTranscriptItem {
   createdAt: string;
   updatedAt?: string;
   turnId?: string;
+  backendThreadId?: string;
+  backendItemId?: string;
+  answer?: string;
 }
 
 export type ChatTurnRunStatus = "running" | "completed" | "error";
@@ -492,6 +512,7 @@ export interface ChatDiffFileSummary {
   deletions: number;
   diff?: string;
   truncated?: boolean;
+  patchArtifact?: { id: string; scope: string; start: number; length: number };
 }
 
 export interface ChatDiffTranscriptItem {
@@ -556,4 +577,4 @@ export interface ChatPanelState {
 
 export type WebviewCommand =
   | { type: "ready"; assetMode?: "external" | "inline fallback" }
-  | { type: "command"; command: string; payload?: unknown };
+  | { type: "command"; command: string; payload?: unknown; chatId?: string };

@@ -1,8 +1,10 @@
 import * as vscode from "vscode";
+import { performance } from "perf_hooks";
 import { ElementIdentity } from "./elementIdentityService";
 import { Logger } from "./logger";
 import { ProjectHistoryStore, validateHistory } from "./projectHistoryStore";
-import { ChatActivityDetail, ChatActivityKind, ChatAttachment, ChatClarificationOption, ChatDiffFileStatus, ChatEffort, ChatKind, ChatSpeed, ChatStatus, ChatSummary, ChatTranscriptItem, ChatTurnRunCounterKind, PersistedChatHistory, WorklogChild, WorklogOperationKind, WorklogSource, WorklogStatus } from "./types";
+import { ChatMessageQuestion } from "./types";
+import { ChatActivityDetail, ChatActivityKind, ChatAttachment, ChatClarificationOption, ChatDiffFileStatus, ChatDiffFileSummary, ChatEffort, ChatKind, ChatSpeed, ChatStatus, ChatSummary, ChatTranscriptItem, ChatTurnRunCounterKind, PersistedChatHistory, WorklogChild, WorklogOperationKind, WorklogSource, WorklogStatus } from "./types";
 
 interface PendingSave {
   identity: ElementIdentity;
@@ -10,10 +12,29 @@ interface PendingSave {
   history: PersistedChatHistory;
 }
 
+interface SaveBatch extends PendingSave { completion: Promise<void>; }
+export interface ChatHistorySaveOptions {
+  saveDelayMs?: number;
+  /** Includes running operations. A separate debounce slot holds at most one snapshot. */
+  maxQueuedOperations?: number;
+}
+
 export class ChatHistoryService implements vscode.Disposable {
   private pendingSave: PendingSave | undefined;
   private saveTimer: NodeJS.Timeout | undefined;
   private saveChain = Promise.resolve();
+  private tailSave: SaveBatch | undefined;
+  private saveFailure: { error: unknown } | undefined;
+  private loading = 0;
+  private loadedWorkspacePath: string | undefined;
+  private readonly saveDelayMs: number;
+  private readonly maxQueuedOperations: number;
+  private readonly metrics = {
+    saveNowRequests: 0, scheduledSaveRequests: 0, coalescedSaves: 0,
+    snapshotCaptures: 0, snapshotMs: 0, snapshotMaxMs: 0, serializations: 0, serializedBytes: 0, serializationMs: 0,
+    savesStarted: 0, savesCompleted: 0, saveFailures: 0, rejectedSaveRequests: 0,
+    saveMs: 0, saveMaxMs: 0, queueCurrent: 0, queueMax: 0, queueWaitMs: 0, queueWaitMaxMs: 0
+  };
   private readonly store: ProjectHistoryStore;
   private identity: ElementIdentity | undefined;
 
@@ -22,61 +43,98 @@ export class ChatHistoryService implements vscode.Disposable {
     configRoot: string,
     private readonly logger: Logger,
     private readonly getIdentity: () => ElementIdentity | undefined,
-    private readonly onSaveError: (message: string) => void = () => undefined
-  ) { this.store = new ProjectHistoryStore(configRoot, normalizeHistory); }
+    private readonly onSaveError: (message: string) => void = () => undefined,
+    options: ChatHistorySaveOptions = {}
+  ) {
+    this.store = new ProjectHistoryStore(configRoot, normalizeHistory);
+    this.saveDelayMs = options.saveDelayMs ?? 600;
+    this.maxQueuedOperations = options.maxQueuedOperations ?? 32;
+    if (!Number.isFinite(this.saveDelayMs) || this.saveDelayMs < 0 || !Number.isSafeInteger(this.maxQueuedOperations) || this.maxQueuedOperations < 2) {
+      throw new Error("Invalid history save scheduling limits.");
+    }
+  }
+
+  getMetrics() {
+    const store = this.store.getMetrics();
+    return { ...this.metrics, serializations: this.metrics.serializations + store.serializations,
+      serializedBytes: this.metrics.serializedBytes + store.serializedBytes, serializationMs: this.metrics.serializationMs + store.serializationMs,
+      scheduledSavePending: Boolean(this.pendingSave), store };
+  }
 
   async load(profileId: string): Promise<PersistedChatHistory | undefined> {
-    const identity = this.getIdentity();
-    if (!identity || identity.userKey !== profileId) { throw new Error("Пользователь IDE не подтвержден. История не открыта."); }
+    const verified = this.getIdentity();
+    if (!verified || verified.userKey !== profileId) { throw new Error("Пользователь IDE не подтвержден. История не открыта."); }
+    const identity = { ...verified };
     const workspacePath = this.workspacePath();
+    // An explicit idle reload is recovery. A load behind outstanding saves still observes their failures.
+    if (!this.pendingSave && this.metrics.queueCurrent === 0) { this.saveFailure = undefined; }
     const flushed = this.flush();
-    return this.enqueue(async () => {
-      await flushed;
-      this.identity = undefined;
-      const loaded = await this.store.load(identity, workspacePath);
-      const current = this.getIdentity();
-      if (current?.userKey !== identity.userKey || current.projectKey !== identity.projectKey || this.workspacePath() !== workspacePath) { throw new Error("Пользователь или проект IDE изменился при загрузке истории."); }
-      this.identity = identity;
-      this.logger.info(`Project chat history loaded: ${this.store.file(identity)}.`);
-      return loaded;
-    });
+    this.loading++;
+    try {
+      return await this.enqueue(async () => {
+        this.identity = undefined;
+        this.loadedWorkspacePath = undefined;
+        await flushed;
+        const loaded = await this.store.load(identity, workspacePath);
+        const current = this.getIdentity();
+        if (current?.userKey !== identity.userKey || current.projectKey !== identity.projectKey || this.workspacePath() !== workspacePath) { throw new Error("Пользователь или проект IDE изменился при загрузке истории."); }
+        this.identity = identity;
+        this.loadedWorkspacePath = workspacePath;
+        this.logger.info(`Project chat history loaded: ${this.store.file(identity)}.`);
+        return loaded;
+      });
+    } finally { this.loading--; }
   }
 
   scheduleSave(profileId: string, history: PersistedChatHistory): void {
     const identity = this.requireLoadedIdentity(profileId);
-    this.pendingSave = { identity, workspacePath: this.workspacePath(), history };
+    this.metrics.scheduledSaveRequests++;
+    if (this.pendingSave) { this.metrics.coalescedSaves++; }
+    this.pendingSave = { identity, workspacePath: this.loadedWorkspacePath!, history };
     // A fixed deadline guarantees progress even during a continuous token stream.
     if (this.saveTimer) { return; }
     this.saveTimer = setTimeout(() => {
       this.saveTimer = undefined;
       void this.flush().catch((error) => this.reportSaveError(error));
-    }, 600);
+    }, this.saveDelayMs);
   }
 
-  async saveNow(profileId: string, history: PersistedChatHistory): Promise<void> {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-      this.saveTimer = undefined;
+  saveNow(profileId: string, history: PersistedChatHistory): Promise<void> {
+    this.metrics.saveNowRequests++;
+    try {
+      const completion = this.writeQueued({ identity: this.requireLoadedIdentity(profileId), workspacePath: this.loadedWorkspacePath!, history });
+      this.clearSaveTimer();
+      if (this.pendingSave) { this.metrics.coalescedSaves++; }
+      this.pendingSave = undefined;
+      return completion;
+    } catch (error) {
+      this.metrics.rejectedSaveRequests++;
+      return Promise.reject(error);
     }
-    this.pendingSave = undefined;
-    await this.writeQueued({ identity: this.requireLoadedIdentity(profileId), workspacePath: this.workspacePath(), history });
   }
 
-  async flush(): Promise<void> {
-    const pending = this.pendingSave;
-    if (!pending) {
-      await this.saveChain;
-      return;
+  flush(): Promise<void> {
+    try {
+      this.clearSaveTimer();
+      if (this.pendingSave) {
+        this.writeQueued(this.pendingSave);
+        this.pendingSave = undefined;
+      }
+      // Later snapshots must not replace a revision covered by this barrier.
+      this.tailSave = undefined;
+      const barrier = this.saveChain.then(() => { if (this.saveFailure) { throw this.saveFailure.error; } });
+      // load/import may not reach their await until earlier operations finish.
+      void barrier.catch(() => undefined);
+      return barrier;
+    } catch (error) {
+      const rejected = Promise.reject<void>(error);
+      void rejected.catch(() => undefined);
+      return rejected;
     }
-    this.pendingSave = undefined;
-    await this.writeQueued(pending);
   }
 
   dispose(): void {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-      this.saveTimer = undefined;
-    }
+    this.clearSaveTimer();
     if (this.pendingSave) {
       void this.flush().catch((error) => this.reportSaveError(error));
     }
@@ -94,8 +152,13 @@ export class ChatHistoryService implements vscode.Disposable {
   async importLegacy(id: string, current: PersistedChatHistory): Promise<PersistedChatHistory> {
     const identity = this.identity;
     if (!identity) { throw new Error("Сначала откройте историю текущего проекта."); }
-    const workspacePath = this.workspacePath();
-    const snapshot = JSON.parse(JSON.stringify(current)) as PersistedChatHistory;
+    const workspacePath = this.loadedWorkspacePath!;
+    const started = performance.now();
+    const serialized = JSON.stringify(current);
+    this.metrics.serializations++;
+    this.metrics.serializedBytes += Buffer.byteLength(serialized);
+    this.metrics.serializationMs += performance.now() - started;
+    const snapshot = JSON.parse(serialized) as PersistedChatHistory;
     const flushed = this.flush();
     return this.enqueue(async () => {
       await flushed;
@@ -107,19 +170,72 @@ export class ChatHistoryService implements vscode.Disposable {
   private workspacePath(): string { return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || this.context.globalStorageUri.fsPath; }
 
   private requireLoadedIdentity(profileId: string): ElementIdentity {
-    if (!this.identity || this.identity.userKey !== profileId) { throw new Error("Запись истории до подтверждения пользователя и загрузки проекта запрещена."); }
+    if (this.loading || !this.identity || this.identity.userKey !== profileId) { throw new Error("Запись истории до подтверждения пользователя и загрузки проекта запрещена."); }
     return this.identity;
   }
 
-  private async writeQueued(pending: PendingSave): Promise<void> {
-    const history = JSON.parse(JSON.stringify(pending.history)) as PersistedChatHistory;
-    await this.enqueue(() => this.store.save(pending.identity, pending.workspacePath, history));
+  private writeQueued(pending: PendingSave): Promise<void> {
+    const tail = this.tailSave;
+    const replace = tail?.identity === pending.identity && tail.workspacePath === pending.workspacePath;
+    if (!replace) { this.requireQueueSpace(); }
+    const start = performance.now();
+    // Exported transcripts are mutable. Detach now, without a JSON string/parse round-trip.
+    const history = normalizeHistory(pending.history);
+    const elapsed = performance.now() - start;
+    this.metrics.snapshotCaptures++;
+    this.metrics.snapshotMs += elapsed;
+    this.metrics.snapshotMaxMs = Math.max(this.metrics.snapshotMaxMs, elapsed);
+    if (replace) {
+      tail.history = history;
+      this.metrics.coalescedSaves++;
+      return tail.completion;
+    }
+    const batch: SaveBatch = { ...pending, history, completion: Promise.resolve() };
+    batch.completion = this.enqueue(async () => {
+      if (this.tailSave === batch) { this.tailSave = undefined; }
+      const started = performance.now();
+      this.metrics.savesStarted++;
+      try {
+        await this.store.save(batch.identity, batch.workspacePath, batch.history);
+        this.saveFailure = undefined;
+        this.metrics.savesCompleted++;
+      } catch (error) {
+        this.saveFailure = { error };
+        this.metrics.saveFailures++;
+        throw error;
+      } finally {
+        const duration = performance.now() - started;
+        this.metrics.saveMs += duration;
+        this.metrics.saveMaxMs = Math.max(this.metrics.saveMaxMs, duration);
+      }
+    });
+    this.tailSave = batch;
+    return batch.completion;
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.saveChain.then(operation);
+    this.requireQueueSpace();
+    this.tailSave = undefined;
+    const queuedAt = performance.now();
+    this.metrics.queueCurrent++;
+    this.metrics.queueMax = Math.max(this.metrics.queueMax, this.metrics.queueCurrent);
+    const result = this.saveChain.then(async () => {
+      const wait = performance.now() - queuedAt;
+      this.metrics.queueWaitMs += wait;
+      this.metrics.queueWaitMaxMs = Math.max(this.metrics.queueWaitMaxMs, wait);
+      try { return await operation(); }
+      finally { this.metrics.queueCurrent--; }
+    });
     this.saveChain = result.then(() => undefined, () => undefined);
     return result;
+  }
+
+  private requireQueueSpace(): void {
+    if (this.metrics.queueCurrent >= this.maxQueuedOperations) { throw new Error("History persistence queue is full. Await flush() before retrying."); }
+  }
+
+  private clearSaveTimer(): void {
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = undefined; }
   }
 
   private reportSaveError(error: unknown): void {
@@ -376,6 +492,9 @@ function normalizeTranscriptItem(value: unknown): ChatTranscriptItem | undefined
       id,
       question: value.question,
       options: normalizeClarificationOptions(value.options),
+      answer: typeof value.answer === "string" ? value.answer : undefined,
+      backendThreadId: typeof value.backendThreadId === "string" ? value.backendThreadId : undefined,
+      backendItemId: typeof value.backendItemId === "string" ? value.backendItemId : undefined,
       createdAt,
       updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
       turnId: typeof value.turnId === "string" ? value.turnId : undefined
@@ -432,8 +551,19 @@ function normalizeTranscriptItem(value: unknown): ChatTranscriptItem | undefined
     status: value.status === "streaming" ? "streaming" : "complete",
     completedAt: typeof value.completedAt === "string" ? value.completedAt : undefined,
     durationMs: typeof value.durationMs === "number" ? value.durationMs : undefined,
-    attachments: normalizeAttachments(value.attachments)
+    attachments: normalizeAttachments(value.attachments),
+    questions: normalizeMessageQuestions(value.questions),
+    backendThreadId: typeof value.backendThreadId === "string" ? value.backendThreadId : undefined,
+    backendItemId: typeof value.backendItemId === "string" ? value.backendItemId : undefined
   };
+}
+
+function normalizeMessageQuestions(value: unknown): ChatMessageQuestion[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((question) => ({
+    id: question.id, title: question.title, options: question.options === null ? null : [...question.options],
+    answer: typeof question.answer === "string" ? question.answer : undefined
+  }));
 }
 
 function normalizeClarificationOptions(value: unknown): ChatClarificationOption[] {
@@ -592,7 +722,7 @@ function normalizeActivityDetails(value: unknown): ChatActivityDetail[] | undefi
   return details.length ? details : undefined;
 }
 
-function normalizeDiffFile(value: unknown): { path: string; oldPath?: string; newPath?: string; status?: ChatDiffFileStatus; additions: number; deletions: number; diff?: string; truncated?: boolean } | undefined {
+function normalizeDiffFile(value: unknown): ChatDiffFileSummary | undefined {
   if (!isObject(value) || typeof value.path !== "string" || !value.path) {
     return undefined;
   }
@@ -603,9 +733,20 @@ function normalizeDiffFile(value: unknown): { path: string; oldPath?: string; ne
     status: normalizeDiffStatus(value.status),
     additions: typeof value.additions === "number" ? value.additions : 0,
     deletions: typeof value.deletions === "number" ? value.deletions : 0,
-    diff: typeof value.diff === "string" ? value.diff : undefined,
-    truncated: value.truncated === true
+    diff: typeof value.diff === "string" ? value.diff.slice(0, 2048) : undefined,
+    truncated: value.truncated === true || typeof value.diff === "string" && value.diff.length > 2048,
+    patchArtifact: normalizePatchArtifact(value.patchArtifact)
   };
+}
+
+function normalizePatchArtifact(value: unknown): ChatDiffFileSummary["patchArtifact"] {
+  const maxBytes = 8 * 1024 * 1024;
+  if (!isObject(value) || typeof value.id !== "string" || !/^[a-f0-9]{64}$/.test(value.id)
+    || typeof value.scope !== "string" || !/^[a-f0-9]{64}$/.test(value.scope)
+    || typeof value.start !== "number" || !Number.isSafeInteger(value.start) || value.start < 0 || value.start > maxBytes
+    || typeof value.length !== "number" || !Number.isSafeInteger(value.length) || value.length < 0 || value.length > maxBytes
+    || value.start + value.length > maxBytes) { return undefined; }
+  return { id: value.id, scope: value.scope, start: value.start, length: value.length };
 }
 
 function normalizeDiffStatus(value: unknown): ChatDiffFileStatus | undefined {

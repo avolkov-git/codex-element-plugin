@@ -94,12 +94,24 @@ async function main() {
       f.data.meta.pendingUserInput = { id: "native-1", requestId: 42, chatId: "chat-a", threadId: "thread-a", turnId: "turn-a", itemId: "native-item", isBlocking: true, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString(), questions: [
         { id: "choice", header: "Choice", question: "Which environment?", isOther: true, isSecret: false, options: [{ label: "Staging", description: "Test environment" }, { label: "Production", description: "Live" }] },
         { id: "secret", header: "Token", question: "Temporary token", isOther: false, isSecret: true, options: null }
-      ] }; await f.flush();
-      await page.getByLabel("Staging", { exact: false }).check();
-      await page.getByLabel("Token: ответ").fill("fixture-secret-value");
-      assert.equal(await page.getByLabel("Token: ответ").getAttribute("type"), "password");
+      ] };
+      f.data.meta.pendingUserInputs = [f.data.meta.pendingUserInput];
+      await input.evaluate(node => { window.nativeQuestionComposer = node; });
+      await f.flush();
+      const nativeQuestions = page.locator('.inline-questions[data-request-id="native-1"]');
+      await nativeQuestions.waitFor();
+      assert.equal(await page.getByRole("dialog").count(), 0, "native questions are inline, not modal");
+      assert.equal(await page.evaluate(() => document.querySelector(".app").inert), false);
+      assert.equal(await input.evaluate(node => node === window.nativeQuestionComposer && node === document.activeElement), true, "inline questions do not replace or steal focus from the composer");
+      const staging = nativeQuestions.getByRole("button", { name: "Staging", exact: false });
+      await staging.click();
+      assert.equal(await staging.getAttribute("aria-pressed"), "true");
+      assert.equal(f.calls.filter(call => call[0] === "userInput").length, 0, "a multi-question choice waits for the grouped submit");
+      assert.equal(await nativeQuestions.getByRole("button", { name: "Ответить", exact: true }).isDisabled(), true);
+      await nativeQuestions.getByLabel("Token: ответ", { exact: true }).fill("fixture-secret-value");
+      assert.equal(await nativeQuestions.getByLabel("Token: ответ", { exact: true }).getAttribute("type"), "password");
       assert.ok(!(await page.evaluate(() => JSON.stringify(window.fixtureState))).includes("fixture-secret-value"), "native secrets never persisted");
-      await page.getByRole("button", { name: "Ответить", exact: true }).click(); await page.waitForTimeout(150);
+      await nativeQuestions.getByRole("button", { name: "Ответить", exact: true }).click(); await page.waitForTimeout(150);
       const native = f.calls.find(call => call[0] === "userInput");
       assert.deepEqual(native.slice(1), ["chat-a", "native-1", { answers: { choice: { answers: ["Staging"] }, secret: { answers: ["fixture-secret-value"] } } }]);
       assert.equal(await input.inputValue(), "Preserved draft");

@@ -35,11 +35,14 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SettingsPanelManager = exports.SETTINGS_PANEL_VIEW_TYPE = void 0;
 const vscode = __importStar(require("vscode"));
+const fs = __importStar(require("fs"));
+const experimentalContext_1 = require("./experimentalContext");
 const panelIcon_1 = require("./panelIcon");
+const platform_1 = require("./platform");
 const webviewHtml_1 = require("./webviewHtml");
 exports.SETTINGS_PANEL_VIEW_TYPE = "codexElement.settingsPanel";
 class SettingsPanelManager {
-    constructor(context, settings, normalizer, ripgrepInstaller, baseContext, integrations, browserRuntime, logger, onSettingsChanged) {
+    constructor(context, settings, normalizer, ripgrepInstaller, baseContext, integrations, browserRuntime, logger, onSettingsChanged, experimentalContext) {
         this.context = context;
         this.settings = settings;
         this.normalizer = normalizer;
@@ -49,6 +52,7 @@ class SettingsPanelManager {
         this.browserRuntime = browserRuntime;
         this.logger = logger;
         this.onSettingsChanged = onSettingsChanged;
+        this.experimentalContext = experimentalContext;
         this.normalizerProgress = {
             status: "idle",
             percent: 0,
@@ -62,9 +66,19 @@ class SettingsPanelManager {
             message: ""
         };
         this.ripgrepDiscoveryAttempted = false;
+        if (this.experimentalContext)
+            this.context.subscriptions.push(this.experimentalContext.onDidChangeExperimentalContext(() => {
+                if (this.panel)
+                    void this.postSnapshot(this.panel).catch(() => this.logger.warn("Settings context snapshot failed."));
+            }));
         this.context.subscriptions.push(this.integrations.onDidChange(() => {
             if (this.panel) {
                 void this.postSnapshot(this.panel);
+            }
+        }));
+        this.context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+            if (this.panel && (event.affectsConfiguration("1C.applicationId") || event.affectsConfiguration("1C.serverExternalUri"))) {
+                void this.refreshBrowserApplication(this.panel, true).catch(() => this.logger.warn("Settings application refresh failed."));
             }
         }));
     }
@@ -107,6 +121,7 @@ class SettingsPanelManager {
             extensionUri: this.context.extensionUri,
             webview: panel.webview,
             scriptPath: "media/settings.js",
+            preloadScriptPaths: ["media/settings-icons.js"],
             stylePath: "media/settings.css",
             title: "Codex: Настройки"
         });
@@ -128,13 +143,65 @@ class SettingsPanelManager {
             this.logger.info("Settings panel webview ready.");
             this.logger.info(`Settings panel webview assets: ${message.assetMode ?? "unknown"}.`);
             await this.discoverRipgrepIfNeeded();
-            await this.postSnapshot(panel);
+            await this.refreshBrowserApplication(panel);
             return;
         }
         if (message.type !== "command") {
             return;
         }
         this.logger.info(`Settings panel command: ${message.command}`);
+        try {
+            await this.handleCommand(panel, message);
+        }
+        catch (error) {
+            if (message.command === "settings.docs.baseContext.read" || message.command === "settings.docs.baseContext.save") {
+                await panel.webview.postMessage({
+                    type: "event",
+                    event: "settings.docs.baseContext.error",
+                    payload: error instanceof Error ? error.message : "Не удалось обновить базовый контекст."
+                });
+                return;
+            }
+            await this.postError(panel, error instanceof Error ? error.message : "Не удалось выполнить действие в настройках.", settingsScope(message.command));
+        }
+    }
+    async handleCommand(panel, message) {
+        if (message.command === "settings.experimentalContext.refresh" || message.command === "settings.experimentalContext.save") {
+            if (!this.experimentalContext)
+                throw new Error("Управление контекстом недоступно. Обновите плагин.");
+            if (message.command.endsWith(".save")) {
+                const input = message.payload;
+                if (!isRecord(input) || typeof input.enabled !== "boolean" || typeof input.scopeId !== "string" || typeof input.revision !== "string") {
+                    throw new Error("Некорректная настройка контекста. Повторите проверку.");
+                }
+                await this.experimentalContext.saveExperimentalContext(input.enabled, input.scopeId, input.revision);
+            }
+            else {
+                const result = await this.experimentalContext.refreshExperimentalContext();
+                if (result.status === "error")
+                    throw new Error(result.message);
+            }
+            await this.postSnapshot(panel);
+            await this.postSaved(panel, message.command.endsWith(".save") ? "Режим контекста сохранён и применён к app-server." : "Проверка завершена.", "experimentalContext");
+            return;
+        }
+        if (message.command === "settings.docs.baseContext.read") {
+            const result = await this.baseContext.readBaseContext();
+            await panel.webview.postMessage({ type: "event", event: "settings.docs.baseContext.loaded", payload: result });
+            return;
+        }
+        if (message.command === "settings.docs.baseContext.save") {
+            if (!isRecord(message.payload) || typeof message.payload.text !== "string" || typeof message.payload.revision !== "string") {
+                throw new Error("Некорректные данные базового контекста. Загрузите его заново перед сохранением.");
+            }
+            const revision = await this.baseContext.saveBaseContext(message.payload.text, message.payload.revision);
+            await panel.webview.postMessage({
+                type: "event",
+                event: "settings.docs.baseContext.saved",
+                payload: { revision, message: "Базовый контекст сохранен." }
+            });
+            return;
+        }
         if (message.command === "settings.docs.openBaseContext") {
             await this.baseContext.openBaseContextFile();
             return;
@@ -149,6 +216,7 @@ class SettingsPanelManager {
                 await panel.webview.postMessage({
                     type: "event",
                     event: "settings.error",
+                    scope: "docs",
                     payload: "Некорректный путь к документации."
                 });
                 return;
@@ -158,6 +226,7 @@ class SettingsPanelManager {
             await panel.webview.postMessage({
                 type: "event",
                 event: "settings.saved",
+                scope: "docs",
                 payload: normalizedPath.trim() ? "Путь к документации сохранен." : "Путь к документации очищен."
             });
             await this.postSnapshot(panel);
@@ -170,6 +239,7 @@ class SettingsPanelManager {
                 await panel.webview.postMessage({
                     type: "event",
                     event: "settings.error",
+                    scope: "tools",
                     payload: "Некорректный путь до rg."
                 });
                 return;
@@ -180,6 +250,7 @@ class SettingsPanelManager {
                 await panel.webview.postMessage({
                     type: "event",
                     event: "settings.saved",
+                    scope: "tools",
                     payload: ripgrepPath.trim() ? "Путь до rg сохранен." : "Путь до rg очищен."
                 });
                 await this.postSnapshot(panel);
@@ -189,6 +260,7 @@ class SettingsPanelManager {
                 await panel.webview.postMessage({
                     type: "event",
                     event: "settings.error",
+                    scope: "tools",
                     payload: error instanceof Error ? error.message : "Не удалось сохранить путь до rg."
                 });
             }
@@ -199,28 +271,38 @@ class SettingsPanelManager {
             return;
         }
         if (message.command === "settings.integrations.refresh") {
-            await this.runIntegrationAction(panel, () => this.integrations.refresh(true));
+            const scope = isRecord(message.payload) && message.payload.scope === "skills" ? "skills" : "mcp";
+            await this.runIntegrationAction(panel, () => this.integrations.refresh(true), scope, scope === "skills" ? "Навыки обновлены." : "MCP-серверы обновлены.");
             return;
         }
         if (message.command === "settings.browser.save") {
             const input = parseBrowserSettingsInput(message.payload);
             if (!input) {
-                await this.postError(panel, "Проверьте URL и разрешенные origins браузера.");
+                await this.postError(panel, "Некорректные настройки браузера.", "browser");
                 return;
             }
             try {
+                const scope = this.browserRuntime.getBrowserArtifactsRoot();
+                if (input.enabled)
+                    await this.browserRuntime.refreshApplication(true);
+                if (scope !== this.browserRuntime.getBrowserArtifactsRoot())
+                    throw new Error("Пользователь или проект IDE изменился. Повторите сохранение.");
                 this.browserRuntime.saveSettings(input);
                 await this.onSettingsChanged({ restartRuntime: true });
                 await this.integrations.refresh(true);
                 await this.postSaved(panel, input.enabled
                     ? "Браузерное тестирование включено для текущего пользователя и проекта."
-                    : "Браузерное тестирование выключено.");
+                    : "Браузерное тестирование выключено.", "browser");
                 await this.postSnapshot(panel);
             }
             catch (error) {
-                await this.postError(panel, error instanceof Error ? error.message : "Не удалось сохранить браузерное тестирование.");
+                await this.postError(panel, error instanceof Error ? error.message : "Не удалось сохранить браузерное тестирование.", "browser");
                 await this.postSnapshot(panel);
             }
+            return;
+        }
+        if (message.command === "settings.browser.application.refresh") {
+            await this.refreshBrowserApplication(panel, true);
             return;
         }
         if (message.command === "settings.browser.test") {
@@ -258,6 +340,7 @@ class SettingsPanelManager {
             if (confirmation === "Удалить") {
                 await this.runIntegrationAction(panel, async () => {
                     await this.integrations.removeMcpServer(name);
+                    await panel.webview.postMessage({ type: "event", event: "settings.mcp.deleted", payload: { name } });
                     await this.postSaved(panel, `MCP-сервер ${name} удален.`);
                 });
             }
@@ -319,10 +402,10 @@ class SettingsPanelManager {
             const skill = parseSkillSelection(message.payload);
             const enabled = isRecord(message.payload) && typeof message.payload.enabled === "boolean" ? message.payload.enabled : undefined;
             if (!skill || enabled === undefined) {
-                await this.postError(panel, "Некорректное состояние навыка.");
+                await this.postError(panel, "Некорректное состояние навыка.", "skills");
                 return;
             }
-            await this.runIntegrationAction(panel, () => this.integrations.setSkillEnabled(skill, enabled));
+            await this.runIntegrationAction(panel, () => this.integrations.setSkillEnabled(skill, enabled), "skills");
             return;
         }
         if (message.command !== "settings.proxy.save") {
@@ -338,6 +421,7 @@ class SettingsPanelManager {
             await panel.webview.postMessage({
                 type: "event",
                 event: "settings.error",
+                scope: "proxy",
                 payload: "Некорректные данные proxy."
             });
             return;
@@ -348,6 +432,7 @@ class SettingsPanelManager {
             await panel.webview.postMessage({
                 type: "event",
                 event: "settings.saved",
+                scope: "proxy",
                 payload: input.url.trim() ? "Proxy сохранен." : "Proxy очищен."
             });
             await this.postSnapshot(panel);
@@ -357,15 +442,24 @@ class SettingsPanelManager {
             await panel.webview.postMessage({
                 type: "event",
                 event: "settings.error",
+                scope: "proxy",
                 payload: error instanceof Error ? error.message : "Не удалось сохранить proxy."
             });
         }
+    }
+    async refreshBrowserApplication(panel, force = false) {
+        const refresh = this.browserRuntime.refreshApplication(force);
+        await this.postSnapshot(panel);
+        await refresh;
+        await this.postSnapshot(panel);
     }
     async postSnapshot(panel) {
         await panel.webview.postMessage({
             type: "settings.snapshot",
             snapshot: {
                 extensionVersion: String(this.context.extension.packageJSON.version ?? ""),
+                system: await this.getSystemView(),
+                experimentalContext: this.experimentalContext?.getExperimentalContextView() ?? (0, experimentalContext_1.emptyExperimentalContext)(),
                 proxy: await this.settings.getProxySettingsView(),
                 docs: this.settings.getDocsSettingsView(),
                 tools: await this.settings.getToolsSettingsView(),
@@ -376,20 +470,39 @@ class SettingsPanelManager {
             }
         });
     }
-    async runIntegrationAction(panel, action) {
+    async getSystemView() {
+        const system = { platformId: (0, platform_1.hostPlatformId)(), codexVersion: "" };
+        try {
+            const manifestPath = vscode.Uri.joinPath(this.context.extensionUri, "bin", "runtime-manifest.json").fsPath;
+            const stats = await fs.promises.stat(manifestPath);
+            if (!stats.isFile() || stats.size > 64 * 1024)
+                return system;
+            const manifest = JSON.parse(await fs.promises.readFile(manifestPath, "utf8"));
+            // This is the bundled release version, not a probe of the running runtime.
+            if (isRecord(manifest) && typeof manifest.version === "string")
+                system.codexVersion = manifest.version;
+        }
+        catch {
+            // Older or incomplete installations may not include release metadata.
+        }
+        return system;
+    }
+    async runIntegrationAction(panel, action, scope = "mcp", successMessage) {
         try {
             await action();
             await this.postSnapshot(panel);
+            if (successMessage)
+                await this.postSaved(panel, successMessage, scope);
         }
         catch (error) {
-            await this.postError(panel, error instanceof Error ? error.message : "Не удалось обновить интеграции Codex.");
+            await this.postError(panel, error instanceof Error ? error.message : "Не удалось обновить интеграции Codex.", scope);
         }
     }
-    async postSaved(panel, message) {
-        await panel.webview.postMessage({ type: "event", event: "settings.saved", payload: message });
+    async postSaved(panel, message, scope = "mcp") {
+        await panel.webview.postMessage({ type: "event", event: "settings.saved", payload: message, scope });
     }
-    async postError(panel, message) {
-        await panel.webview.postMessage({ type: "event", event: "settings.error", payload: message });
+    async postError(panel, message, scope = "mcp") {
+        await panel.webview.postMessage({ type: "event", event: "settings.error", payload: message, scope });
     }
     async postMcpError(panel, message) {
         await panel.webview.postMessage({ type: "event", event: "settings.mcp.error", payload: message });
@@ -425,6 +538,7 @@ class SettingsPanelManager {
             await panel.webview.postMessage({
                 type: "event",
                 event: "settings.saved",
+                scope: "tools",
                 payload: `ripgrep установлен, версия ${result.version}.`
             });
             await this.postSnapshot(panel);
@@ -449,47 +563,33 @@ class SettingsPanelManager {
         }
     }
     async normalizeDocs(panel, payload) {
-        const requestedOutput = parseDocsPath(payload)?.trim();
-        let sourcePath = this.normalizer.findBundledSourcePath();
-        if (!sourcePath) {
-            const manualSource = await vscode.window.showInputBox({
-                title: "Путь к документации Element",
-                prompt: "Укажите каталог docs/help/ru из bundle Element.",
-                value: this.settings.getDocsSettingsView().sourcePath,
-                ignoreFocusOut: true
-            });
-            if (!manualSource) {
-                await panel.webview.postMessage({
-                    type: "event",
-                    event: "settings.saved",
-                    payload: "Нормализация отменена."
-                });
-                return;
-            }
-            sourcePath = manualSource.trim();
-        }
-        const sourceValidation = this.normalizer.validateSourcePath(sourcePath);
-        if (sourceValidation) {
-            await panel.webview.postMessage({
-                type: "event",
-                event: "settings.error",
-                payload: sourceValidation
-            });
-            return;
-        }
-        const outputPath = requestedOutput || this.normalizer.getDefaultOutputPath();
-        this.settings.saveDocsSourcePath(sourcePath);
         try {
+            const requestedOutput = parseDocsPath(payload)?.trim();
+            let sourcePath = this.normalizer.findBundledSourcePath();
+            if (!sourcePath) {
+                const manualSource = await vscode.window.showInputBox({
+                    title: "Путь к документации Element",
+                    prompt: "Укажите каталог docs/help/ru из bundle Element.",
+                    value: this.settings.getDocsSettingsView().sourcePath,
+                    ignoreFocusOut: true
+                });
+                if (!manualSource) {
+                    await this.postNormalizerProgress(panel, { status: "idle", percent: 0, stage: "cancelled", message: "Нормализация отменена." });
+                    await this.postSaved(panel, "Нормализация отменена.", "docs");
+                    return;
+                }
+                sourcePath = manualSource.trim();
+            }
+            const sourceValidation = this.normalizer.validateSourcePath(sourcePath);
+            if (sourceValidation)
+                throw new Error(sourceValidation);
+            const outputPath = requestedOutput || this.normalizer.getDefaultOutputPath();
+            this.settings.saveDocsSourcePath(sourcePath);
             const result = await this.normalizer.normalize({
                 sourcePath,
                 outputPath,
                 onProgress: (progress) => {
-                    this.normalizerProgress = progress;
-                    void panel.webview.postMessage({
-                        type: "event",
-                        event: "settings.docs.normalize.progress",
-                        payload: progress
-                    });
+                    void this.postNormalizerProgress(panel, progress);
                 }
             });
             this.settings.saveDocsPaths(result.sourcePath, result.outputPath);
@@ -497,18 +597,21 @@ class SettingsPanelManager {
             await panel.webview.postMessage({
                 type: "event",
                 event: "settings.saved",
+                scope: "docs",
                 payload: `Документация нормализована. Страниц: ${result.pageCount}.`
             });
             await this.postSnapshot(panel);
             this.logger.info(`Docs normalized: ${result.pageCount} pages from ${result.sourcePath} to ${result.outputPath}.`);
         }
         catch (error) {
-            await panel.webview.postMessage({
-                type: "event",
-                event: "settings.error",
-                payload: error instanceof Error ? error.message : "Не удалось нормализовать документацию."
-            });
+            const message = error instanceof Error ? error.message : "Не удалось нормализовать документацию.";
+            await this.postNormalizerProgress(panel, { status: "error", percent: 0, stage: "error", message });
+            await this.postError(panel, message, "docs");
         }
+    }
+    async postNormalizerProgress(panel, progress) {
+        this.normalizerProgress = progress;
+        await panel.webview.postMessage({ type: "event", event: "settings.docs.normalize.progress", payload: progress });
     }
 }
 exports.SettingsPanelManager = SettingsPanelManager;
@@ -541,20 +644,28 @@ function parseRipgrepPath(payload) {
     return typeof value.ripgrepPath === "string" ? value.ripgrepPath : undefined;
 }
 function parseBrowserSettingsInput(payload) {
-    if (!isRecord(payload) || typeof payload.enabled !== "boolean" || typeof payload.baseUrl !== "string") {
+    if (!isRecord(payload) || typeof payload.enabled !== "boolean" || typeof payload.disableSandbox !== "boolean") {
         return undefined;
     }
-    const allowedOrigins = Array.isArray(payload.allowedOrigins)
-        ? payload.allowedOrigins.filter((value) => typeof value === "string")
-        : typeof payload.allowedOrigins === "string"
-            ? payload.allowedOrigins.split(/[\r\n,]+/).map((value) => value.trim()).filter(Boolean)
-            : [];
     return {
         enabled: payload.enabled,
-        baseUrl: payload.baseUrl,
-        allowedOrigins,
         disableSandbox: payload.disableSandbox === true
     };
+}
+function settingsScope(command) {
+    if (command?.startsWith("settings.experimentalContext."))
+        return "experimentalContext";
+    if (command?.startsWith("settings.browser."))
+        return "browser";
+    if (command?.startsWith("settings.docs."))
+        return "docs";
+    if (command?.startsWith("settings.tools."))
+        return "tools";
+    if (command?.startsWith("settings.proxy."))
+        return "proxy";
+    if (command?.startsWith("settings.skill."))
+        return "skills";
+    return "mcp";
 }
 function parseMcpServerInput(payload) {
     if (!isRecord(payload) || typeof payload.name !== "string") {

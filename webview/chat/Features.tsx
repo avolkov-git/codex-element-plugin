@@ -7,8 +7,10 @@ export type FeatureView = "history" | "review" | "project" | "browser" | "contex
 interface FeatureItem { id: string; title?: string; path?: string; name?: string; label?: string; excerpt?: string; chatId?: string; itemId?: string; createdAt?: string; revision?: string; canStage?: boolean; canRevert?: boolean; available?: boolean; reason?: string; size?: number; kind?: string; change?: string; profileId?: string; workspaceId?: string; chatCount?: number; updatedAt?: string }
 interface FeatureResult { ok?: boolean; command?: string; status?: string; message?: string; items?: FeatureItem[]; nextOffset?: number | null; preview?: unknown; artifact?: { name?: string }; review?: { id: string; path: string; revision: string; before: { text: string }; after: { text: string } }; index?: number; chatId?: string }
 const titles = { history: "История", review: "Изменения", project: "Действия проекта", browser: "Артефакты браузера", context: "Контекст" };
+const changeLabels: Record<string, string> = { added: "Добавлен", modified: "Изменён", deleted: "Удалён", unavailable: "Недоступен", unchanged: "Без изменений" };
+const artifactLabels: Record<string, string> = { image: "Изображение", console: "Консоль", network: "Сетевые запросы", snapshot: "Снимок страницы", text: "Текст", trace: "Трассировка", other: "Артефакт" };
 
-export function FeaturePanel({ kind, chatId, close }: { kind: FeatureView; chatId: string; close: () => void }) {
+export function FeaturePanel({ kind, chatId, rulesEnabled, contextSection, close }: { kind: FeatureView; chatId: string; rulesEnabled: boolean; contextSection?: "project" | "docs"; close: () => void }) {
   const [query, setQuery] = useState("");
   const [items, setItems] = useState<FeatureItem[]>([]);
   const [busy, setBusy] = useState(false);
@@ -46,6 +48,9 @@ export function FeaturePanel({ kind, chatId, close }: { kind: FeatureView; chatI
   useEffect(() => store.onEvent(event => {
     if (kind === "context" && event.event === "chat.context.details" && (!event.chatId || event.chatId === chatId)) { setPreview(event.payload); setBusy(false); }
   }), [kind, chatId]);
+  useEffect(() => {
+    if (kind === "context" && contextSection) { setBusy(true); command(chatId, contextSection === "docs" ? "chat.context.docsDetails" : "chat.context.projectDetails"); }
+  }, [kind, chatId, contextSection]);
   const action = async (name: string, payload: unknown) => {
     setBusy(true); setNotice("");
     try {
@@ -73,10 +78,11 @@ export function FeaturePanel({ kind, chatId, close }: { kind: FeatureView; chatI
     {kind === "history" && migration && <div className="panel-toolbar"><IconButton icon={RefreshCw} label="Обновить список" disabled={busy} onClick={() => void load()} /><button disabled={busy} onClick={() => void action("history.migration.help", {})}>Открыть инструкцию</button></div>}
     {kind !== "context" && kind !== "history" && <div className="panel-toolbar"><IconButton icon={RefreshCw} label="Обновить список" disabled={busy} onClick={() => void load()} /></div>}
     {kind === "context" && <div className="panel-toolbar"><button onClick={() => { setBusy(true); command(chatId, "chat.context.projectDetails"); }}>Проект</button><button onClick={() => { setBusy(true); command(chatId, "chat.context.docsDetails"); }}>Документация</button><button onClick={() => command(chatId, "chat.rules.open")}>Правила</button></div>}
+    {kind === "context" && <label className="panel-rules"><input type="checkbox" checked={rulesEnabled} onChange={() => command(chatId, "chat.rules.toggle")} />Использовать правила проекта</label>}
     {notice && <p className="feature-notice" role="status">{notice}</p>}{busy && <p role="status">Загрузка…</p>}
     <div className="feature-content">
       {items.map((item, index) => <div className="feature-item" key={`${item.id ?? item.itemId}-${index}`}>
-        <div className="feature-item-main"><strong>{name(item)}</strong>{item.excerpt && <p>{item.excerpt}</p>}{item.reason && <small>{item.reason}</small>}{item.change && <small>{item.change}</small>}{item.kind && <small>{item.kind}{item.size === undefined ? "" : ` · ${Math.round(item.size / 1024)} КБ`}</small>}</div>
+        <div className="feature-item-main"><strong>{name(item)}</strong>{item.excerpt && <p>{item.excerpt}</p>}{item.reason && <small>{item.reason}</small>}{item.change && <small>{changeLabels[item.change] ?? "Изменение"}</small>}{item.kind && <small>{artifactLabels[item.kind] ?? "Артефакт"}{item.size === undefined ? "" : ` · ${Math.round(item.size / 1024)} КБ`}</small>}</div>
         <div className="feature-item-actions">
           {kind === "history" && (migration ? <><span>{item.chatCount ?? 0} диалогов · {item.updatedAt ?? ""}</span><IconButton icon={Download} label="Перенести историю" disabled={busy} onClick={() => void action("history.migration.import", { id: item.id })} /></> : <IconButton icon={ArrowRight} label="Перейти к сообщению" disabled={busy} onClick={() => void action("history.jump", { chatId: item.chatId, itemId: item.itemId })} />)}
           {kind === "review" && <>
@@ -102,6 +108,9 @@ export function FeaturePanel({ kind, chatId, close }: { kind: FeatureView; chatI
 function ArtifactPreview({ value }: { value: unknown }) {
   const object = value && typeof value === "object" ? value as Record<string, unknown> : null;
   const data = typeof value === "string" ? value : object?.dataUrl ?? object?.text ?? object?.content;
-  if (typeof data === "string" && /^data:image\/(png|jpeg|webp);base64,[a-z0-9+/=]+$/i.test(data) && data.length <= 6 * 1024 * 1024) return <img className="artifact-image" src={data} alt="Артефакт браузера" />;
+  const notice = typeof object?.message === "string" ? <p className="feature-notice">{object.message}</p> : null;
+  if (typeof data === "string" && /^data:image\/(png|jpeg|webp);base64,[a-z0-9+/=]+$/i.test(data) && data.length <= 6 * 1024 * 1024) return <>{notice}<img className="artifact-image" src={data} alt="Артефакт браузера" /></>;
+  if (object?.kind === "unavailable") return notice;
+  if (typeof data === "string") return <>{notice}<BoundedText>{data}</BoundedText></>;
   return <BoundedText>{typeof data === "string" ? data : JSON.stringify(value, null, 2)}</BoundedText>;
 }

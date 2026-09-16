@@ -33,7 +33,8 @@ export class DiffArtifactService implements vscode.TextDocumentContentProvider, 
   private readonly disposables: vscode.Disposable[];
   private chars = 0;
 
-  constructor(private readonly logger: Logger, private readonly resolveSnapshot?: DiffSnapshotResolver) {
+  constructor(private readonly logger: Logger, private readonly resolveSnapshot?: DiffSnapshotResolver,
+    private readonly resolvePatch?: (file: ChatDiffFileSummary) => Promise<{ text: string; truncated: boolean } | undefined>) {
     this.disposables = [BEFORE_SCHEME, AFTER_SCHEME, PATCH_SCHEME].map((scheme) => vscode.workspace.registerTextDocumentContentProvider(scheme, this));
   }
 
@@ -46,7 +47,7 @@ export class DiffArtifactService implements vscode.TextDocumentContentProvider, 
   }
 
   async openSnapshots(snapshot: FullDiffSnapshot): Promise<OpenedDiffSnapshot> {
-    if (snapshot.beforeText.length + snapshot.afterText.length > MAX_VIRTUAL_DIFF_CHARS) throw new Error("Full review exceeds the native snapshot limit.");
+    if (snapshot.beforeText.length + snapshot.afterText.length > MAX_VIRTUAL_DIFF_CHARS) throw new Error("Полное сравнение превышает допустимый объём для редактора IDE.");
     const id = this.store({ beforeText: snapshot.beforeText, afterText: snapshot.afterText });
     const fileName = sanitizeFileName(snapshot.path);
     const beforeUri = vscode.Uri.from({ scheme: BEFORE_SCHEME, path: `/${id}/${fileName}` });
@@ -59,13 +60,15 @@ export class DiffArtifactService implements vscode.TextDocumentContentProvider, 
   async openDiff(item: ChatDiffTranscriptItem, file: ChatDiffFileSummary): Promise<void> {
     const full = await this.resolveSnapshot?.(item, file);
     if (full) { await this.openSnapshots(full); return; }
-    const patch = file.diff;
+    const recorded = await this.resolvePatch?.(file);
+    const patch = recorded?.text ?? file.diff;
     if (!patch?.trim() || patch.length > MAX_VIRTUAL_DIFF_CHARS) {
       await vscode.window.showWarningMessage("The recorded patch is unavailable or exceeds the preview limit.");
       return;
     }
     // Hunk fragments cannot establish either full file revision. Keep them as a patch.
-    const id = this.store({ beforeText: "", afterText: "", patch: `# Recorded patch fragment; not full-file revisions${file.truncated ? " (truncated)" : ""}.\n${patch}` });
+    const truncated = recorded ? recorded.truncated : file.truncated;
+    const id = this.store({ beforeText: "", afterText: "", patch: `# Recorded patch fragment; not full-file revisions${truncated ? " (truncated)" : ""}.${file.patchArtifact && !recorded ? " Full recording unavailable or expired." : ""}\n${patch}` });
     const uri = vscode.Uri.from({ scheme: PATCH_SCHEME, path: `/${id}/${sanitizeFileName(file.path)}.patch` });
     const document = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(document, { preview: false });

@@ -1,15 +1,17 @@
-import { useState, useSyncExternalStore } from "react";
-import { Search, FileDiff, Play, PanelsTopLeft, GitFork, ChevronDown, ChevronUp, BookOpen, Check, LoaderCircle } from "lucide-react";
+import { useCallback, useState, useSyncExternalStore } from "react";
+import { Search, FileDiff, Play, PanelsTopLeft, GitFork, ChevronDown, ChevronRight, BookOpen } from "lucide-react";
 import { command, store } from "./bridge";
 import { IconButton, Modal } from "./controls";
 import { Composer } from "./Composer";
 import { Transcript } from "./Transcript";
 import { FeaturePanel, type FeatureView } from "./Features";
-import { Approval, NativeQuestions } from "./Questions";
+import { Approval } from "./Questions";
 
 export function App() {
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [feature, setFeature] = useState<FeatureView | null>(null);
+  const [contextSection, setContextSection] = useState<"project" | "docs" | undefined>();
+  const openContext = useCallback((section: "project" | "docs") => { setContextSection(section); setFeature("context"); }, []);
   const [fork, setFork] = useState(false);
   const [forkTitle, setForkTitle] = useState("");
   const [busy, setBusy] = useState(false);
@@ -20,29 +22,35 @@ export function App() {
   const expanded = meta.chatHeaderMode === "expanded";
   const toggle = (kind: FeatureView) => setFeature(feature === kind ? null : kind);
   const statusLabels = { idle: "Готов", running: "Выполняется", waitingApproval: "Ожидает разрешения", cancelling: "Останавливается", error: "Ошибка" };
-  const question = meta.pendingUserInput ?? chat.pendingUserInput;
+  const runtimeLabels = { notStarted: "сервер Codex не запущен", starting: "сервер Codex запускается", running: "сервер Codex работает", error: "ошибка сервера Codex" };
+  const question = meta.pendingUserInputs?.length || meta.pendingUserInput || chat.pendingUserInput;
   return <><main className="app">
     <header className={`header ${expanded ? "header-expanded" : "header-collapsed"}`}>
-      <div className="header-main"><h1 title={chat.title}>{chat.title}</h1>{expanded && <div className="header-context"><span>{chat.kind === "project" ? "Проект" : "Общий диалог"}</span><button className="text-link" onClick={() => toggle("context")}>{meta.projectContext.label || meta.docs.label || "Контекст"}</button><label><input type="checkbox" checked={chat.rulesEnabled} onChange={() => command(chat.id, "chat.rules.toggle")} />Правила</label></div>}</div>
-      <div className="header-actions"><span className={`chat-status ${chat.status}`} title={statusLabels[chat.status]}>{chat.status === "running" ? <LoaderCircle size={14} className="spin" /> : chat.status === "idle" ? <Check size={14} /> : null}<span>{statusLabels[chat.status]}</span></span>
-        <IconButton icon={expanded ? ChevronUp : ChevronDown} label={expanded ? "Свернуть заголовок" : "Развернуть заголовок"} onClick={() => command(chat.id, "chat.header.toggle")} />
-      </div>
-    </header>
-    <nav className="chat-navigation" aria-label="Действия диалога">
+      <div className="header-main">{expanded ? <>
+        <div className="eyebrow">{chat.kind === "project" ? "Проектный чат" : "Общий чат"}</div>
+        <h1 className="title">{chat.title}</h1>
+        <div className="meta">Учётная запись: {meta.auth.accountLabel || "не подключена"} · {runtimeLabels[meta.runtime.status]}</div>
+      </> : <h1 className="compact-title-line" title={chat.title}><span className="compact-chat-title">{chat.title}</span><span className="compact-chat-kind">, {chat.kind === "project" ? "проектный чат" : "общий чат"}</span></h1>}</div>
+      <div className="header-actions">
+        {expanded && <span className={`chat-status ${chat.status}`}>{chat.archivedAt ? "Архив" : statusLabels[chat.status]}</span>}
+        <nav className="chat-navigation" aria-label="Действия диалога">
       <IconButton icon={Search} label="Поиск по истории" aria-pressed={feature === "history"} onClick={() => toggle("history")} />
       <IconButton icon={FileDiff} label="Проверить изменения" aria-pressed={feature === "review"} onClick={() => toggle("review")} />
       <IconButton icon={Play} label="Действия проекта" aria-pressed={feature === "project"} onClick={() => toggle("project")} />
       <IconButton icon={PanelsTopLeft} label="Артефакты браузера" aria-pressed={feature === "browser"} onClick={() => toggle("browser")} />
       <IconButton icon={BookOpen} label="Контекст проекта" aria-pressed={feature === "context"} onClick={() => toggle("context")} />
       <IconButton icon={GitFork} label="Разветвить диалог" disabled={chat.status !== "idle"} onClick={() => { setForkTitle(chat.title); setError(""); setFork(true); }} />
-    </nav>
+        </nav>
+        <IconButton className="header-toggle" icon={expanded ? ChevronDown : ChevronRight} label={expanded ? "Свернуть заголовок" : "Развернуть заголовок"} aria-expanded={expanded} onClick={() => command(chat.id, "chat.header.toggle")} />
+      </div>
+    </header>
     <div className={`chat-stage${feature ? " has-feature" : ""}`}>
       <Transcript key={chat.id} view={view} />
-      {feature && <FeaturePanel key={`${chat.id}:${feature}`} kind={feature} chatId={chat.id} close={() => setFeature(null)} />}
+      {feature && <FeaturePanel key={`${chat.id}:${feature}`} kind={feature} chatId={chat.id} rulesEnabled={chat.rulesEnabled} contextSection={contextSection} close={() => setFeature(null)} />}
     </div>
-    <Composer key={chat.id} meta={meta} />
+    <Composer key={chat.id} meta={meta} onContext={openContext} />
   </main>
-  {question ? <NativeQuestions key={question.id} request={question} /> : chat.pendingApproval ? <Approval key={chat.pendingApproval.id} approval={chat.pendingApproval} chatId={chat.id} /> : null}
+  {chat.pendingApproval && <Approval key={chat.pendingApproval.id} approval={chat.pendingApproval} chatId={chat.id} />}
   {fork && !question && !chat.pendingApproval && <Modal title="Разветвить диалог" onCancel={busy ? undefined : () => setFork(false)}><form onSubmit={event => {
     event.preventDefault(); setBusy(true); setError("");
     void store.request("chat.fork", { title: forkTitle }, chat.id).then(result => {

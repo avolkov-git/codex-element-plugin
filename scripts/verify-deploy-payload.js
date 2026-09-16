@@ -62,6 +62,9 @@ function checkRequiredFiles(value) {
     "media/xbsl-highlighter.js",
     "media/sidebar.js",
     "media/settings.js",
+    "media/settings.css",
+    "media/settings-icons.js",
+    "media/settings-icons.NOTICES.txt",
     "resources/context/codex-element-language-rules.md",
     "resources/icons/codex.svg"
   ];

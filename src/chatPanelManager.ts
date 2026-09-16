@@ -1,10 +1,12 @@
 import * as vscode from "vscode";
+import { performance } from "perf_hooks";
 import { Logger } from "./logger";
 import { parseMarkdownFileTarget, workspaceRelativePathCandidates } from "./markdownFileLink";
 import { getCodexPanelIconPath } from "./panelIcon";
 import { StateStore } from "./stateStore";
 import { ChatAccessMode, ChatAttachment, ChatEffort, ChatHeaderMode, ChatPanelSnapshot, ChatPanelState, ChatRunMode, ChatSpeed, ChatTranscriptItem, DocsContextDetails, ProjectContextDetails, SkillOption, SkillSelection, WebviewCommand } from "./types";
 import { renderWebviewHtml } from "./webviewHtml";
+import { ChatQuestionResult } from "./types";
 
 export const CHAT_PANEL_VIEW_TYPE = "codexElement.chatPanel";
 
@@ -34,6 +36,7 @@ type ChatPanelMessage = WebviewCommand | {
   requestId?: string;
   command?: string;
   payload?: unknown;
+  metrics?: { eventLoopLagMs?: number; receiveMs?: number };
 };
 
 const FEATURE_COMMANDS = new Set([
@@ -43,6 +46,7 @@ const FEATURE_COMMANDS = new Set([
 ]);
 
 export interface ChatPanelHandlers {
+  respondToQuestion?(chatId: string, messageId: string, questionId: string, answer: string): Promise<ChatQuestionResult>;
   ensureHistoryLoaded?(): Promise<void>;
   featureRequest?(command: string, payload: unknown, chatId: string): Promise<unknown>;
   resolveUserInput?(chatId: string, id: string, response: { answers: Record<string, { answers: string[] }> } | null): boolean | Promise<boolean>;
@@ -92,6 +96,9 @@ export class ChatPanelManager {
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private ackTimer: ReturnType<typeof setTimeout> | undefined;
   private inFlight = false;
+  private pendingPost = false;
+  private sentAt = 0;
+  private readonly pressure = { frames: 0, bytes: 0, maxFrameBytes: 0, postFailures: 0, ackTimeouts: 0, ackMaxMs: 0, serializeMaxMs: 0, frontendLagMs: 0, frontendReceiveMs: 0 };
   private lastMeta = "";
   private lastTurns = "";
   private lastTotal = -1;
@@ -104,6 +111,11 @@ export class ChatPanelManager {
     private readonly logger: Logger,
     private readonly handlers: ChatPanelHandlers
   ) {}
+
+  getMetrics(): object {
+    return { ...this.pressure, pendingPosts: Number(this.pendingPost), pendingAck: Number(this.inFlight),
+      ackAgeMs: this.inFlight ? Date.now() - this.sentAt : 0, visible: this.visible && this.panel?.visible !== false, ready: this.ready };
+  }
 
   registerSerializer(): vscode.Disposable {
     return vscode.window.registerWebviewPanelSerializer(CHAT_PANEL_VIEW_TYPE, {
@@ -186,7 +198,7 @@ export class ChatPanelManager {
 
   private postActiveSnapshot(): void {
     this.dirty = true;
-    if (this.flushTimer || this.inFlight || !this.ready || !this.visible || this.panel?.visible === false) {
+    if (this.flushTimer || this.inFlight || this.pendingPost || !this.ready || !this.visible || this.panel?.visible === false) {
       return;
     }
     this.flushTimer = setTimeout(() => {
@@ -209,7 +221,8 @@ export class ChatPanelManager {
 
   private async flushSnapshot(): Promise<void> {
     const panel = this.panel;
-    if (!panel || !this.ready || !this.visible || panel.visible === false || this.inFlight || !this.dirty) return;
+    if (!panel || !this.ready || !this.visible || panel.visible === false || this.inFlight || this.pendingPost || !this.dirty) return;
+    const startedAt = performance.now();
     this.dirty = false;
     const snapshot = this.state.getActiveChatSnapshot();
     const chatId = snapshot?.chat.id ?? "";
@@ -270,18 +283,34 @@ export class ChatPanelManager {
     this.lastTotal = frame.totalCount;
     this.revision = frame.revision;
     this.inFlight = true;
+    this.pendingPost = true;
+    this.sentAt = Date.now();
+    const frameBytes = Buffer.byteLength(JSON.stringify(frame), "utf8");
+    this.pressure.frames++;
+    this.pressure.bytes += frameBytes;
+    this.pressure.maxFrameBytes = Math.max(this.pressure.maxFrameBytes, frameBytes);
+    this.pressure.serializeMaxMs = Math.max(this.pressure.serializeMaxMs, performance.now() - startedAt);
     const epoch = this.epoch;
-    // One unacknowledged frame at a time. A timeout starts a new epoch, never a patch over a gap.
+    // Silence is not permission to enqueue another frame. Resume on ACK or an explicit resync.
     this.ackTimer = setTimeout(() => {
       if (this.panel !== panel || this.epoch !== epoch) return;
-      this.resetBridge();
-      this.postActiveSnapshot();
+      this.pressure.ackTimeouts++;
+      this.dirty = true;
     }, 3000);
     try {
       const delivered = await panel.webview.postMessage(frame);
-      if (!delivered && this.epoch === epoch) this.dirty = true;
+      if (!delivered && this.epoch === epoch) {
+        this.pressure.postFailures++;
+        this.ready = false;
+        this.resetBridge();
+        this.dirty = true;
+      }
     } catch {
-      if (this.epoch === epoch) this.dirty = true;
+      this.pressure.postFailures++;
+      if (this.epoch === epoch) { this.ready = false; this.resetBridge(); this.dirty = true; }
+    } finally {
+      this.pendingPost = false;
+      if (this.dirty) this.postActiveSnapshot();
     }
   }
 
@@ -314,7 +343,7 @@ export class ChatPanelManager {
         const restore = message.type === "command" && ["chat.send", "chat.queue.add", "chat.steer"].includes(message.command) && isObject(message.payload)
           ? { restorePrompt: message.payload.prompt, restoreAttachments: message.payload.attachments } : {};
         void panel.webview.postMessage({ type: "event", event: "chat.error", chatId: (message as { chatId?: string }).chatId,
-          payload: { message: error instanceof Error ? error.message : "Command failed.", ...restore } });
+          payload: { message: error instanceof Error ? error.message : "Не удалось выполнить команду.", ...restore } });
       });
     });
 
@@ -339,7 +368,7 @@ export class ChatPanelManager {
   }
 
   private async handleMessage(panel: vscode.WebviewPanel, message: ChatPanelMessage): Promise<void> {
-    if (!message || typeof message !== "object") {
+    if (panel !== this.panel || !message || typeof message !== "object") {
       return;
     }
 
@@ -357,6 +386,11 @@ export class ChatPanelManager {
 
     if (message.type === "chat.ack") {
       if (message.epoch === this.epoch && message.revision === this.revision && message.chatId === this.panelChatId) {
+        this.pressure.ackMaxMs = Math.max(this.pressure.ackMaxMs, Date.now() - this.sentAt);
+        for (const [source, target] of [["eventLoopLagMs", "frontendLagMs"], ["receiveMs", "frontendReceiveMs"]] as const) {
+          const value = message.metrics?.[source];
+          if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 3_600_000) this.pressure[target] = Math.max(this.pressure[target], value);
+        }
         clearTimeout(this.ackTimer);
         this.ackTimer = undefined;
         this.inFlight = false;
@@ -366,6 +400,7 @@ export class ChatPanelManager {
     }
     if (message.type === "chat.resync" || message.type === "chat.visibility") {
       if (message.type === "chat.visibility") this.visible = message.visible !== false;
+      if (this.visible) this.ready = true;
       this.resetBridge();
       this.postActiveSnapshot();
       return;
@@ -378,21 +413,38 @@ export class ChatPanelManager {
       return;
     }
     const originChatId = (message as { chatId?: string }).chatId ?? this.panelChatId;
+    if (message.type === "command" && message.command === "chat.question.respond") {
+      const payload = isObject(message.payload) ? message.payload : {};
+      const messageId = typeof payload.messageId === "string" ? payload.messageId : "";
+      const questionId = typeof payload.questionId === "string" ? payload.questionId : "";
+      let result: ChatQuestionResult = { messageId, questionId, accepted: false };
+      try {
+        if (!message.chatId || message.chatId !== this.panelChatId || !this.state.getChat(message.chatId)) throw new Error("Вопрос относится к другому или закрытому диалогу.");
+        if (!messageId || messageId.length > 1024 || !questionId || questionId.length > 1024 || typeof payload.answer !== "string") throw new Error("Некорректные данные ответа на вопрос.");
+        if (!this.handlers.respondToQuestion) throw new Error("Отправка ответа на вопрос недоступна.");
+        const response = await this.handlers.respondToQuestion(message.chatId, messageId, questionId, payload.answer);
+        result = { ...result, accepted: response?.accepted === true, error: response?.accepted === true ? undefined : response?.error || "Сервер не подтвердил принятие ответа." };
+      } catch (error) {
+        result.error = error instanceof Error ? error.message : "Не удалось отправить ответ на вопрос.";
+      }
+      await panel.webview.postMessage({ type: "event", event: "chat.question.result", chatId: typeof originChatId === "string" ? originChatId : this.panelChatId, payload: result });
+      return;
+    }
     if ((!originChatId || !this.state.getChat(originChatId))
       && !(message.type === "features.request" && message.command?.startsWith("history."))) return;
     if (message.type === "features.request") {
       const requestId = message.requestId;
       if (!requestId || requestId.length > 128 || this.featureRequests.has(requestId)) return;
       if (this.featureRequests.size >= 32) {
-        await panel.webview.postMessage({ type: "features.result", requestId, error: "Too many pending requests." });
+        await panel.webview.postMessage({ type: "features.result", requestId, error: "Слишком много запросов. Дождитесь завершения текущих." });
         return;
       }
       this.featureRequests.add(requestId);
       try {
         if (!message.command || !FEATURE_COMMANDS.has(message.command) || !this.handlers.featureRequest) {
-          throw new Error("This action is unavailable in this runtime.");
+          throw new Error("Действие недоступно в этой версии сервера Codex.");
         }
-        if (JSON.stringify(message.payload ?? null).length > 262144) throw new Error("Request is too large.");
+        if (JSON.stringify(message.payload ?? null).length > 262144) throw new Error("Запрос превышает допустимый размер.");
         const result = await this.handlers.featureRequest(message.command, message.payload, originChatId);
         if (message.command === "history.jump" && isObject(result) && typeof result.index === "number" && typeof result.chatId === "string") {
           this.panelChatId = result.chatId;
@@ -404,7 +456,7 @@ export class ChatPanelManager {
         await panel.webview.postMessage({ type: "features.result", requestId, chatId: originChatId, result });
       } catch (error) {
         await panel.webview.postMessage({ type: "features.result", requestId, chatId: originChatId,
-          error: error instanceof Error ? error.message : "Action failed." });
+          error: error instanceof Error ? error.message : "Не удалось выполнить действие." });
       } finally { this.featureRequests.delete(requestId); }
       return;
     }
@@ -428,15 +480,15 @@ export class ChatPanelManager {
     if (message.command === "chat.userInput.respond") {
       const payload = isObject(message.payload) ? message.payload : {};
       try {
-        if (typeof payload.id !== "string" || !this.handlers.resolveUserInput) throw new Error("Question handler unavailable.");
+        if (typeof payload.id !== "string" || !this.handlers.resolveUserInput) throw new Error("Обработка ответа на вопрос недоступна.");
         const response = payload.response === null ? null : payload.response as { answers: Record<string, { answers: string[] }> };
-        if (response !== null && (!isObject(response) || !isObject(response.answers))) throw new Error("Invalid answer.");
+        if (response !== null && (!isObject(response) || !isObject(response.answers))) throw new Error("Некорректный ответ.");
         const accepted = await this.handlers.resolveUserInput(originChatId, payload.id, response);
         await panel.webview.postMessage({ type: "event", event: "chat.userInput.result", chatId: originChatId,
           payload: { id: payload.id, accepted, error: accepted ? undefined : "Вопрос уже закрыт или относится к другому запросу." } });
       } catch (error) {
         await panel.webview.postMessage({ type: "event", event: "chat.userInput.result", chatId: originChatId,
-          payload: { id: payload.id, accepted: false, error: error instanceof Error ? error.message : "Invalid answer." } });
+          payload: { id: payload.id, accepted: false, error: error instanceof Error ? error.message : "Некорректный ответ." } });
       }
       return;
     }

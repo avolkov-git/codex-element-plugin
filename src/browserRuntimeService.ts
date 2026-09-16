@@ -1,4 +1,3 @@
-import { spawn } from "child_process";
 import { randomBytes, randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -6,24 +5,31 @@ import * as vscode from "vscode";
 import { MANAGED_BROWSER_MCP_NAME } from "./codexIntegrationConstants";
 import { McpServerSaveInput } from "./codexIntegrationsService";
 import { Logger } from "./logger";
+import { RuntimeProcessManager } from "./runtimeProcessManager";
+import type { BrowserApplicationProvider, ElementApplicationView } from "./elementApplicationService";
 import { BrowserSettingsInput, BrowserSettingsView, SettingsService } from "./settingsService";
+
+export type BrowserPreferencesInput = Pick<BrowserSettingsInput, "enabled" | "disableSandbox">;
 
 interface BrowserRuntimeManifest {
   schemaVersion: number;
   platformId: string;
   playwrightMcpVersion: string;
   nodeVersion: string;
+  chromiumVersion?: string;
   nodePath: string;
   launcherPath: string;
   browserExecutablePath: string;
 }
 
 export interface BrowserRuntimeView extends BrowserSettingsView {
+  application: ElementApplicationView;
   status: "notInstalled" | "ready" | "error";
   statusMessage: string;
   platformId: string;
   playwrightMcpVersion: string;
   nodeVersion: string;
+  chromiumVersion: string;
   managedServerName: string;
 }
 
@@ -54,6 +60,7 @@ export class BrowserRuntimeService {
   private manifestCache: { signature: string; manifest: BrowserRuntimeManifest } | undefined;
   private preferenceCache: { signature: string; view: BrowserSettingsView } | undefined;
   private managedServer: { scopeRoot: string; server: McpServerSaveInput } | undefined;
+  private testPromise: Promise<BrowserRuntimeTestResult> | undefined;
 
   // Scope callbacks supply authenticated namespaces, never guessed profile paths.
   constructor(
@@ -61,7 +68,8 @@ export class BrowserRuntimeService {
     private readonly settings: SettingsService,
     private readonly logger: Logger,
     private readonly getScopeRoot?: () => string | undefined,
-    private readonly getPersistentScopeRoot?: () => string | undefined
+    private readonly getPersistentScopeRoot?: () => string | undefined,
+    private readonly application?: BrowserApplicationProvider
   ) {}
 
   getView(): BrowserRuntimeView {
@@ -70,22 +78,26 @@ export class BrowserRuntimeService {
       const runtime = this.resolveRuntime();
       return {
         ...settings,
+        application: this.getApplicationView(),
         status: "ready",
-        statusMessage: `Playwright MCP ${runtime.manifest.playwrightMcpVersion} готов к запуску.`,
+        statusMessage: "Node.js, Playwright MCP и Chromium найдены в поставке.",
         platformId: runtime.manifest.platformId,
         playwrightMcpVersion: runtime.manifest.playwrightMcpVersion,
         nodeVersion: runtime.manifest.nodeVersion,
+        chromiumVersion: typeof runtime.manifest.chromiumVersion === "string" ? runtime.manifest.chromiumVersion : "",
         managedServerName: this.getManagedServer()?.name ?? MANAGED_BROWSER_MCP_NAME
       };
     } catch (error) {
       const message = errorMessage(error);
       return {
         ...settings,
+        application: this.getApplicationView(),
         status: message.includes("не установлен") ? "notInstalled" : "error",
         statusMessage: message,
         platformId: currentPlatformId(),
         playwrightMcpVersion: "",
         nodeVersion: "",
+        chromiumVersion: "",
         managedServerName: MANAGED_BROWSER_MCP_NAME
       };
     }
@@ -146,8 +158,6 @@ export class BrowserRuntimeService {
     ensurePrivateDirectory(outputDir);
 
     const baseUrl = new URL(settings.baseUrl).toString();
-    const origins = new Set(settings.allowedOrigins);
-    origins.add(new URL(baseUrl).origin);
     const initPage = [
       "export default async ({ page }) => {",
       "  await page.setViewportSize({ width: 1440, height: 900 });",
@@ -172,9 +182,6 @@ export class BrowserRuntimeService {
           viewport: { width: 1440, height: 900 }
         }
       },
-      network: {
-        allowedOrigins: [...origins]
-      },
       outputDir,
       outputMaxSize: 20 * 1024 * 1024,
       imageResponses: "allow",
@@ -185,7 +192,7 @@ export class BrowserRuntimeService {
     };
     writePrivateFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     this.logger.info(
-      `Browser MCP prepared: platform=${runtime.manifest.platformId}; origins=${origins.size}; sandbox=${settings.disableSandbox ? "disabled" : "enabled"}.`
+      `Browser MCP prepared: platform=${runtime.manifest.platformId}; network=unrestricted; sandbox=${settings.disableSandbox ? "disabled" : "enabled"}.`
     );
     return {
       originalName: MANAGED_BROWSER_MCP_NAME,
@@ -211,6 +218,24 @@ export class BrowserRuntimeService {
   }
 
   getSettingsView(): BrowserSettingsView {
+    const preferences = this.readPreferences();
+    const application = this.getApplicationView();
+    return {
+      ...preferences,
+      baseUrl: application.status === "ready" ? application.url : "",
+      validationMessage: preferences.validationMessage || (preferences.enabled && application.status !== "ready" ? application.message : "")
+    };
+  }
+
+  async refreshApplication(force = false): Promise<void> {
+    if (this.resolvePersistentScopeRoot()) await this.application?.resolve(force);
+  }
+
+  private getApplicationView(): ElementApplicationView {
+    return this.application?.getView() ?? { status: "error", url: "", name: "", message: "Не удалось определить приложение текущей IDE." };
+  }
+
+  private readPreferences(): BrowserSettingsView {
     const empty = { enabled: false, baseUrl: "", allowedOrigins: [], disableSandbox: false, validationMessage: "" };
     const root = this.resolvePersistentScopeRoot();
     if (!root) {
@@ -227,7 +252,7 @@ export class BrowserRuntimeService {
         return { ...this.preferenceCache.view, allowedOrigins: [...this.preferenceCache.view.allowedOrigins] };
       }
       const input = JSON.parse(fs.readFileSync(filePath, "utf8"));
-      if (input?.schemaVersion !== 1) throw new Error("Неизвестная версия настроек браузера.");
+      if (input?.schemaVersion !== 1 && input?.schemaVersion !== 2) throw new Error("Неизвестная версия настроек браузера.");
       const view = normalizeBrowserPreferences(input);
       this.preferenceCache = { signature, view };
       return { ...view, allowedOrigins: [...view.allowedOrigins] };
@@ -237,14 +262,17 @@ export class BrowserRuntimeService {
     }
   }
 
-  saveSettings(input: BrowserSettingsInput): BrowserSettingsView {
+  saveSettings(input: BrowserPreferencesInput): BrowserSettingsView {
     const root = this.resolvePersistentScopeRoot();
     if (!root) throw new Error("Область пользователя и проекта для настроек браузера не подтверждена.");
     const view = normalizeBrowserPreferences(input);
+    if (view.enabled && this.getApplicationView().status !== "ready") throw new Error(this.getApplicationView().message);
     ensurePrivateDirectory(root);
-    writePrivateFile(path.join(root, "browser-settings.json"), `${JSON.stringify({ schemaVersion: 1, ...view }, null, 2)}\n`);
+    // Never persist an application address in preferences shared by project deployments.
+    const { enabled, disableSandbox } = view;
+    writePrivateFile(path.join(root, "browser-settings.json"), `${JSON.stringify({ schemaVersion: 2, enabled, disableSandbox }, null, 2)}\n`);
     this.preferenceCache = undefined;
-    return view;
+    return this.getSettingsView();
   }
 
   private resolvePersistentScopeRoot(): string | undefined {
@@ -269,25 +297,38 @@ export class BrowserRuntimeService {
     return resolved;
   }
 
-  async test(): Promise<BrowserRuntimeTestResult> {
+  test(): Promise<BrowserRuntimeTestResult> {
+    if (!this.testPromise) {
+      this.testPromise = this.runTest().finally(() => { this.testPromise = undefined; });
+    }
+    return this.testPromise;
+  }
+
+  private async runTest(): Promise<BrowserRuntimeTestResult> {
+    let stage = "компоненты браузера";
+    const startedAt = Date.now();
     try {
       const runtime = this.resolveRuntime();
       const settings = this.getSettingsView();
-      const [node, launcher, browser] = await Promise.all([
-        runProcess(runtime.nodePath, ["--version"], 8_000),
-        runProcess(runtime.nodePath, [runtime.launcherPath, "--help"], 12_000),
-        runProcess(runtime.browserExecutablePath, ["--version"], 8_000)
-      ]);
-      await smokeTestBrowser(runtime, settings.disableSandbox);
+      this.logger.info(`Browser check started: platform=${runtime.manifest.platformId}; mcp=${runtime.manifest.playwrightMcpVersion}.`);
+      stage = "Node.js";
+      const node = await runProcess(runtime.nodePath, ["--version"], 8_000, stage);
+      stage = "Playwright MCP";
+      await runProcess(runtime.nodePath, [runtime.launcherPath, "--help"], 12_000, stage);
+      stage = "Chromium";
+      // Windows chrome.exe is a GUI executable; --version is not a portable probe.
+      const browser = await smokeTestBrowser(runtime, settings.disableSandbox);
+      this.logger.info(`Browser check passed: chromium=${browser}; durationMs=${Date.now() - startedAt}.`);
       return {
         status: "ready",
-        message: "Встроенный браузер и Playwright MCP готовы.",
-        details: `${node.trim()} · ${browser.trim()} · MCP launcher ${launcher ? "ok" : "ok"} · запуск Chromium ok`
+        message: "Браузер проверен: страница открыта, нажатие кнопки выполнено.",
+        details: `Node.js ${node.trim()} · Chromium ${browser} · Playwright MCP ${runtime.manifest.playwrightMcpVersion}`
       };
     } catch (error) {
+      this.logger.warn(`Browser check failed: stage=${stage}; durationMs=${Date.now() - startedAt}; ${errorMessage(error)}`);
       return {
         status: "failed",
-        message: "Не удалось проверить встроенный браузер.",
+        message: `Не удалось проверить ${stage}. Подробности записаны в логи Codex.`,
         details: errorMessage(error)
       };
     }
@@ -326,7 +367,7 @@ export class BrowserRuntimeService {
   }
 }
 
-async function smokeTestBrowser(runtime: ResolvedBrowserRuntime, disableSandbox: boolean): Promise<void> {
+async function smokeTestBrowser(runtime: ResolvedBrowserRuntime, disableSandbox: boolean): Promise<string> {
   const playwrightModule = path.join(runtime.root, "node_modules", "playwright");
   const script = [
     "const { chromium } = require(process.argv[1]);",
@@ -334,21 +375,31 @@ async function smokeTestBrowser(runtime: ResolvedBrowserRuntime, disableSandbox:
     "const disableSandbox = process.argv[3] === '1';",
     "(async () => {",
     "  const args = disableSandbox ? ['--no-sandbox', '--disable-setuid-sandbox'] : [];",
-    "  const browser = await chromium.launch({ headless: true, executablePath, args });",
+    "  const browser = await chromium.launch({ headless: true, executablePath, args, timeout: 20000 });",
     "  try {",
     "    const page = await browser.newPage();",
-    "    await page.goto('data:text/html,<title>Codex browser smoke test</title>');",
-    "    if (await page.title() !== 'Codex browser smoke test') throw new Error('unexpected page title');",
+    "    page.setDefaultTimeout(5000);",
+    "    const html = '<!doctype html><title>Codex browser check</title><button>Check</button><script>document.querySelector(\"button\").onclick = () => document.title = \"Codex browser check passed\";</script>';",
+    "    await page.goto('data:text/html,' + encodeURIComponent(html));",
+    "    await page.getByRole('button', { name: 'Check', exact: true }).click();",
+    "    if (await page.title() !== 'Codex browser check passed') throw new Error('Нажатие кнопки не изменило тестовую страницу.');",
+    "    console.log(JSON.stringify({ browserVersion: browser.version() }));",
     "  } finally {",
     "    await browser.close();",
     "  }",
     "})().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });"
   ].join("\n");
-  await runProcess(
+  const output = await runProcess(
     runtime.nodePath,
     ["-e", script, playwrightModule, runtime.browserExecutablePath, disableSandbox ? "1" : "0"],
-    20_000
+    45_000,
+    "Chromium"
   );
+  const result = JSON.parse(output.trim()) as { browserVersion?: unknown };
+  if (typeof result.browserVersion !== "string" || !/^\d+(?:\.\d+){1,3}$/.test(result.browserVersion)) {
+    throw new Error("Chromium запущен, но Playwright не вернул корректную версию браузера.");
+  }
+  return result.browserVersion;
 }
 
 function currentPlatformId(): string {
@@ -413,29 +464,12 @@ function managedBrowserOverride(name: string, command: string, args: string[], e
   return ["-c", `mcp_servers.${name}=${table}`];
 }
 
-function normalizeBrowserPreferences(input: BrowserSettingsInput): BrowserSettingsView {
-  if (!input || typeof input.enabled !== "boolean" || typeof input.baseUrl !== "string"
-    || !Array.isArray(input.allowedOrigins) || input.allowedOrigins.length > 20
+function normalizeBrowserPreferences(input: BrowserPreferencesInput): BrowserSettingsView {
+  if (!input || typeof input.enabled !== "boolean"
     || typeof input.disableSandbox !== "boolean") {
     throw new Error("Некорректные настройки браузера.");
   }
-  const baseUrl = input.baseUrl.trim();
-  const allowedOrigins = [...new Set(input.allowedOrigins.map((value) => {
-    if (typeof value !== "string" || value.length > 2048) throw new Error("Некорректный origin браузера.");
-    const origin = new URL(value.trim());
-    if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password) {
-      throw new Error("Origin браузера должен использовать http или https без учетных данных.");
-    }
-    return origin.origin;
-  }))];
-  if (baseUrl.length > 8192 || (input.enabled && !baseUrl)) throw new Error("Укажите корректный URL приложения.");
-  if (baseUrl) {
-    const parsed = new URL(baseUrl);
-    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
-      throw new Error("URL приложения должен использовать http или https без учетных данных.");
-    }
-  }
-  return { enabled: input.enabled, baseUrl, allowedOrigins, disableSandbox: input.disableSandbox, validationMessage: "" };
+  return { enabled: input.enabled, baseUrl: "", allowedOrigins: [], disableSandbox: input.disableSandbox, validationMessage: "" };
 }
 
 function ensurePrivateDirectory(directory: string): void {
@@ -456,30 +490,32 @@ function writePrivateFile(filePath: string, content: string): void {
   }
 }
 
-function runProcess(command: string, args: string[], timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { shell: false, windowsHide: true, env: process.env });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error(`${path.basename(command)} не ответил за ${timeoutMs} мс.`));
-    }, timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+async function runProcess(command: string, args: string[], timeoutMs: number, label: string): Promise<string> {
+  const processManager = new RuntimeProcessManager();
+  let stdout = "";
+  let stderr = "";
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label}: проверка не завершилась за ${timeoutMs / 1000} с. ${stderr.trim().slice(-2000)}`.trim())), timeoutMs);
+      processManager.start({
+        command, args, cwd: path.dirname(command), env: process.env,
+        maxLineBytes: 64 * 1024,
+        onStdout: (line) => { stdout = `${stdout}${line}\n`.slice(-64 * 1024); },
+        onStderr: (line) => { stderr = `${stderr}${line}\n`.slice(-64 * 1024); },
+        onError: reject,
+        onExit: (code, signal) => {
+          if (code === 0) resolve();
+          else reject(new Error(`${label}: процесс завершился с кодом ${code ?? signal ?? "?"}. ${(stderr || stdout).trim().slice(-2000)}`));
+        }
+      });
     });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve(stdout || stderr);
-      } else {
-        reject(new Error(`${path.basename(command)} завершился с кодом ${code}: ${(stderr || stdout).trim().slice(0, 500)}`));
-      }
-    });
-  });
+  } finally {
+    clearTimeout(timer);
+    // The existing manager owns the PID/tree; never kill other Chrome sessions.
+    await processManager.stop(2_000);
+  }
+  return stdout;
 }
 
 function errorMessage(error: unknown): string {

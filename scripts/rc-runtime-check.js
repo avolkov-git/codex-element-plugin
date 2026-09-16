@@ -12,7 +12,7 @@ const ts = require("typescript");
 const Ajv = require("ajv");
 const root = path.resolve(__dirname, "..");
 const fixture = path.join(__dirname, "fixtures/rc-runtime-child.js");
-const contract = require("./fixtures/app-server/0.153.4.json");
+const contract = require(`./fixtures/app-server/${require("../bin/runtime-manifest.json").version}.json`);
 const responseSchema = require("./fixtures/app-server/rc-native-input-response.json");
 const ajv = new Ajv({ strict: false, validateFormats: false });
 const validateInput = ajv.compile({ ...contract.serverRequests["item/tool/requestUserInput"], definitions: contract.definitions });
@@ -30,13 +30,14 @@ function compile(source, filename) {
 // Run actual TypeScript sources in memory. Never build or read a stale dist.
 const originalLoad = Module._load;
 const originalTs = Module._extensions[".ts"];
-let CodexRuntimeController, StateStore, RuntimeProcessManager;
+let CodexRuntimeController, StateStore, RuntimeProcessManager, JsonRpcClient;
 try {
   Module._load = function (name, ...args) { return name === "vscode" ? vscode : originalLoad.call(this, name, ...args); };
   Module._extensions[".ts"] = (mod, filename) => mod._compile(compile(fs.readFileSync(filename, "utf8"), filename), filename);
   ({ CodexRuntimeController } = require(path.join(root, "src/codexRuntimeController.ts")));
   ({ StateStore } = require(path.join(root, "src/stateStore.ts")));
   ({ RuntimeProcessManager } = require(path.join(root, "src/runtimeProcessManager.ts")));
+  ({ JsonRpcClient } = require(path.join(root, "src/jsonRpcClient.ts")));
 } finally {
   Module._load = originalLoad;
   if (originalTs) Module._extensions[".ts"] = originalTs;
@@ -209,6 +210,135 @@ function harness() {
   return { state, runtime, chat, options, changes, logs };
 }
 
+async function checkLargeThreadHistory() {
+  async function transport(manager = new RuntimeProcessManager()) {
+    managers.add(manager);
+    const errors = [], responseSizes = [];
+    const ready = deferred();
+    const rpc = new JsonRpcClient((line) => manager.writeLine(line), () => {});
+    const pid = manager.start({
+      command: process.execPath, args: [fixture, "thread-history"], cwd: temp, env: process.env,
+      onStdout(line) {
+        responseSizes.push(Buffer.byteLength(line));
+        if (JSON.parse(line).ready) ready.resolve();
+        else rpc.handleLine(line);
+      },
+      onStderr() {}, onError(error) { errors.push(error); rpc.dispose(); }, onExit() { rpc.dispose(); }
+    });
+    ownedPids.add(pid);
+    await ready.promise;
+    return { manager, rpc, errors, responseSizes };
+  }
+
+  // Reproduce the old request with the production 8 MiB limit, not an inflated one.
+  const old = await transport();
+  try {
+    await assert.rejects(old.rpc.request("thread/resume", { threadId: "thread-a" }), /disposed/);
+    assert.match(old.errors[0]?.message ?? "", /exceeds 8388608 bytes per line/);
+  } finally {
+    old.rpc.dispose();
+    await old.manager.stop(0);
+    assert.equal(old.manager.pid, null, "failed transport must release the stopped process record");
+  }
+
+  for (const rejectOverrides of [false, true]) {
+    const safe = await transport(rejectOverrides ? undefined : old.manager);
+    const h = harness();
+    h.runtime.processManager = safe.manager;
+    h.runtime.rpcClient = safe.rpc;
+    h.runtime.loadedThreadIds.clear();
+    h.state.updateChat(h.chat.id, { status: "idle", activeTurnId: null, backendContextRestored: true,
+      backendWorkspacePath: temp, ...(rejectOverrides ? { modelId: "reject-overrides" } : {}) });
+    h.state.addTranscriptItem(h.chat.id, "assistant", "Keep this saved transcript");
+    const transcript = JSON.stringify(h.state.exportChatHistory().transcripts[h.chat.id]);
+    try {
+      await h.runtime.ensureBackendThreadReady(h.chat.id, "read-only");
+      assert.equal(h.state.getChat(h.chat.id).backendThreadId, "thread-a");
+      assert.equal(h.state.getChat(h.chat.id).backendContextRestored, true);
+      assert(h.runtime.loadedThreadIds.has("thread-a"));
+      assert.equal(JSON.stringify(h.state.exportChatHistory().transcripts[h.chat.id]), transcript);
+      await h.runtime.startTurn(h.chat.id, "Continue the same conversation", "normal");
+      const stats = await safe.rpc.request("fixture/stats", { threadId: "thread-a" });
+      const resumes = stats.requests.filter(request => request.method === "thread/resume");
+      assert.equal(resumes.length, rejectOverrides ? 2 : 1);
+      assert(resumes.every(request => request.params.excludeTurns === true));
+      if (rejectOverrides) assert.deepEqual(resumes[1].params, { threadId: "thread-a", excludeTurns: true });
+      const turn = stats.requests.find(request => request.method === "turn/start");
+      assert.equal(turn.params.threadId, "thread-a");
+      assert.equal(turn.params.input.length, 1, "server history must not be re-injected into the prompt");
+      assert.equal(stats.requests.some(request => request.method === "thread/start"), false);
+      assert(stats.historyBytes > 8 * 1024 * 1024, "excludeTurns must only affect the reply, not the fixture's stored history");
+
+      h.state.setChatModel(h.chat.id, null, "Авто");
+      const fork = await h.runtime.forkChat(h.chat.id, "Long history fork");
+      const forkStats = await safe.rpc.request("fixture/stats", { threadId: fork.backendThreadId });
+      assert.equal(forkStats.requests.find(request => request.method === "thread/fork").params.excludeTurns, true);
+      assert.equal(forkStats.historyBytes, stats.historyBytes);
+      assert.equal(JSON.stringify(h.state.exportChatHistory().transcripts[fork.id]), transcript);
+      assert.equal(safe.errors.length, 0);
+      assert.equal(safe.manager.isRunning, true);
+      assert(Math.max(...safe.responseSizes) < 4096, "large history is not transferred or parsed in the host");
+    } finally {
+      safe.rpc.dispose();
+      await safe.manager.stop(0);
+      h.runtime.dispose();
+    }
+  }
+}
+
+async function checkResumeFailures() {
+  for (const loaded of [false, true]) {
+    for (const message of [
+      "thread/resume: timeout after 10000ms",
+      "Codex backend input backpressure limit reached; request was not sent.",
+      "thread/resume: JSON-RPC client disposed.",
+      "thread/resume: required MCP server failed: thread not found"
+    ]) {
+      const h = harness(), requests = [];
+      h.state.updateChat(h.chat.id, { status: "idle", activeTurnId: null, backendContextRestored: true });
+      if (!loaded) h.runtime.loadedThreadIds.clear();
+      h.runtime.rpcClient = { request: async (method) => {
+        requests.push(method);
+        if (method === "turn/start") throw new Error("turn/start: thread not found");
+        if (method === "thread/resume") throw new Error(message);
+        assert.fail(`Unexpected history replacement: ${method}`);
+      }, dispose() {} };
+      try {
+        await h.runtime.sendPrompt(h.chat.id, "Continue existing history");
+        assert.deepEqual(requests, loaded ? ["turn/start", "thread/resume"] : ["thread/resume"]);
+        assert.equal(h.state.getChat(h.chat.id).backendThreadId, "thread-a");
+        assert.equal(h.state.getChat(h.chat.id).backendContextRestored, true);
+        assert.equal(h.state.getChat(h.chat.id).status, "error");
+        assert(h.logs.some(line => line.includes(message)));
+      } finally {
+        h.runtime.dispose();
+      }
+    }
+  }
+  for (const message of ["thread/resume: no rollout found for thread id thread-a code=-32600", "thread/resume: thread not found: thread-a code=-32600"]) {
+    const h = harness(), requests = [];
+    h.state.updateChat(h.chat.id, { status: "idle", activeTurnId: null });
+    h.runtime.rpcClient = { request: async (method, params) => {
+      requests.push(method);
+      if (method === "thread/resume") throw new Error(message);
+      if (method === "thread/start") return { thread: { id: "replacement-thread" } };
+      if (method === "turn/start") {
+        if (params.threadId === "thread-a") throw new Error("turn/start: thread not found");
+        return { turn: { id: "replacement-turn" } };
+      }
+      assert.fail(method);
+    }, dispose() {} };
+    try {
+      await h.runtime.sendPrompt(h.chat.id, "Continue after deleted server history");
+      assert.deepEqual(requests, ["turn/start", "thread/resume", "thread/start", "turn/start"]);
+      assert.equal(h.state.getChat(h.chat.id).backendThreadId, "replacement-thread");
+      assert.equal(h.state.getChat(h.chat.id).activeTurnId, "replacement-turn");
+    } finally {
+      h.runtime.dispose();
+    }
+  }
+}
+
 async function checkQuestions() {
   const h = harness(), sent = [];
   let callbacks;
@@ -241,7 +371,7 @@ async function checkQuestions() {
   assert.equal(snapshot.pendingUserInput.isBlocking, true);
   assert.equal(h.state.exportChatHistory().chats[0].pendingUserInput, null);
   assert.equal(h.runtime.resolveUserInput("wrong-chat", snapshot.pendingUserInput.id, null), false);
-  assert.throws(() => h.runtime.resolveUserInput(h.chat.id, snapshot.pendingUserInput.id, { answers: {} }), /every/);
+  assert.throws(() => h.runtime.resolveUserInput(h.chat.id, snapshot.pendingUserInput.id, { answers: {} }), /Ответьте на каждый вопрос/);
   const answer = { answers: { pick: { answers: ["Other choice"] }, secret: { answers: ["secret-never-persist"] } } };
   assert.equal(h.runtime.resolveUserInput(h.chat.id, snapshot.pendingUserInput.id, answer), true);
   await until(() => sent.length === 1, "native answer reply");
@@ -277,6 +407,31 @@ async function checkQuestions() {
   assert.equal(h.runtime.managedBrowserServerName, null, "trusted server identity must end with process epoch");
   assert.equal(h.runtime.activeThreadChatId.size, 0);
   assert.equal(h.state.getChat(h.chat.id).backendThreadId, "thread-a", "identity stop must not erase persisted conversation IDs");
+  h.runtime.dispose();
+}
+
+async function checkAsyncQuestions() {
+  const h = harness();
+  const calls = [];
+  h.runtime.rpcClient = { request: async (method, params) => {
+    calls.push({ method, params });
+    assert.equal(params.threadId, "thread-a");
+    return method === "turn/steer" ? { turnId: params.expectedTurnId } : { turn: { id: "turn-answer" } };
+  }, dispose() {} };
+  const item = { type: "agentMessage", id: "async-question", delivery: "async", text: "Plain question Markdown", questions: [
+    { title: "Pick", options: ["A", "B"] }, { title: "Explain", options: null }
+  ] };
+  const notify = value => h.runtime.handleNotification({ method: "item/completed", params: { threadId: "thread-a", turnId: "turn-a", item: value } });
+  notify(item);
+  const message = h.state.exportChatHistory().transcripts[h.chat.id].find(entry => entry.backendItemId === item.id);
+  assert.equal(message.questions.length, 2);
+  assert.equal((await h.runtime.respondToQuestion(h.chat.id, message.id, message.questions[0].id, "Free option")).accepted, true);
+  notify({ ...item, questions: null });
+  assert.equal(h.state.getChatQuestion(h.chat.id, message.id, message.questions[0].id).answer, "Free option");
+  assert.equal((await h.runtime.respondToQuestion(h.chat.id, message.id, message.questions[0].id, "duplicate")).accepted, false);
+  h.state.updateChat(h.chat.id, { status: "idle", activeTurnId: null });
+  assert.equal((await h.runtime.respondToQuestion(h.chat.id, message.id, message.questions[1].id, "Free answer")).accepted, true);
+  assert.deepEqual(calls.map(call => call.method), ["turn/steer", "turn/start"]);
   h.runtime.dispose();
 }
 
@@ -360,6 +515,7 @@ async function checkWindowsAndSeed() {
     assert.equal(method, "thread/fork");
     assert.ok(validateFork({ id: 1, method, params }), JSON.stringify(validateFork.errors));
     assert.equal(params.cwd, temp);
+    assert.equal(params.excludeTurns, true);
     return { thread: { id: "forked-thread" } };
   };
   const fork = await h.runtime.forkChat(h.chat.id, "Branch conversation");
@@ -368,15 +524,24 @@ async function checkWindowsAndSeed() {
   assert.equal(h.state.exportChatHistory().transcripts[fork.id].length, h.state.exportChatHistory().transcripts[h.chat.id].length);
   assert.equal(h.state.getChat(h.chat.id).backendThreadId, "new-thread");
   h.state.updateChat(h.chat.id, { backendWorkspacePath: path.join(temp, "different-app") });
-  await assert.rejects(h.runtime.resumeBackendThread(h.chat.id), /another workspace/);
-  h.runtime.rpcClient.request = async (method) => {
-    assert.equal(method, "thread/start", "workspace mismatch must start new, never resume the stale thread");
-    return { thread: { id: "current-workspace-thread" } };
+  h.runtime.rpcClient.request = async (method, params) => {
+    assert.equal(method, "thread/resume", "same verified project must retain native history");
+    assert.equal(params.threadId, "new-thread");
+    assert.equal(params.cwd, temp);
+    assert.equal(params.excludeTurns, true);
+    return { thread: { id: "new-thread", cwd: path.join(temp, "different-app") } };
   };
+  await assert.rejects(h.runtime.resumeBackendThread(h.chat.id), /не подтвердил каталог/);
+  assert.equal(h.state.getChat(h.chat.id).backendThreadId, "new-thread");
+  let attempts = 0;
+  h.runtime.rpcClient.request = async () => { attempts++; throw new Error("Invalid request code=-32600"); };
+  await assert.rejects(h.runtime.resumeBackendThread(h.chat.id), /Invalid request/);
+  assert.equal(attempts, 1, "never retry relocation without cwd");
+  h.runtime.rpcClient.request = async (method, params) => ({ cwd: params.cwd, thread: { id: params.threadId, cwd: path.join(temp, "different-app") } });
   await h.runtime.ensureBackendThreadReady(h.chat.id, "read-only");
-  assert.equal(h.state.getChat(h.chat.id).backendThreadId, "current-workspace-thread");
+  assert.equal(h.state.getChat(h.chat.id).backendThreadId, "new-thread");
   assert.equal(h.state.getChat(h.chat.id).backendWorkspacePath, temp);
-  assert.equal(h.state.getChat(h.chat.id).backendContextRestored, false);
+  assert.equal(h.state.getChat(h.chat.id).backendContextRestored, true);
   const sourceRows = h.state.exportChatHistory().transcripts[h.chat.id];
   h.state.addTranscriptItem(fork.id, "user", "fork-only");
   assert.equal(sourceRows.some((item) => item.text === "fork-only"), false);
@@ -426,6 +591,18 @@ async function checkLaunchAndIdentityRaces() {
   await h.runtime.startBackendSession();
   assert.deepEqual(launches[0].args, ["app-server", "-c", "mcp_servers.codex-element-browser.enabled=false"]);
   assert.equal(launches[0].managedServerName, undefined, "unready browser has no trusted MCP name");
+  const resolvingBrowser = deferred();
+  const browserLookupStarted = deferred();
+  h.options.getManagedBrowserLaunch = async () => { browserLookupStarted.resolve(); return resolvingBrowser.promise; };
+  launches = [];
+  const preparingBackend = h.runtime.startBackendSession();
+  const rejectedBackend = assert.rejects(preparingBackend, /cancelled/);
+  await browserLookupStarted.promise;
+  await h.runtime.stopForIdentityChange();
+  resolvingBrowser.resolve(launch);
+  await rejectedBackend;
+  assert.equal(launches.length, 0, "a delayed application URL lookup must not start an old backend after cancellation");
+  h.options.getManagedBrowserLaunch = () => ({ args: ["-c", "mcp_servers.codex-element-browser.enabled=false"] });
   const pending = deferred();
   h.options.attachments.resolve = () => pending.promise;
   h.state.updateChat(h.chat.id, { status: "idle", activeTurnId: null });
@@ -462,15 +639,124 @@ async function checkLaunchAndIdentityRaces() {
   h.runtime.dispose();
 }
 
+async function checkExperimentalContext() {
+  function setup() {
+    const h = harness();
+    h.state.updateChat(h.chat.id, { status: "idle", activeTurnId: null, backendContextRestored: true });
+    let enabled = false, revision = "r1";
+    const writes = [];
+    const rpc = { dispose() {}, request: async (method, params) => {
+      if (method === "experimentalFeature/list") return { data: [{ name: "context_management", enabled }], nextCursor: null };
+      if (method === "config/read") return { config: { features: { context_management: { experimental_mode: enabled } } }, layers: [{ name: { type: "user" }, version: revision }] };
+      if (method === "account/read") return { account: { type: "chatgpt", planType: "plus" } };
+      if (method === "config/value/write") {
+        writes.push(params); assert.equal(params.expectedVersion, revision);
+        enabled = params.value; revision = "r2";
+        return { status: "ok", version: revision };
+      }
+      assert.fail(`Unexpected request ${method}`);
+    } };
+    let starts = 0;
+    h.runtime.ensureBackendProcess = async () => { starts++; h.runtime.rpcClient = rpc; };
+    return { ...h, rpc, writes, starts: () => starts };
+  }
+  const h = setup();
+  let view = await h.runtime.refreshExperimentalContext();
+  assert.equal(view.canChange, true);
+  let availabilityEvents = 0;
+  h.runtime.experimentalContextEmitter.fire = () => availabilityEvents++;
+  h.state.updateChat(h.chat.id, { status: "running" });
+  h.runtime.notifyExperimentalContextAvailability();
+  h.runtime.notifyExperimentalContextAvailability();
+  assert.equal(availabilityEvents, 1, "unchanged work state cannot flood settings with snapshots");
+  assert.equal(h.runtime.getExperimentalContextView().canChange, false);
+  await assert.rejects(h.runtime.saveExperimentalContext(true, view.scopeId, view.revision), /Дождитесь/);
+  assert.equal(h.writes.length, 0);
+  h.state.updateChat(h.chat.id, { status: "idle" });
+  h.runtime.notifyExperimentalContextAvailability();
+  assert.equal(availabilityEvents, 2, "finishing work unlocks the setting without manual refresh");
+  await assert.rejects(h.runtime.saveExperimentalContext(true, "stale-scope", view.revision), /изменились/);
+  const writeGate = deferred();
+  const request = h.rpc.request;
+  h.rpc.request = async (method, params) => {
+    if (method === "config/value/write") await writeGate.promise;
+    return request(method, params);
+  };
+  const saving = h.runtime.saveExperimentalContext(true, view.scopeId, view.revision);
+  await assert.rejects(h.runtime.sendPromptCore(h.chat.id, "new turn", "normal"), /Сохраняется режим/);
+  await assert.rejects(h.runtime.planDocsRetrieval({}), /Сохраняется режим/);
+  await assert.rejects(h.runtime.startTurn(h.chat.id, "new turn", "normal"), /Сохраняется режим/);
+  assert.match((await h.runtime.respondToQuestion(h.chat.id, "message", "question", "answer")).error, /Сохраняется режим/);
+  const queued = h.state.enqueueChatMessage(h.chat.id, "Retry later", "normal");
+  assert.equal(h.runtime.retryQueuedPrompt(h.chat.id, queued.id), false);
+  assert.equal(h.state.getChat(h.chat.id).queuedMessages[0].dispatchState, "queued");
+  writeGate.resolve();
+  await saving;
+  assert.equal(h.runtime.getExperimentalContextView().enabled, true);
+  assert.equal(h.runtime.getExperimentalContextView().canChange, true);
+  assert.equal(h.state.getChat(h.chat.id).backendThreadId, "thread-a", "restart must not replace native context");
+  assert.equal(h.state.getChat(h.chat.id).backendContextRestored, true);
+  assert.equal(h.writes.length, 1);
+  await h.runtime.stop();
+  h.runtime.dispose();
+
+  const race = setup();
+  view = await race.runtime.refreshExperimentalContext();
+  const stopped = deferred();
+  race.runtime.processManager.stop = () => stopped.promise;
+  const attempt = race.runtime.saveExperimentalContext(true, view.scopeId, view.revision);
+  const rejected = assert.rejects(attempt, /Выбор сохранён, но применение не подтверждено/);
+  await until(() => Boolean(race.runtime.backendStopPromise), "settings runtime restart");
+  const before = race.starts();
+  const identityStop = race.runtime.stopForIdentityChange();
+  stopped.resolve();
+  await identityStop;
+  await rejected;
+  assert.equal(race.starts(), before, "identity change while stopping must not restart as a different user");
+  assert.equal(race.runtime.getExperimentalContextView().canChange, false);
+  race.runtime.dispose();
+
+  // Interleave identity invalidation after the RPC wrapper's checks but before
+  // the outer save continuation, using the actual promise/microtask ordering.
+  const lateWrite = setup();
+  view = await lateWrite.runtime.refreshExperimentalContext();
+  const originalRequest = lateWrite.rpc.request;
+  const lateWriteGate = deferred(), lateStopGate = deferred();
+  let writeReached = false;
+  let identityChanged;
+  lateWrite.rpc.request = (method, params) => {
+    if (method !== "config/value/write") return originalRequest(method, params);
+    writeReached = true;
+    return lateWriteGate.promise;
+  };
+  lateWrite.runtime.processManager.stop = () => lateStopGate.promise;
+  const lateRejected = assert.rejects(lateWrite.runtime.saveExperimentalContext(true, view.scopeId, view.revision), /Выбор сохранён, но применение не подтверждено/);
+  await until(() => writeReached, "context write before identity switch");
+  const startsBeforeChange = lateWrite.starts();
+  lateWriteGate.resolve({ status: "ok", version: "r2" });
+  queueMicrotask(() => { identityChanged = lateWrite.runtime.stopForIdentityChange(); });
+  await new Promise(setImmediate);
+  lateStopGate.resolve();
+  await identityChanged;
+  await lateRejected;
+  assert.equal(lateWrite.starts(), startsBeforeChange, "late old-user write must not restart the new user's runtime");
+  assert.equal(lateWrite.runtime.getExperimentalContextView().status, "idle");
+  lateWrite.runtime.dispose();
+}
+
 async function main() {
   try {
     await checkLifecycle();
     await checkWindowsAndStreams();
+    await checkLargeThreadHistory();
+    await checkResumeFailures();
     await checkQuestions();
+    await checkAsyncQuestions();
     await checkQueueAndScoping();
     await checkWindowsAndSeed();
     await checkLaunchAndIdentityRaces();
-    console.log("RC runtime checks passed: native process lifecycle/tree cleanup, mocked Windows PID-scoped taskkill, bounded streams/backpressure, native question wire protocol/cancel/timeout/resolution, durable queue/retry, stale scope/completion, parent windows, bounded history seed, same-workspace fork.");
+    await checkExperimentalContext();
+    console.log("RC runtime checks passed: native process lifecycle/tree cleanup, mocked Windows PID-scoped taskkill, bounded streams/backpressure, >8 MiB history resume/fallback/fork without transcript replay, native question wire protocol/cancel/timeout/resolution, async questions/steer/start/duplicate acceptance, durable queue/retry, stale scope/completion, parent windows, bounded history seed, same-workspace fork.");
   } finally {
     for (const manager of managers) await manager.stop(0).catch(() => {});
     for (const pid of ownedPids) {

@@ -5,13 +5,17 @@
 Плагин для Theia IDE, который добавляет Codex в среду разработки 1C: Элемент. Runtime работает через поставляемый вместе с плагином [codex app-server](https://github.com/openai/codex).
 Подробнее про `codex app-server` [тут](https://developers.openai.com/codex/app-server) и [тут](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
-- Версия этой ветки: `1.0.0-rc`, кандидат для тестирования в 1C Element 9.2.4-6.
-- Текущая версия Codex CLI/app-server: `0.153.4`
+- Стабильная версия: `1.0.3`, на основе проверенной `1.0.2-rc` для 1C Element 9.2.4-6.
+- Текущая версия Codex CLI/app-server: `0.154.0`
 - Готовые поставки: Windows x64 и Linux x64
 - Исходный проект также содержит runtime-матрицу для Windows, Linux и macOS на x64 и arm64
 - [Релизы](https://github.com/avolkov-git/codex-element-plugin/releases)
 
-Инструкции для этой сборки: [проверка и перенос данных RC](docs/1.0.0-rc-testing.md). Стабильная ветка `master` остается на 0.1.89.
+Изменения версии: [релиз 1.0.3](docs/release-1.0.3.md). Установка, проверка и перенос данных: [руководство](docs/1.0.0-rc-testing.md).
+
+В `1.0.1-rc` исправлены очереди обновлений, diff, логов и истории; поиск документации вынесен в worker. [Разбор нагрузки, замеры и проверка обрывов IDE](docs/reviews/2026-09-08-streaming-pressure.md).
+
+В `1.0.2-rc` плагин проверяет пользователя и проект через отдельный клиент Console API, без MCP. Добавлены диагностика полей ответа, обновление отклоненного токена и отмена проверки при смене пользователя. [Проверка подключения и разбор ошибок](docs/1.0.0-rc-testing.md#проверка-console-без-mcp-в-102-rc).
 
 ## Возможности
 
@@ -28,6 +32,7 @@
 
 ### Контекст
 
+- Экспериментальный режим Codex с заметками и поиском по истории: переключатель в «Настройки → Система»; [условия и поведение](docs/experimental-context.md).
 - Индекс проекта с поиском по файлам, чанкам и символам.
 - Поиск по нормализованной документации и server docs.
 - Правила проекта из `.local-codex/rules.md`.
@@ -58,12 +63,12 @@
 
 1. Откройте страницу [Releases](https://github.com/avolkov-git/codex-element-plugin/releases).
 2. Выберите архив по операционной системе сервера Element:
-   - Windows x64: `codex-plugins-1.0.0-rc-win32-x64.zip`;
-   - Linux x64: `codex-plugins-1.0.0-rc-linux-x64.tar.gz`.
+   - Windows x64: `codex-plugins-1.0.3-win32-x64.zip`;
+   - Linux x64: `codex-plugins-1.0.3-linux-x64.tar.gz`.
 3. Сверьте SHA-256 с `SHA256SUMS.txt`.
 4. Распакуйте архив.
-5. Поместите каталог `codex-plugins` в каталог `/plugins` сервера Element.
-6. Обновите страницу с открытой IDE.
+5. Остановите серверную IDE и замените установленный каталог плагина в `/plugins`, сохранив его имя. При первой установке поместите туда каталог `codex-plugins`. Не оставляйте две версии плагина одновременно.
+6. Запустите серверную IDE и обновите страницу в браузере. Подробности и резервное копирование: [установка и откат](docs/1.0.0-rc-testing.md#установка-и-откат).
 
 Оба архива собраны из одного проекта и имеют одну версию плагина. Каждый архив содержит runtime только своей платформы, поэтому Windows-сервер не загружает Linux/macOS-бинарники, а Linux-сервер — Windows/macOS-бинарники. Администратору не нужно устанавливать Codex CLI в системный `PATH`.
 
@@ -103,11 +108,11 @@
 
 ### Браузерное тестирование
 
-Платформенная поставка включает официальный `@playwright/mcp`, Node.js и headless Chromium. В настройках укажите URL приложения, доступный с сервера Element, и разрешенные origins. Плагин хранит эти настройки для пользователя и проекта, а при запуске создает отдельную browser-сессию. Он задает временное имя MCP через параметры app-server и отключает прежнюю общую запись `codex-element-browser`. Отдельный порт, `npx`, системный Node.js и `sudo` не требуются.
+Платформенная поставка включает официальный `@playwright/mcp`, Node.js и headless Chromium. В настройках включите браузерное тестирование: адрес приложения плагин получает из Console по `1C.applicationId` текущей IDE, без внешнего MCP. При смене приложения адрес определяется заново, а история проекта сохраняется. При запуске создаётся отдельная browser-сессия с временным именем MCP; прежняя общая запись `codex-element-browser` отключается. Отдельный порт, `npx`, системный Node.js и `sudo` не требуются.
 
 Вызовы инструментов этого встроенного MCP подтверждаются автоматически без модального окна, но только для активного turn и точного имени управляемого сервера. Пользовательские MCP-серверы, команды и изменения файлов не получают это разрешение.
 
-Это серверный браузер, а не вкладка пользователя: он не наследует cookies открытой IDE. Для приложений с отдельной авторизацией нужен тестовый вход, доступный из browser-сессии. Origin allowlist снижает риск случайных переходов, но не является полноценной границей безопасности. В контейнере без Chromium sandbox опцию его отключения необходимо включать явно.
+Это серверный браузер, а не вкладка пользователя: он не наследует cookies открытой IDE. Для приложений с отдельной авторизацией нужен тестовый вход, доступный из browser-сессии. Плагин не ограничивает сетевые адреса браузера: ему доступны страницы, ресурсы и другие сайты, к которым есть доступ с сервера. URL приложения задаёт только стартовую страницу. В контейнере без Chromium sandbox опцию его отключения необходимо включать явно.
 
 ### Ripgrep
 
@@ -194,7 +199,7 @@ bin/        platform runtime
 
 ## Runtime и Git LFS
 
-Плагин ожидает Codex CLI/app-server `0.153.4` для каждой платформы:
+Плагин ожидает Codex CLI/app-server `0.154.0` для каждой платформы:
 
 ```text
 bin/
@@ -222,10 +227,10 @@ Legacy layout для старых Windows, Linux и macOS сборок подд�
 Не копируйте рабочий Git-каталог в `/plugins`. Соберите payload без `.git`, `node_modules`, временных файлов и LFS pointers:
 
 ```bash
-node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy-1.0.0-rc/win32-x64/codex-plugins --platform win32-x64 --platform-only --browser-runtime-root ../local-codex-temp/browser-runtime --strict
+node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy-1.0.3/win32-x64/codex-plugins --platform win32-x64 --platform-only --browser-runtime-root ../local-codex-temp/browser-runtime --strict
 ```
 
-Для RC используйте отдельный target. Обычные команды ниже работают со стабильным каталогом `../codex-plugin-deploy`; не запускайте их из RC-ветки при подготовке тестовой поставки:
+Для тестовых сборок используйте отдельный target. Обычные команды ниже работают с каталогом `../codex-plugin-deploy`:
 
 ```bash
 npm run deploy:stage
@@ -239,7 +244,7 @@ npm run preflight:deploy
 
 ```bash
 npm run build
-node scripts/package-platform-releases.js --output ../codex-plugin-release/1.0.0-rc --browser-runtime-root ../local-codex-temp/browser-runtime
+node scripts/package-platform-releases.js --output ../codex-plugin-release/1.0.3 --browser-runtime-root ../local-codex-temp/browser-runtime
 ```
 
 Перед локальной platform-specific упаковкой подготовьте browser runtime на целевой ОС. Кросс-компиляция browser runtime не поддерживается: Windows payload собирается на Windows, Linux payload — на Linux.
@@ -256,8 +261,8 @@ GitHub Actions делает это матрицей на `windows-latest` и `ub
 Команда собирает и повторно распаковывает оба архива, запускает строгий preflight и создает в указанном `--output`:
 
 ```text
-codex-plugins-1.0.0-rc-win32-x64.zip
-codex-plugins-1.0.0-rc-linux-x64.tar.gz
+codex-plugins-1.0.3-win32-x64.zip
+codex-plugins-1.0.3-linux-x64.tar.gz
 SHA256SUMS.txt
 README_RELEASE.md
 ```
@@ -266,7 +271,7 @@ README_RELEASE.md
 
 ### Автоматический выпуск
 
-Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v0.1.87`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
+Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v1.0.3`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
 
 CI загружает из Git LFS только `win32-x64` и `linux-x64`. Остальная runtime-матрица не скачивается для этого релиза.
 
@@ -340,7 +345,8 @@ npm run preflight:runtime
 
 ## Документация
 
-- [Контракт Codex app-server 0.153.4 и проверка совместимости](docs/app-server-0.153.4.md)
+- [Контракт Codex app-server 0.154.0 и проверка совместимости](docs/app-server-0.154.0.md)
+- [Экспериментальный контекст Codex](docs/experimental-context.md)
 - [Unix smoke checklist](docs/unix-smoke-checklist.md)
 
 Проект распространяется по [лицензии MIT](LICENSE). Copyright (c) 2026 Alexandr Volkov.
