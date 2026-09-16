@@ -35,7 +35,7 @@ async function main() {
   assert.ok(target, "unsupported smoke host");
   assert.deepEqual(validateRuntimeFile(runtime, target, { required: true }).errors, [], "smoke requires a native executable; never run foreign binaries");
   assert.ok(authHomeIndex === -1 || live, "--auth-home is only allowed with explicit --live");
-  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codex-element-runtime-smoke-")));
+  const temp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "codex-element-runtime-smoke-")));
   let child;
   let processClosed;
   let rpc;
@@ -177,14 +177,15 @@ async function main() {
       assert.equal((await contextFeature()).enabled, false);
       assert.equal((await contextFeature(restored.thread.id)).enabled, false);
       const layer = userLayer(before);
-      assert.equal(path.resolve(layer.name.file), path.join(temp, "config.toml"));
+      // config.toml does not exist yet; canonicalize only its existing parent.
+      assert.equal(path.join(fs.realpathSync.native(path.dirname(layer.name.file)), path.basename(layer.name.file)), path.join(temp, "config.toml"));
       assert.deepEqual(layer.config, {});
       assert.equal(layer.version, "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
       const written = await request("config/value/write", {
         keyPath, value: true, mergeStrategy: "upsert", filePath: layer.name.file, expectedVersion: layer.version
       }, "ConfigWriteResponse");
       assert.equal(written.status, "ok");
-      assert.equal(written.filePath, layer.name.file);
+      assert.equal(fs.realpathSync.native(written.filePath), fs.realpathSync.native(layer.name.file));
       const after = await readConfig();
       assert.equal(configuredFlag(after.config), true);
       assert.equal(configuredFlag(userLayer(after).config), true);
@@ -204,7 +205,7 @@ async function main() {
       fs.mkdirSync(movedCwd);
       const hot = await request("thread/resume", { threadId: restored.thread.id, cwd: movedCwd, excludeTurns: true }, "ThreadResumeResponse");
       assert.equal(hot.thread.id, restored.thread.id);
-      assert.equal(hot.cwd, temp, "an already loaded thread ignores cwd overrides on resume");
+      assert.equal(fs.realpathSync.native(hot.cwd), temp, "an already loaded thread ignores cwd overrides on resume");
       smallHistoryReply(hot);
       assert.equal(JSON.stringify(readStoredContext()), storedContext);
       await stop();
@@ -212,14 +213,14 @@ async function main() {
       assert.equal(configuredFlag((await readConfig()).config), true, "native config must survive process restart");
       const cold = await request("thread/resume", { threadId: restored.thread.id, cwd: movedCwd, excludeTurns: true }, "ThreadResumeResponse");
       assert.equal(cold.thread.id, restored.thread.id);
-      assert.equal(cold.cwd, movedCwd, "cold resume must apply the cwd override");
-      assert.equal(cold.thread.cwd, temp, "thread metadata retains the original cwd; use response.cwd for the active session");
+      assert.equal(fs.realpathSync.native(cold.cwd), fs.realpathSync.native(movedCwd), "cold resume must apply the cwd override");
+      assert.equal(fs.realpathSync.native(cold.thread.cwd), temp, "thread metadata retains the original cwd; use response.cwd for the active session");
       smallHistoryReply(cold);
       assert.equal(JSON.stringify(readStoredContext(cold.thread.path)), storedContext, "cold resume must retain every stored response item");
       assert.equal((await contextFeature(cold.thread.id)).enabled, true);
       const fork = await request("thread/fork", { threadId: cold.thread.id, cwd: movedCwd, excludeTurns: true }, "ThreadForkResponse");
       assert.notEqual(fork.thread.id, cold.thread.id);
-      assert.equal(fork.cwd, movedCwd);
+      assert.equal(fs.realpathSync.native(fork.cwd), fs.realpathSync.native(movedCwd));
       smallHistoryReply(fork);
       // A fork may append its own context message; all original items must remain in order.
       assert.deepEqual(readStoredContext(fork.thread.path).slice(0, readStoredContext().length), readStoredContext());

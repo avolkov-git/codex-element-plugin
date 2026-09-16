@@ -195,7 +195,10 @@ async function wrapperProbe(t, assetMode, protocol = "http:") {
   return result;
 }
 
-test("actual Element wrapper: HTTP inline includes preload, HTTPS external matches, late external mounts once", { timeout: 45000 }, async (t) => {
+test("actual Element wrapper: HTTP inline includes preload, HTTPS external matches, late external mounts once", {
+  timeout: 45000,
+  skip: process.env.CODEX_TEST_SKIP_ELEMENT_WRAPPER === "1" ? "External Element bundle is not available in public CI; run this integration check on the release workstation" : false,
+}, async (t) => {
   const inline = await wrapperProbe(t, "missing");
   const external = await wrapperProbe(t, "external", "https:");
   const late = await wrapperProbe(t, "late");
