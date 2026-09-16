@@ -83,7 +83,7 @@ function isDirty(file) {
         if (path.resolve(document.uri.fsPath) === file)
             return true;
         try {
-            return fs.realpathSync(document.uri.fsPath) === file;
+            return fs.realpathSync.native(document.uri.fsPath) === fs.realpathSync.native(file);
         }
         catch {
             return false;
@@ -92,12 +92,15 @@ function isDirty(file) {
 }
 async function repository(root) {
     const top = (await git(root, ["rev-parse", "--show-toplevel"])).toString("utf8").trim();
-    if (!top || fs.realpathSync(top) !== root) {
+    // Git and Node can use different drive casing or long/8.3 names on Windows.
+    if (!top || fs.realpathSync.native(top) !== fs.realpathSync.native(root)) {
         throw new featureSafety_1.FeatureError("blocked", "Чтобы посмотреть изменения, откройте в IDE корневой каталог Git-репозитория. Репозитории в родительских каталогах здесь не используются.");
     }
-    const gitDir = fs.realpathSync((await git(root, ["rev-parse", "--absolute-git-dir"])).toString("utf8").trim());
+    const gitDir = fs.realpathSync.native((await git(root, ["rev-parse", "--absolute-git-dir"])).toString("utf8").trim());
     const indexPath = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).toString("utf8").trim());
-    if (path.dirname(indexPath) !== gitDir) {
+    // An unborn repository may not have an index yet; its parent must exist.
+    const indexParent = fs.realpathSync.native(path.dirname(indexPath));
+    if (indexParent !== gitDir) {
         throw new featureSafety_1.FeatureError("unsupported", "Нестандартное расположение индекса Git не поддерживается.");
     }
     const partial = await git(root, ["config", "--get", "extensions.partialClone"], undefined, undefined, true);
@@ -105,7 +108,7 @@ async function repository(root) {
     if (partial.length || /\s(?:true|yes|on|1)\s*$/im.test(promisor.toString("utf8"))) {
         throw new featureSafety_1.FeatureError("unsupported", "Просмотр частично клонированного репозитория отключён: чтение недостающих объектов может потребовать скачивания с сервера.");
     }
-    return { gitDir, indexPath };
+    return { gitDir, indexPath: path.join(indexParent, path.basename(indexPath)) };
 }
 async function currentHead(root) {
     const value = (await git(root, ["rev-parse", "--verify", "HEAD"], undefined, undefined, true)).toString("utf8").trim();
@@ -255,7 +258,7 @@ function assertDiskAndIndex(review) {
 async function mutateReview(review, operation, scopeRoot, assertContext) {
     if (review.layer !== "worktree" || review.mutationReason)
         throw new featureSafety_1.FeatureError("unsupported", review.mutationReason ?? "Добавить в индекс или отменить можно только изменения рабочих файлов.");
-    if (operation === "revert" && (0, featureSafety_1.contained)(review.root, scopeRoot))
+    if (operation === "revert" && (0, featureSafety_1.contained)(fs.realpathSync.native(review.root), fs.realpathSync.native(scopeRoot)))
         throw new featureSafety_1.FeatureError("blocked", "Каталог восстановления должен находиться вне дерева проекта.");
     const repo = await repository(review.root);
     if (repo.gitDir !== review.gitDir || repo.indexPath !== review.indexPath)
