@@ -100,7 +100,7 @@ async function main() {
       await new Promise(resolve => server.close(resolve));
       external.closeAllConnections();
       await new Promise(resolve => external.close(resolve));
-      fs.rmSync(temp, { recursive: true, force: true });
+      fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   }
 }

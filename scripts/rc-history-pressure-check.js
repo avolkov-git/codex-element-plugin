@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const Module = require("node:module");
 const { performance } = require("node:perf_hooks");
+const { mock } = require("node:test");
 const ts = require("typescript");
 const originalLoad = Module._load, originalTs = Module._extensions[".ts"];
 const workspace = { workspaceFolders: [{ uri: { fsPath: "/pressure/workspace-a" } }] };
@@ -274,23 +275,47 @@ async function regressions() {
     });
   }));
 
-  await test("debounced saves have a fixed deadline, immediate saves supersede them, dispose drains pending state", () => fixture(async ({ service, file, errors }) => {
+  await test("scheduled saves have a fixed deadline, immediate saves supersede them, dispose drains pending state", () => fixture(async ({ service, file, errors }) => {
     const value = history();
-    for (let index = 0; index < 12; index++) {
-      value.transcripts["chat-0"][0].text = `stream-${index}`;
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      for (let batch = 0; batch < 2; batch++) {
+        for (let index = 0; index < 4; index++) {
+          value.transcripts["chat-0"][0].text = `stream-${batch}-${index}`;
+          service.scheduleSave(identity.userKey, value);
+          mock.timers.tick(index === 3 ? 4 : 5);
+        }
+        value.transcripts["chat-0"][0].text = `deadline-${batch}`;
+        service.scheduleSave(identity.userKey, value);
+        assert.equal(service.getMetrics().snapshotCaptures, batch, "Scheduled save fired before its deadline");
+        mock.timers.tick(1);
+        // Observe the synchronous enqueue at t=20, not disk completion within 20 ms.
+        assert.equal(service.getMetrics().snapshotCaptures, batch + 1, "Continuous mutation reset the fixed save deadline");
+        assert.equal(service.getMetrics().scheduledSavePending, false);
+        await service.flush();
+        assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).history.transcripts["chat-0"][0].text, `deadline-${batch}`);
+      }
+      value.transcripts["chat-0"][0].text = "pending before immediate";
       service.scheduleSave(identity.userKey, value);
-      await new Promise(resolve => setTimeout(resolve, 10));
+      mock.timers.tick(10);
+      value.transcripts["chat-0"][0].text = "immediate";
+      await service.saveNow(identity.userKey, value);
+      const before = service.getMetrics();
+      mock.timers.tick(20);
+      assert.equal(service.getMetrics().snapshotCaptures, before.snapshotCaptures, "Stale scheduled save queued older state");
+      await service.flush();
+      assert.equal(service.getMetrics().store.historyWrites, before.store.historyWrites, "Stale scheduled save rewrote older state");
+      assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).history.transcripts["chat-0"][0].text, "immediate");
+      value.transcripts["chat-0"][0].text = "disposed";
+      service.scheduleSave(identity.userKey, value); service.dispose();
+      assert.equal(service.getMetrics().snapshotCaptures, before.snapshotCaptures + 1, "Dispose did not queue pending state");
+      await service.flush();
+      assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).history.transcripts["chat-0"][0].text, "disposed");
+      assert.deepEqual(errors, []);
+    } finally {
+      service.dispose();
+      mock.timers.reset();
     }
-    assert.ok(fs.existsSync(file), "Continuous mutation starved the fixed save deadline");
-    value.transcripts["chat-0"][0].text = "immediate";
-    await service.saveNow(identity.userKey, value);
-    const writes = service.getMetrics().store.historyWrites;
-    await new Promise(resolve => setTimeout(resolve, 35));
-    assert.equal(service.getMetrics().store.historyWrites, writes, "Stale debounce timer rewrote older state");
-    value.transcripts["chat-0"][0].text = "disposed";
-    service.scheduleSave(identity.userKey, value); service.dispose(); await service.flush();
-    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).history.transcripts["chat-0"][0].text, "disposed");
-    assert.deepEqual(errors, []);
   }, { saveDelayMs: 20 }));
 
   await test("malformed immediate requests cannot discard a valid pending debounce snapshot", () => fixture(async ({ service, file }) => {

@@ -262,7 +262,8 @@ async function main() {
     }
     await processClosed;
     clearTimeout(cleanupTimer);
-    fs.rmSync(temp, { recursive: true, force: true });
+    // Runtime cache cleanup can briefly race the final directory traversal after close.
+    fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 main().catch((error) => { console.error(error.message); process.exitCode = 1; });

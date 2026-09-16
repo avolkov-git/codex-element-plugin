@@ -121,7 +121,7 @@ async function main() {
     }
     await closed; clearTimeout(killTimer);
     server.closeAllConnections(); await new Promise((resolve) => server.close(resolve));
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 main().catch((error) => { console.error(error.message); process.exitCode = 1; });
