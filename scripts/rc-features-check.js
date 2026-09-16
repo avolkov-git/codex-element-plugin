@@ -398,7 +398,9 @@ async function main() {
       fs.symlinkSync(outside, path.join(f.root, "linked.txt"));
       const symlink = await item(f, "linked.txt");
       assert.equal(symlink.canOpen, false);
-      const tricky = "--flag ; touch INJECTED $(x) [*].txt";
+      const tricky = process.platform === "win32"
+        ? "--flag & echo INJECTED $(x) [literal].txt"
+        : "--flag ; touch INJECTED $(x) [*].txt";
       put(f.root, tricky, "literal path\n");
       const entry = await item(f, tricky);
       assert.equal((await f.service.handle("review.stage", action(entry), "chat-a")).ok, true);
