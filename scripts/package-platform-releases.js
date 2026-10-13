@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const childProcess = require("child_process");
+const { prepareMarketplacePayload } = require("./marketplace-payload");
 const {
   verifyRuntimeManifest
 } = require("./runtime-preflight-lib");
@@ -77,6 +78,8 @@ function buildReleaseTarget(workingRoot, releaseTarget) {
     "--strict"
   ]);
   assertPayloadManifest(payloadRoot);
+  const inventory = prepareMarketplacePayload(payloadRoot, releaseTarget.platformId);
+  console.log(`Marketplace payload ${releaseTarget.platformId}: ${inventory.entries} entries, ${formatBytes(inventory.unpackedBytes)} unpacked`);
 
   fs.rmSync(archivePath, { force: true });
   if (releaseTarget.extension === "zip") {
@@ -86,6 +89,9 @@ function buildReleaseTarget(workingRoot, releaseTarget) {
   }
 
   verifyArchive(workingRoot, releaseTarget, archivePath);
+  if (fs.statSync(archivePath).size > 512 * 1024 * 1024) {
+    throw new Error(`Archive exceeds the XBSL.IO 512 MiB upload limit: ${archivePath}`);
+  }
   const buffer = fs.readFileSync(archivePath);
   return {
     path: archivePath,
@@ -206,6 +212,7 @@ function runNodeScript(scriptName, scriptArgs) {
 function runCommand(command, commandArgs, cwd) {
   const result = childProcess.spawnSync(command, commandArgs, {
     cwd,
+    env: { ...process.env, COPYFILE_DISABLE: "1" },
     encoding: "utf8",
     stdio: "inherit"
   });

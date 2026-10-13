@@ -46,7 +46,8 @@ function docsFragmentChars(fragment) {
         + fragment.sourcePath.length + fragment.url.length + fragment.indexPath.length
         + fragment.corpus.length + fragment.corpusLabel.length
         + fragment.breadcrumbs.reduce((sum, item) => sum + item.length, 0)
-        + fragment.keywords.reduce((sum, item) => sum + item.length, 0);
+        + fragment.keywords.reduce((sum, item) => sum + item.length, 0)
+        + Object.values(fragment.documentationVersion ?? {}).reduce((sum, value) => sum + (value?.length ?? 0), 0);
 }
 const LEGACY_HIGH_PRIORITY = path.join("index", "pages.high-priority.jsonl");
 const LEGACY_PAGES = path.join("index", "pages.jsonl");
@@ -487,6 +488,8 @@ function parseJsonlFragment(corpus, file, line) {
         if (!text) {
             return undefined;
         }
+        const documentationVersion = !file.contentField || file.contentField === "text"
+            ? parseDocumentationVersion(value, file.path) : undefined;
         return {
             corpus: corpus.corpus,
             corpusLabel: corpus.label,
@@ -499,12 +502,30 @@ function parseJsonlFragment(corpus, file, line) {
             keywords,
             excerpt: firstString(value.summary, value.excerpt, value.description),
             text: trimFragmentText(text),
-            indexPath: corpus.indexPath
+            indexPath: corpus.indexPath,
+            ...(documentationVersion ? { documentationVersion } : {})
         };
     }
     catch {
         return undefined;
     }
+}
+function parseDocumentationVersion(value, metadataPath) {
+    // Observed codex-docs language schema: source_version is the docs release;
+    // product_version identifies its bundle snapshot, not API compatibility.
+    if (value.corpus !== "lang" || value.provenance !== "official-html"
+        || (value.kind !== "standard-library" && value.kind !== "language-topic")
+        || !getString(value.text) || !getString(value.id) || getString(value.id).length > 1024)
+        return undefined;
+    const field = (raw, maximum) => {
+        const text = getString(raw);
+        return text && text.length <= maximum ? text : undefined;
+    };
+    return {
+        sourceVersion: field(value.source_version, 40), productVersion: field(value.product_version, 40),
+        provenance: "official-html", metadataPath, recordId: getString(value.id),
+        sourcePath: field(value.source_path, 1024)
+    };
 }
 function extractContent(value, file) {
     const preferred = file.contentField ? getString(value[file.contentField]) : "";

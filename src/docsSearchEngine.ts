@@ -4,6 +4,7 @@ import * as path from "path";
 import { performance } from "node:perf_hooks";
 import {
   DocsCorpusFingerprint,
+  DocsDocumentationVersion,
   DocsFragment,
   docsFragmentChars,
   discoverDocsCorpora,
@@ -96,6 +97,7 @@ export interface DocsToolFragmentRef {
   indexPath: string;
   score?: number;
   preview: string;
+  documentationVersion?: DocsDocumentationVersion;
 }
 
 export interface DocsToolSearchResult {
@@ -663,9 +665,14 @@ function docsFragmentId(fragment: DocsFragment): string {
       fragment.title,
       fragment.url,
       fragment.text.slice(0, 200)
-    ].join("\u0000"))
+    ].concat(fragment.documentationVersion ? [documentationVersionKey(fragment)] : []).join("\u0000"))
     .digest("hex")
     .slice(0, 16);
+}
+
+function documentationVersionKey(fragment: DocsFragment): string {
+  const version = fragment.documentationVersion;
+  return version ? JSON.stringify([version.sourceVersion, version.productVersion, version.provenance]) : "";
 }
 
 function toDocsToolFragmentRef(fragment: DocsFragment, score: number | undefined, maxPreviewChars: number): DocsToolFragmentRef {
@@ -680,7 +687,8 @@ function toDocsToolFragmentRef(fragment: DocsFragment, score: number | undefined
     url: fragment.url,
     indexPath: fragment.indexPath,
     score,
-    preview: trimText(fragment.excerpt || fragment.text, maxPreviewChars)
+    preview: trimText(fragment.excerpt || fragment.text, maxPreviewChars),
+    ...(fragment.documentationVersion ? { documentationVersion: { ...fragment.documentationVersion } } : {})
   };
 }
 
@@ -903,8 +911,9 @@ function uniqueFragments<T>(items: T[], fragmentFor: (item: T) => DocsFragment):
   const urls = new Set<string>();
   return items.filter((item) => {
     const fragment = fragmentFor(item);
-    const sourceKey = JSON.stringify([fragment.sourcePath, fragment.title]);
-    const urlKey = JSON.stringify([fragment.url, fragment.title]);
+    const version = documentationVersionKey(fragment);
+    const sourceKey = JSON.stringify([fragment.sourcePath, fragment.title, version]);
+    const urlKey = JSON.stringify([fragment.url, fragment.title, version]);
     const duplicate = Boolean(fragment.sourcePath && paths.has(sourceKey)) || Boolean(fragment.url && urls.has(urlKey));
     // Register even rejected items: sameFragment's path-or-URL relation is not transitive.
     if (fragment.sourcePath) paths.add(sourceKey);

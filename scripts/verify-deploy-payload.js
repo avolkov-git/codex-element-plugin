@@ -66,6 +66,10 @@ function checkRequiredFiles(value) {
     "media/settings-icons.js",
     "media/settings-icons.NOTICES.txt",
     "resources/context/codex-element-language-rules.md",
+    "resources/context/yaml.cjs",
+    "resources/context/yaml.LICENSE",
+    "resources/context/ast/native-xbsl-ast.jar",
+    "resources/context/ast/build.json",
     "resources/icons/codex.svg"
   ];
   for (const relativePath of required) {

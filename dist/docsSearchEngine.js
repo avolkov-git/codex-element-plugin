@@ -515,9 +515,13 @@ function docsFragmentId(fragment) {
         fragment.title,
         fragment.url,
         fragment.text.slice(0, 200)
-    ].join("\u0000"))
+    ].concat(fragment.documentationVersion ? [documentationVersionKey(fragment)] : []).join("\u0000"))
         .digest("hex")
         .slice(0, 16);
+}
+function documentationVersionKey(fragment) {
+    const version = fragment.documentationVersion;
+    return version ? JSON.stringify([version.sourceVersion, version.productVersion, version.provenance]) : "";
 }
 function toDocsToolFragmentRef(fragment, score, maxPreviewChars) {
     return {
@@ -531,7 +535,8 @@ function toDocsToolFragmentRef(fragment, score, maxPreviewChars) {
         url: fragment.url,
         indexPath: fragment.indexPath,
         score,
-        preview: trimText(fragment.excerpt || fragment.text, maxPreviewChars)
+        preview: trimText(fragment.excerpt || fragment.text, maxPreviewChars),
+        ...(fragment.documentationVersion ? { documentationVersion: { ...fragment.documentationVersion } } : {})
     };
 }
 function selectReadFragments(fragments, options) {
@@ -714,8 +719,9 @@ function uniqueFragments(items, fragmentFor) {
     const urls = new Set();
     return items.filter((item) => {
         const fragment = fragmentFor(item);
-        const sourceKey = JSON.stringify([fragment.sourcePath, fragment.title]);
-        const urlKey = JSON.stringify([fragment.url, fragment.title]);
+        const version = documentationVersionKey(fragment);
+        const sourceKey = JSON.stringify([fragment.sourcePath, fragment.title, version]);
+        const urlKey = JSON.stringify([fragment.url, fragment.title, version]);
         const duplicate = Boolean(fragment.sourcePath && paths.has(sourceKey)) || Boolean(fragment.url && urls.has(urlKey));
         // Register even rejected items: sameFragment's path-or-URL relation is not transitive.
         if (fragment.sourcePath)

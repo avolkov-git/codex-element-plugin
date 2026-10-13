@@ -125,6 +125,7 @@ function stagingFixture(root, target) {
     engines: { vscode: "^1.97.0" }, main: "./dist/extension.js"
   }));
   for (const relative of ["dist/extension.js", "media/chat.js", "media/xbsl-highlighter.js", "media/sidebar.js", "media/settings.js", "media/settings.css", "media/settings-icons.js", "media/settings-icons.NOTICES.txt", "resources/context/codex-element-language-rules.md", "resources/icons/codex.svg"]) write(source, relative, "fixture");
+  for (const relative of ["resources/context/yaml.cjs", "resources/context/yaml.LICENSE", "resources/context/ast/native-xbsl-ast.jar", "resources/context/ast/build.json"]) write(source, relative, "fixture");
   return source;
 }
 function stage(source, destination, runtimeRoot) {
@@ -194,15 +195,16 @@ test("staging rejects an incomplete external runtime", (t) => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /code-mode-host/);
 });
-for (const asset of ["settings.css", "settings-icons.js", "settings-icons.NOTICES.txt"]) {
-  test(`staging rejects missing settings asset ${asset}`, (t) => {
+for (const asset of ["media/settings.css", "media/settings-icons.js", "media/settings-icons.NOTICES.txt",
+  "resources/context/yaml.cjs", "resources/context/yaml.LICENSE", "resources/context/ast/native-xbsl-ast.jar", "resources/context/ast/build.json"]) {
+  test(`staging rejects missing asset ${asset}`, (t) => {
     const root = temp(t), target = targetForPlatform("win32-x64"), source = stagingFixture(root, target);
     const runtimeRoot = path.join(root, "runtime");
     fixture(runtimeRoot, target);
-    fs.unlinkSync(path.join(source, "media", asset));
+    fs.unlinkSync(path.join(source, asset));
     const result = stage(source, path.join(root, "deploy"), runtimeRoot);
     assert.notEqual(result.status, 0);
-    assert(result.stderr.includes(`required deploy file is missing: media/${asset}`), result.stderr);
+    assert(result.stderr.includes(`required deploy file is missing: ${asset}`), result.stderr);
   });
 }
 test("runtime startup reports a missing Code Mode host in Russian before spawning", (t) => {

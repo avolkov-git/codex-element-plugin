@@ -1,0 +1,7276 @@
+{
+ "schemaVersion": 2,
+ "oracle": {
+  "frozenAt": "2026-10-13T23:00:07.656Z",
+  "method": "Manually read source ranges; no retrieval or AST output used to select evidence.",
+  "definitionsSha256": "5b4ba11ba1d72a9e5a3062aa0fa758c3836c4de668b7b238b7ed117c9f2e74ec",
+  "baselineSha256": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+  "fixture": {
+   "commit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+   "sha256": "3f3289852f6107b93a527ed5462f987cdc6cf0f94d616d16e53e54b5441069e1",
+   "fileCount": 1173
+  },
+  "sourceFiles": [
+   {
+    "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+    "sha256": "6e33163bfaf4595eec9a418c31ca03cdfd0ecae5da4c6ef9df07f642f6252ee0"
+   },
+   {
+    "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+    "sha256": "fe571bea6621d8155fcb9d8ada403998ca5e84a30399e9aaed781be7c7be59e2"
+   },
+   {
+    "path": "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.xbsl",
+    "sha256": "a10456271df7b265e708a5549a809a10194c5c4ca2ee4503495b937b198f9d95"
+   },
+   {
+    "path": "DOMRF/Start/УниверсальныеКомпоненты/ИнтерфейсныеКомпонентыОбщегоНазначения.xbsl",
+    "sha256": "c92be01cdec55389de3e6651e7954ec50f207cd973e48eb12187c0261fc3b440"
+   },
+   {
+    "path": "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.yaml",
+    "sha256": "95580b5c62cc805db3c37ed78e8cb684bc662efcc336fb8f08a2e609ee963ff7"
+   },
+   {
+    "path": "DOMRF/Start/СтруктураПредприятия/Офисы.yaml",
+    "sha256": "0c5d414bf3908d67fa78c00c49b9e0a442a8e98d82d1dd934a6c06fab2905576"
+   },
+   {
+    "path": "DOMRF/Start/СтруктураПредприятия/ПринадлежностьОрганизации.yaml",
+    "sha256": "c6a6aa6ec35861a7cb241ecebfb9fff5e841ea6b474da5f7a4e0b19d56c813e6"
+   },
+   {
+    "path": "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+    "sha256": "2f90709f30343e698c56a40ada9fa83348dd411214bc59e764e2c14f97185fdc"
+   },
+   {
+    "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.xbsl",
+    "sha256": "81ff7bed70a4428abaaa8bdfa56ee16e1123e67ed76fc961f2993aff27200ec2"
+   },
+   {
+    "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.xbsl",
+    "sha256": "a678c7a9347005ccf83ea6283818ce0b15eff571a55cd34e6344fe03dacec44e"
+   },
+   {
+    "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.yaml",
+    "sha256": "0da0d4559452eab58256140e68cf20d4795c5470344169d38c8adb5dd52465d2"
+   },
+   {
+    "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.yaml",
+    "sha256": "093af204dffe42b11678dd521aa6926d7535894f5051a0d6f73f232de17ae4f4"
+   }
+  ],
+  "cases": [
+   {
+    "id": "regression-button",
+    "query": "В ЗамещениеПользователяФорма проверь ПриНажатии Применить: какая проверка выполняется перед изменением замещения?",
+    "evidence": [
+     {
+      "kind": "method",
+      "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+      "startLine": 84,
+      "endLine": 103,
+      "label": "Применить",
+      "start": 2868,
+      "end": 3461,
+      "sha256": "9c9e5b46e9d8f8b05cfe89ff40b504638f317778c3c0c9a547c97fec27e5d7d2"
+     },
+     {
+      "kind": "method",
+      "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+      "startLine": 40,
+      "endLine": 53,
+      "label": "МожноПрименить",
+      "start": 1153,
+      "end": 1797,
+      "sha256": "ca87b97bfc247c8729a543a31d3f1d8cff8293f72fc3f5014cf3dbd6fcb415eb"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+      "startLine": 63,
+      "endLine": 67,
+      "label": "Primary button, availability and handler",
+      "start": 2415,
+      "end": 2632,
+      "sha256": "6d0525ec558d9473156ec835bb102a3b3cfb54a9af9f66d30fcb16f27d3a8936"
+     }
+    ],
+    "excludedBodies": []
+   },
+   {
+    "id": "regression-availability",
+    "query": "В ЗамещениеПользователяФорма почему МожноПрименить не разрешает сохранить замещение с неправильным периодом?",
+    "evidence": [
+     {
+      "kind": "method",
+      "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+      "startLine": 40,
+      "endLine": 53,
+      "label": "МожноПрименить",
+      "start": 1153,
+      "end": 1797,
+      "sha256": "ca87b97bfc247c8729a543a31d3f1d8cff8293f72fc3f5014cf3dbd6fcb415eb"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+      "startLine": 66,
+      "endLine": 66,
+      "label": "Availability expression",
+      "start": 2540,
+      "end": 2590,
+      "sha256": "a01fb7d1c26258317c4e478841d141650d9862177f7a4e9c735278989450aed8"
+     }
+    ],
+    "excludedBodies": []
+   },
+   {
+    "id": "regression-validation",
+    "query": "В ЗамещениеПользователяФорма найди ПодсказкаПроверки: почему нельзя назначить самого себя замещающим?",
+    "evidence": [
+     {
+      "kind": "method",
+      "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+      "startLine": 56,
+      "endLine": 81,
+      "label": "ПодсказкаПроверки",
+      "start": 1809,
+      "end": 2856,
+      "sha256": "4f277bd8de22f615202386fa470fd55e5aba1d2a30bafcd4d8e5b19498ad7f3e"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+      "startLine": 59,
+      "endLine": 60,
+      "label": "Validation label expression",
+      "start": 2268,
+      "end": 2351,
+      "sha256": "f9b4c4991c78a265582b19a2c4c5eb4a4cde8f1670373eefaaf7a144d07e55ac"
+     }
+    ],
+    "excludedBodies": []
+   },
+   {
+    "id": "calendar-dependency",
+    "query": "В ВиджетКандидатыСписокСтрока объясни ШрифтНадписиОписание и найди полное определение вызываемой проверки ширины устройства; покажи привязку шрифта в YAML.",
+    "evidence": [
+     {
+      "kind": "method",
+      "path": "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.xbsl",
+      "startLine": 49,
+      "endLine": 55,
+      "label": "ШрифтНадписиОписание",
+      "start": 1569,
+      "end": 1796,
+      "sha256": "019d6a8e5423e5ff688ab4532394bcd79a090db809c7742d063bceaa56045e18"
+     },
+     {
+      "kind": "method",
+      "path": "DOMRF/Start/УниверсальныеКомпоненты/ИнтерфейсныеКомпонентыОбщегоНазначения.xbsl",
+      "startLine": 7,
+      "endLine": 9,
+      "label": "КлиентскоеУстройствоМаленькойШирины",
+      "start": 220,
+      "end": 335,
+      "sha256": "431e2977441c97dac39a2d0020f5cf4366b57c97532308067f1f2c2bd09934f7"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.yaml",
+      "startLine": 68,
+      "endLine": 74,
+      "label": "Description label and font binding",
+      "start": 2630,
+      "end": 2985,
+      "sha256": "6cee1cada5dbe710762d927b5b9ebfecf8e8e989bf79e8ab7667385451516db2"
+     }
+    ],
+    "excludedBodies": []
+   },
+   {
+    "id": "office-model-type",
+    "query": "В модели Офисы какие типы у Город, ПринадлежностьОрганизации и ФактическийАдресЗначение? Может ли ПринадлежностьОрганизации быть пустой и какие значения определены в этом типе?",
+    "evidence": [
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтруктураПредприятия/Офисы.yaml",
+      "startLine": 28,
+      "endLine": 29,
+      "label": "City string type",
+      "start": 673,
+      "end": 711,
+      "sha256": "ab54c15da40f49a1cc642bb7f632ae076a6ff48e5814e4ec479c0642b75b44e3"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтруктураПредприятия/Офисы.yaml",
+      "startLine": 32,
+      "endLine": 33,
+      "label": "Nullable organization enum",
+      "start": 767,
+      "end": 845,
+      "sha256": "b7646f7e63374b5ef4ddc3f35cbc81af06856fdf031b1fab1d13af02e8250378"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтруктураПредприятия/Офисы.yaml",
+      "startLine": 41,
+      "endLine": 44,
+      "label": "Multiline JSON address string",
+      "start": 1060,
+      "end": 1195,
+      "sha256": "deb20ca54ad9e4cd9186f67a89e73c5aa76fcca36ea297b9685532a100267a6e"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтруктураПредприятия/ПринадлежностьОрганизации.yaml",
+      "startLine": 1,
+      "endLine": 4,
+      "label": "Enum identity",
+      "start": 0,
+      "end": 124,
+      "sha256": "0d5ce00e40e85f3980c40e969cf3f949b8d15fe214c701908e1c4da3eb803022"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтруктураПредприятия/ПринадлежностьОрганизации.yaml",
+      "startLine": 8,
+      "endLine": 9,
+      "label": "Home enum value",
+      "start": 190,
+      "end": 236,
+      "sha256": "1254e97744c2eec8479e0ba121f9ed229e3f3102257ce218f68d8073a00b937e"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтруктураПредприятия/ПринадлежностьОрганизации.yaml",
+      "startLine": 12,
+      "endLine": 13,
+      "label": "Bank enum value",
+      "start": 292,
+      "end": 344,
+      "sha256": "47ddc79efc2946cde3c1cd1cf9b36590c8c09faffb8418c7d7da386c4013517f"
+     }
+    ],
+    "excludedBodies": []
+   },
+   {
+    "id": "signature-only",
+    "query": "Покажи только сигнатуру СоздатьЗамещениеНаСервере в ПерсональныеЗамещенияПрограммныйИнтерфейс: параметры, значение по умолчанию и возвращаемый тип. Тело метода не нужно.",
+    "evidence": [
+     {
+      "kind": "signature",
+      "path": "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+      "startLine": 60,
+      "endLine": 61,
+      "label": "СоздатьЗамещениеНаСервере signature",
+      "start": 2482,
+      "end": 2663,
+      "sha256": "18b792868202d2568f0f78482f838286a957bce55783b2b535ea5d901f3f1db3"
+     }
+    ],
+    "excludedBodies": [
+     {
+      "kind": "body",
+      "path": "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+      "startLine": 62,
+      "endLine": 82,
+      "label": "Unrequested method body",
+      "start": 2664,
+      "end": 4223,
+      "sha256": "7d68a33bff9733e18ef724fe659e20f2c8b8a6ba0c693b555684fdf4bde296d2"
+     }
+    ]
+   },
+   {
+    "id": "duplicate-names",
+    "query": "Сравни ПредставлениеЗначенияФактическийАдрес в ОфисыПользовательскийСписокСтрока и ОрганизацииПользовательскийСписокСтрока: покажи оба полных определения и YAML-привязку каждого, не смешивая одноименные методы.",
+    "evidence": [
+     {
+      "kind": "method",
+      "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.xbsl",
+      "startLine": 8,
+      "endLine": 10,
+      "label": "Office address method",
+      "start": 172,
+      "end": 329,
+      "sha256": "6e72040bf2ab7d17bacbc1e7bba71de51961713ed5bd4e1b4577c7b2664ba5f7"
+     },
+     {
+      "kind": "method",
+      "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.xbsl",
+      "startLine": 13,
+      "endLine": 15,
+      "label": "Organization address method",
+      "start": 341,
+      "end": 498,
+      "sha256": "6e72040bf2ab7d17bacbc1e7bba71de51961713ed5bd4e1b4577c7b2664ba5f7"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.yaml",
+      "startLine": 23,
+      "endLine": 25,
+      "label": "Office address binding",
+      "start": 758,
+      "end": 934,
+      "sha256": "2349a66a0daeab444de738602eb71dc6b5b099fd1fb40eb7d7cc26686c554eb1"
+     },
+     {
+      "kind": "yaml",
+      "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.yaml",
+      "startLine": 28,
+      "endLine": 30,
+      "label": "Organization address binding",
+      "start": 1017,
+      "end": 1193,
+      "sha256": "2349a66a0daeab444de738602eb71dc6b5b099fd1fb40eb7d7cc26686c554eb1"
+     }
+    ],
+    "excludedBodies": []
+   },
+   {
+    "id": "unknown-symbol",
+    "query": "БенчмаркНесуществующийМетод7429",
+    "evidence": [],
+    "expectAbstention": true,
+    "excludedBodies": []
+   }
+  ],
+  "originalSerializationSha256": "6f001e8adb57f462916ff1535098d8e60c04ac1f61d7054ee8154abcdb3e12da"
+ },
+ "runs": [
+  {
+   "startedAt": "2026-10-13T23:00:11.303Z",
+   "phase": "preliminary",
+   "project": "/tmp/codex-context-privet-dom-app",
+   "fixtureCommit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+   "oracleSha256": "6f001e8adb57f462916ff1535098d8e60c04ac1f61d7054ee8154abcdb3e12da",
+   "settings": {
+    "maxItems": 8,
+    "maxPreviewChars": 420,
+    "maxChars": 20000,
+    "analysisBudgetMs": 8000,
+    "repetitions": 3
+   },
+   "baseline": {
+    "directory": "/tmp/codex-context-stage1.Cz0Mp4/src",
+    "sha256": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+    "fileCount": 69
+   },
+   "current": {
+    "directory": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/src",
+    "sha256": "28ffc9e53538c66561d778971c507d50c9abfe3bd05da0e67530664d1f6e4a61",
+    "fileCount": 70
+   },
+   "nativeResourceRoot": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin",
+   "liveLsp": false,
+   "simulatedLsp": false,
+   "setup": {
+    "stage1": {
+     "parserStartupMs": 533,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 690
+    },
+    "stage2": {
+     "parserStartupMs": 531,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 651
+    }
+   },
+   "currentSourceChangedDuringRun": true,
+   "summary": {
+    "stage1": {
+     "passedCases": 4,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 79249,
+     "deliveredPromptChars": 136319,
+     "semanticDuplicateChars": 5697,
+     "promptDuplicateChars": 17409,
+     "failedCases": [
+      "calendar-dependency",
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    },
+    "stage2": {
+     "passedCases": 5,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 73855,
+     "deliveredPromptChars": 119887,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 620,
+     "failedCases": [
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    }
+   },
+   "completedAt": "2026-10-13T23:00:19.321Z",
+   "caseOutcomes": [
+    {
+     "id": "regression-button",
+     "stage1": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       106.27,
+       63.83,
+       63.9
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       229.41,
+       156.92,
+       155.53
+      ]
+     }
+    },
+    {
+     "id": "regression-availability",
+     "stage1": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       56.44,
+       55.11,
+       54.42
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       148.65,
+       146.93,
+       145.29
+      ]
+     }
+    },
+    {
+     "id": "regression-validation",
+     "stage1": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       96.54,
+       66.53,
+       65.33
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 17747,
+      "latencyMs": [
+       67.6,
+       66.81,
+       66.33
+      ]
+     }
+    },
+    {
+     "id": "calendar-dependency",
+     "stage1": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 19603,
+      "latencyMs": [
+       84.97,
+       74.67,
+       74.47
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 13738,
+      "latencyMs": [
+       223.6,
+       207.74,
+       209.61
+      ]
+     }
+    },
+    {
+     "id": "office-model-type",
+     "stage1": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "6/6",
+      "bodyChars": 0,
+      "promptChars": 15924,
+      "latencyMs": [
+       82.14,
+       73.25,
+       84.89
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "6/6",
+      "bodyChars": 0,
+      "promptChars": 12861,
+      "latencyMs": [
+       81.54,
+       73.69,
+       77.13
+      ]
+     }
+    },
+    {
+     "id": "signature-only",
+     "stage1": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 1559,
+      "promptChars": 19839,
+      "latencyMs": [
+       81.21,
+       76.75,
+       86.01
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 1559,
+      "promptChars": 20000,
+      "latencyMs": [
+       312.58,
+       300.48,
+       315.58
+      ]
+     }
+    },
+    {
+     "id": "duplicate-names",
+     "stage1": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/2",
+      "bodyChars": 0,
+      "promptChars": 15111,
+      "latencyMs": [
+       79.34,
+       76.37,
+       90.73
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/2",
+      "bodyChars": 0,
+      "promptChars": 9569,
+      "latencyMs": [
+       79.87,
+       76.93,
+       92.18
+      ]
+     }
+    },
+    {
+     "id": "unknown-symbol",
+     "stage1": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 5842,
+      "latencyMs": [
+       32.27,
+       31.65,
+       33.99
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 5972,
+      "latencyMs": [
+       32.38,
+       31.53,
+       35.94
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "harnessRevision": 2,
+   "harnessSha256": "679f092126fafaae50454dc93a7e438057e147dbc02d7db3b614d25c84c41a27",
+   "startedAt": "2026-10-13T23:01:54.184Z",
+   "phase": "preliminary-harness-v2",
+   "project": "/tmp/codex-context-privet-dom-app",
+   "fixtureCommit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+   "oracleSha256": "6f001e8adb57f462916ff1535098d8e60c04ac1f61d7054ee8154abcdb3e12da",
+   "settings": {
+    "maxItems": 8,
+    "maxPreviewChars": 420,
+    "maxChars": 20000,
+    "analysisBudgetMs": 8000,
+    "repetitions": 3
+   },
+   "baseline": {
+    "directory": "/tmp/codex-context-stage1.Cz0Mp4/src",
+    "sha256": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+    "fileCount": 69
+   },
+   "current": {
+    "directory": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/src",
+    "sha256": "c785407a824d23030b6c06c08a54fdd56529f8abc0a5ee9a7a5aab138e9dd854",
+    "fileCount": 70
+   },
+   "nativeResourceRoot": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin",
+   "liveLsp": false,
+   "simulatedLsp": false,
+   "setup": {
+    "stage1": {
+     "parserStartupMs": 560,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 737
+    },
+    "stage2": {
+     "parserStartupMs": 562,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 676
+    }
+   },
+   "currentSourceChangedDuringRun": true,
+   "summary": {
+    "stage1": {
+     "passedCases": 4,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 79249,
+     "deliveredPromptChars": 136319,
+     "semanticDuplicateChars": 5697,
+     "promptDuplicateChars": 17409,
+     "failedCases": [
+      "calendar-dependency",
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    },
+    "stage2": {
+     "passedCases": 5,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 60186,
+     "deliveredPromptChars": 109965,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": [
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    }
+   },
+   "completedAt": "2026-10-13T23:02:02.452Z",
+   "debugDump": {
+    "path": "/tmp/codex-context-stage2-debug/run-2026-10-13T23-01-54-184Z-c785407a824d.json",
+    "bytes": 1290458,
+    "sha256": "938642bdbb42aa86b9e457a2ece1575867bb4422291b6831f45c64dda506e1ac"
+   },
+   "caseOutcomes": [
+    {
+     "id": "regression-button",
+     "stage1": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       108.82,
+       71.36,
+       64.45
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       237.2,
+       176.95,
+       162.56
+      ]
+     }
+    },
+    {
+     "id": "regression-availability",
+     "stage1": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       57.79,
+       63.58,
+       55.7
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       158.15,
+       164.55,
+       153.46
+      ]
+     }
+    },
+    {
+     "id": "regression-validation",
+     "stage1": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       97.21,
+       69.57,
+       68.23
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 16345,
+      "latencyMs": [
+       71.22,
+       68.44,
+       67.12
+      ]
+     }
+    },
+    {
+     "id": "calendar-dependency",
+     "stage1": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 19603,
+      "latencyMs": [
+       164.38,
+       73.69,
+       76.19
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 10860,
+      "latencyMs": [
+       248.51,
+       215.84,
+       213.42
+      ]
+     }
+    },
+    {
+     "id": "office-model-type",
+     "stage1": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "6/6",
+      "bodyChars": 0,
+      "promptChars": 15924,
+      "latencyMs": [
+       88.05,
+       75.21,
+       73.84
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "6/6",
+      "bodyChars": 0,
+      "promptChars": 11567,
+      "latencyMs": [
+       98.51,
+       73.69,
+       74.85
+      ]
+     }
+    },
+    {
+     "id": "signature-only",
+     "stage1": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 1559,
+      "promptChars": 19839,
+      "latencyMs": [
+       101.23,
+       77.8,
+       77.01
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 1559,
+      "promptChars": 15623,
+      "latencyMs": [
+       308.61,
+       268.11,
+       265.16
+      ]
+     }
+    },
+    {
+     "id": "duplicate-names",
+     "stage1": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/2",
+      "bodyChars": 0,
+      "promptChars": 15111,
+      "latencyMs": [
+       92.55,
+       79.61,
+       80.75
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/2",
+      "bodyChars": 0,
+      "promptChars": 9598,
+      "latencyMs": [
+       92.04,
+       79.67,
+       79.57
+      ]
+     }
+    },
+    {
+     "id": "unknown-symbol",
+     "stage1": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 5842,
+      "latencyMs": [
+       38.07,
+       32.14,
+       31.53
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 5972,
+      "latencyMs": [
+       36.78,
+       33.68,
+       32.66
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "harnessRevision": 3,
+   "harnessSha256": "6bd3a31f2287c6c46536ae9c4a3452a187958936d8f2781ff0d37e50139ba957",
+   "startedAt": "2026-10-13T23:05:30.917Z",
+   "phase": "preliminary-managed-22k",
+   "project": "/tmp/codex-context-privet-dom-app",
+   "fixtureCommit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+   "oracleSha256": "6f001e8adb57f462916ff1535098d8e60c04ac1f61d7054ee8154abcdb3e12da",
+   "settings": {
+    "maxItems": 8,
+    "maxPreviewChars": 420,
+    "maxChars": 20000,
+    "managedMaxChars": 22000,
+    "analysisBudgetMs": 8000,
+    "repetitions": 3
+   },
+   "baseline": {
+    "directory": "/tmp/codex-context-stage1.Cz0Mp4/src",
+    "sha256": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+    "fileCount": 69
+   },
+   "current": {
+    "directory": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/src",
+    "sha256": "e9f94c015de6c549fb3201b48ee0adb691e1d6ac272b0bb3ee409f19c9fecbd9",
+    "fileCount": 70
+   },
+   "nativeResourceRoot": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin",
+   "liveLsp": false,
+   "simulatedLsp": false,
+   "setup": {
+    "stage1": {
+     "parserStartupMs": 571,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 733
+    },
+    "stage2": {
+     "parserStartupMs": 628,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 664
+    }
+   },
+   "currentSourceChangedDuringRun": false,
+   "summary": {
+    "stage1": {
+     "passedCases": 4,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 79249,
+     "deliveredPromptChars": 136319,
+     "semanticDuplicateChars": 5697,
+     "promptDuplicateChars": 17409,
+     "failedCases": [
+      "calendar-dependency",
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    },
+    "stage2": {
+     "passedCases": 5,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 64981,
+     "deliveredPromptChars": 113856,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": [
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    }
+   },
+   "managed22kSummary": {
+    "stage1": {
+     "passedCases": 4,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 79249,
+     "deliveredPromptChars": 139163,
+     "semanticDuplicateChars": 5697,
+     "promptDuplicateChars": 17530,
+     "failedCases": [
+      "calendar-dependency",
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    },
+    "stage2": {
+     "passedCases": 5,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 64981,
+     "deliveredPromptChars": 115980,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": [
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    }
+   },
+   "completedAt": "2026-10-13T23:05:39.268Z",
+   "debugDump": {
+    "path": "/tmp/codex-context-stage2-debug/run-2026-10-13T23-05-30-917Z-e9f94c015de6.json",
+    "bytes": 2393580,
+    "sha256": "31c08a343bf5e353a44703f3c987f7b21442ebb2388427b1f65e4c49bef1dc22"
+   },
+   "caseOutcomes": [
+    {
+     "id": "regression-button",
+     "stage1": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       110.47,
+       68.19,
+       64.8
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       237.23,
+       166.33,
+       164.71
+      ]
+     }
+    },
+    {
+     "id": "regression-availability",
+     "stage1": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       59.4,
+       58.53,
+       56.13
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       159.17,
+       156.47,
+       156.95
+      ]
+     }
+    },
+    {
+     "id": "regression-validation",
+     "stage1": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       100.94,
+       68.68,
+       68.84
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 16878,
+      "latencyMs": [
+       67.5,
+       65.4,
+       65.72
+      ]
+     }
+    },
+    {
+     "id": "calendar-dependency",
+     "stage1": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 19603,
+      "latencyMs": [
+       87.54,
+       78.61,
+       75.58
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 11888,
+      "latencyMs": [
+       234.29,
+       214.91,
+       220.37
+      ]
+     }
+    },
+    {
+     "id": "office-model-type",
+     "stage1": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "6/6",
+      "bodyChars": 0,
+      "promptChars": 15924,
+      "latencyMs": [
+       85.49,
+       75.97,
+       73.48
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "6/6",
+      "bodyChars": 0,
+      "promptChars": 11567,
+      "latencyMs": [
+       82.5,
+       74.04,
+       76.77
+      ]
+     }
+    },
+    {
+     "id": "signature-only",
+     "stage1": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 1559,
+      "promptChars": 19839,
+      "latencyMs": [
+       83.31,
+       78.05,
+       80.25
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 1559,
+      "promptChars": 17953,
+      "latencyMs": [
+       281.12,
+       270.74,
+       266.91
+      ]
+     }
+    },
+    {
+     "id": "duplicate-names",
+     "stage1": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/2",
+      "bodyChars": 0,
+      "promptChars": 15111,
+      "latencyMs": [
+       83.01,
+       79.9,
+       79.16
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/2",
+      "bodyChars": 0,
+      "promptChars": 9598,
+      "latencyMs": [
+       83.99,
+       79.04,
+       80.85
+      ]
+     }
+    },
+    {
+     "id": "unknown-symbol",
+     "stage1": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 5842,
+      "latencyMs": [
+       33.46,
+       32.93,
+       31.75
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 5972,
+      "latencyMs": [
+       33.74,
+       33.3,
+       32.44
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "harnessRevision": 4,
+   "harnessSha256": "93c2fc25adcb249a8d9838357d35cda071ca4f23cd14db51db989515b33b56c6",
+   "startedAt": "2026-10-13T23:07:45.551Z",
+   "phase": "preliminary-equal22k-production36k",
+   "project": "/tmp/codex-context-privet-dom-app",
+   "fixtureCommit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+   "oracleSha256": "6f001e8adb57f462916ff1535098d8e60c04ac1f61d7054ee8154abcdb3e12da",
+   "settings": {
+    "maxItems": 8,
+    "maxPreviewChars": 420,
+    "maxChars": 20000,
+    "managedMaxChars": 22000,
+    "productionMaxChars": 36000,
+    "analysisBudgetMs": 8000,
+    "repetitions": 3
+   },
+   "baseline": {
+    "directory": "/tmp/codex-context-stage1.Cz0Mp4/src",
+    "sha256": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+    "fileCount": 69
+   },
+   "current": {
+    "directory": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/src",
+    "sha256": "9b5e97d57b15b5d729668a5f9a2cfb5622a99851f3922efb779e07a1d283869c",
+    "fileCount": 70
+   },
+   "nativeResourceRoot": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin",
+   "liveLsp": false,
+   "simulatedLsp": false,
+   "setup": {
+    "stage1": {
+     "parserStartupMs": 624,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 720
+    },
+    "stage2": {
+     "parserStartupMs": 522,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 656
+    }
+   },
+   "currentSourceChangedDuringRun": false,
+   "summary": {
+    "stage1": {
+     "passedCases": 4,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 79249,
+     "deliveredPromptChars": 136319,
+     "semanticDuplicateChars": 5697,
+     "promptDuplicateChars": 17409,
+     "failedCases": [
+      "calendar-dependency",
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    },
+    "stage2": {
+     "passedCases": 5,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 68245,
+     "deliveredPromptChars": 113856,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": [
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    }
+   },
+   "managed22kSummary": {
+    "stage1": {
+     "passedCases": 4,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 79249,
+     "deliveredPromptChars": 139163,
+     "semanticDuplicateChars": 5697,
+     "promptDuplicateChars": 17530,
+     "failedCases": [
+      "calendar-dependency",
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    },
+    "stage2": {
+     "passedCases": 5,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 68245,
+     "deliveredPromptChars": 117856,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": [
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    }
+   },
+   "production36kSummary": {
+    "stage2": {
+     "passedCases": 5,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 7,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 68245,
+     "deliveredPromptChars": 119244,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": [
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    }
+   },
+   "completedAt": "2026-10-13T23:07:53.746Z",
+   "debugDump": {
+    "path": "/tmp/codex-context-stage2-debug/run-2026-10-13T23-07-45-551Z-9b5e97d57b15.json",
+    "bytes": 2918831,
+    "sha256": "62d37dfa9f662916b19476cd626bb6c2105517e86c1f0fba9ae1f4b39f41190d"
+   },
+   "caseOutcomes": [
+    {
+     "id": "regression-button",
+     "stage1": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       105.33,
+       65.54,
+       64.01
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       231.23,
+       164.13,
+       165.46
+      ]
+     }
+    },
+    {
+     "id": "regression-availability",
+     "stage1": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       56.18,
+       57.48,
+       57.57
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       154.76,
+       154.89,
+       152.46
+      ]
+     }
+    },
+    {
+     "id": "regression-validation",
+     "stage1": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       94.02,
+       68.7,
+       68.25
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 16878,
+      "latencyMs": [
+       67.96,
+       65.15,
+       64.03
+      ]
+     }
+    },
+    {
+     "id": "calendar-dependency",
+     "stage1": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 19603,
+      "latencyMs": [
+       83.96,
+       76.01,
+       75.52
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 11888,
+      "latencyMs": [
+       225.17,
+       216.36,
+       212.45
+      ]
+     }
+    },
+    {
+     "id": "office-model-type",
+     "stage1": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "6/6",
+      "bodyChars": 0,
+      "promptChars": 15924,
+      "latencyMs": [
+       80,
+       72.97,
+       75.66
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "6/6",
+      "bodyChars": 0,
+      "promptChars": 11567,
+      "latencyMs": [
+       78.73,
+       75.46,
+       72.12
+      ]
+     }
+    },
+    {
+     "id": "signature-only",
+     "stage1": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 1559,
+      "promptChars": 19839,
+      "latencyMs": [
+       84.99,
+       79.76,
+       80
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 1559,
+      "promptChars": 17953,
+      "latencyMs": [
+       274.72,
+       270.27,
+       267.93
+      ]
+     }
+    },
+    {
+     "id": "duplicate-names",
+     "stage1": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/2",
+      "bodyChars": 0,
+      "promptChars": 15111,
+      "latencyMs": [
+       79.21,
+       81.63,
+       77.01
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/2",
+      "bodyChars": 0,
+      "promptChars": 9598,
+      "latencyMs": [
+       79.14,
+       76.92,
+       80.38
+      ]
+     }
+    },
+    {
+     "id": "unknown-symbol",
+     "stage1": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 5842,
+      "latencyMs": [
+       33.38,
+       32.93,
+       31.63
+      ]
+     },
+     "stage2": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 5972,
+      "latencyMs": [
+       32.25,
+       33.58,
+       32.73
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "harnessRevision": 6,
+   "harnessSha256": "7055b87086b6bd684fbb356bcfd4edcec357b8fa42641f504214b961540d90fa",
+   "startedAt": "2026-10-13T23:20:06.815Z",
+   "phase": "final",
+   "project": "/tmp/codex-context-privet-dom-app",
+   "fixtureCommit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+   "oracleSha256": "22e5284ec7ea54b8ca45e410ecc6bd59a79fc4250add32b55954282a66f0fc8a",
+   "settings": {
+    "maxItems": 8,
+    "maxPreviewChars": 420,
+    "maxChars": 20000,
+    "managedMaxChars": 22000,
+    "productionMaxChars": 36000,
+    "analysisBudgetMs": 8000,
+    "repetitions": 3
+   },
+   "baseline": {
+    "directory": "/tmp/codex-context-stage1.Cz0Mp4/src",
+    "sha256": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+    "fileCount": 69
+   },
+   "current": {
+    "directory": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/src",
+    "sha256": "984855351ebd4637c6fdadff4333b0ea372198dc36cbc9eb9d40eaa12ffee224",
+    "fileCount": 70
+   },
+   "nativeResourceRoot": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin",
+   "liveLsp": false,
+   "simulatedLsp": false,
+   "runtimeEnvironment": {
+    "node": "v25.9.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "logicalCpus": 11,
+    "totalMemoryBytes": 19327352832,
+    "loadAverageBefore": [
+     3.921875,
+     3.66064453125,
+     3.029296875
+    ],
+    "note": "Full test suite running separately, per user; local host load is not isolated.",
+    "cpuScope": "Node benchmark process during real 20000-character search only; excludes Java worker CPU, setup and replay/metric computation.",
+    "loadAverageAfter": [
+     4.2216796875,
+     3.736328125,
+     3.0634765625
+    ]
+   },
+   "setup": {
+    "stage1": {
+     "parserStartupMs": 694,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 818
+    },
+    "stage2": {
+     "parserStartupMs": 699,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 679
+    }
+   },
+   "currentSourceChangedDuringRun": false,
+   "integrity": {
+    "baselineBefore": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+    "baselineAfter": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+    "currentBefore": "984855351ebd4637c6fdadff4333b0ea372198dc36cbc9eb9d40eaa12ffee224",
+    "currentAfter": "984855351ebd4637c6fdadff4333b0ea372198dc36cbc9eb9d40eaa12ffee224",
+    "oracleBefore": "22e5284ec7ea54b8ca45e410ecc6bd59a79fc4250add32b55954282a66f0fc8a",
+    "oracleAfter": "22e5284ec7ea54b8ca45e410ecc6bd59a79fc4250add32b55954282a66f0fc8a",
+    "fixtureSha256": "3f3289852f6107b93a527ed5462f987cdc6cf0f94d616d16e53e54b5441069e1",
+    "resourcesUnchanged": true
+   },
+   "summary": {
+    "stage1": {
+     "passedCases": 4,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 79249,
+     "deliveredPromptChars": 136319,
+     "semanticDuplicateChars": 5697,
+     "promptDuplicateChars": 17409,
+     "failedCases": [
+      "calendar-dependency",
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    },
+    "stage2": {
+     "passedCases": 8,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 63641,
+     "deliveredPromptChars": 102847,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": []
+    }
+   },
+   "managed22kSummary": {
+    "stage1": {
+     "passedCases": 4,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 79249,
+     "deliveredPromptChars": 139163,
+     "semanticDuplicateChars": 5697,
+     "promptDuplicateChars": 17530,
+     "failedCases": [
+      "calendar-dependency",
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    },
+    "stage2": {
+     "passedCases": 8,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 63641,
+     "deliveredPromptChars": 106847,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": []
+    }
+   },
+   "production36kSummary": {
+    "stage2": {
+     "passedCases": 8,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 63641,
+     "deliveredPromptChars": 108235,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": []
+    }
+   },
+   "completedAt": "2026-10-13T23:20:15.027Z",
+   "debugDump": {
+    "path": "/tmp/codex-context-stage2-debug/run-2026-10-13T23-20-06-815Z-984855351ebd.json",
+    "bytes": 2806484,
+    "sha256": "5485803dfeb8be3034e9065393781bd530b163342a1970336afaf9c0d1a1d52b"
+   },
+   "caseOutcomes": [
+    {
+     "id": "regression-button",
+     "stage1": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       109,
+       67.86,
+       65.57
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       286.36,
+       162.68,
+       163.81
+      ]
+     }
+    },
+    {
+     "id": "regression-availability",
+     "stage1": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       59.35,
+       56.22,
+       57.9
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       179.44,
+       154.94,
+       153.16
+      ]
+     }
+    },
+    {
+     "id": "regression-validation",
+     "stage1": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 20000,
+      "latencyMs": [
+       105.39,
+       69.81,
+       68.75
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "1/1",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 16878,
+      "latencyMs": [
+       71.42,
+       68.29,
+       65.81
+      ]
+     }
+    },
+    {
+     "id": "calendar-dependency",
+     "stage1": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 19603,
+      "latencyMs": [
+       89.65,
+       73.87,
+       75.95
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "1/1",
+      "bodyChars": 0,
+      "promptChars": 11888,
+      "latencyMs": [
+       229.73,
+       214.05,
+       216.96
+      ]
+     }
+    },
+    {
+     "id": "office-model-type",
+     "stage1": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "6/6",
+      "bodyChars": 0,
+      "promptChars": 15924,
+      "latencyMs": [
+       90.79,
+       77.48,
+       77.1
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "6/6",
+      "bodyChars": 0,
+      "promptChars": 11567,
+      "latencyMs": [
+       83.8,
+       76.91,
+       77.73
+      ]
+     }
+    },
+    {
+     "id": "signature-only",
+     "stage1": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 1559,
+      "promptChars": 19839,
+      "latencyMs": [
+       86.46,
+       77.92,
+       80.23
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 10301,
+      "latencyMs": [
+       80.12,
+       81.2,
+       79.56
+      ]
+     }
+    },
+    {
+     "id": "duplicate-names",
+     "stage1": {
+      "passed": false,
+      "methods": "1/2",
+      "yaml": "1/2",
+      "bodyChars": 0,
+      "promptChars": 15111,
+      "latencyMs": [
+       81.77,
+       81.94,
+       80.86
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "2/2",
+      "yaml": "2/2",
+      "bodyChars": 0,
+      "promptChars": 12213,
+      "latencyMs": [
+       88.88,
+       87.73,
+       85.5
+      ]
+     }
+    },
+    {
+     "id": "unknown-symbol",
+     "stage1": {
+      "passed": false,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 5842,
+      "latencyMs": [
+       34.68,
+       33.48,
+       32.98
+      ]
+     },
+     "stage2": {
+      "passed": true,
+      "methods": "0/0",
+      "yaml": "0/0",
+      "bodyChars": 0,
+      "promptChars": 0,
+      "latencyMs": [
+       29.47,
+       29.84,
+       28.41
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "harnessRevision": 6,
+   "harnessSha256": "7055b87086b6bd684fbb356bcfd4edcec357b8fa42641f504214b961540d90fa",
+   "startedAt": "2026-10-13T23:20:42.708Z",
+   "phase": "final",
+   "project": "/tmp/codex-context-privet-dom-app",
+   "fixtureCommit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+   "oracleSha256": "22e5284ec7ea54b8ca45e410ecc6bd59a79fc4250add32b55954282a66f0fc8a",
+   "settings": {
+    "maxItems": 8,
+    "maxPreviewChars": 420,
+    "maxChars": 20000,
+    "managedMaxChars": 22000,
+    "productionMaxChars": 36000,
+    "analysisBudgetMs": 8000,
+    "repetitions": 3
+   },
+   "baseline": {
+    "directory": "/tmp/codex-context-stage1.Cz0Mp4/src",
+    "sha256": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+    "fileCount": 69,
+    "retrievalFiles": [
+     {
+      "path": "contextTools.ts",
+      "sha256": "6de4e4db99009f76600be3a0ec3ed9296f537b769d0284c552e261fc47f4466d"
+     },
+     {
+      "path": "managedContextToolLoopService.ts",
+      "sha256": "a707fc0a17b8a36b170956404ca808a61156d42a1832b539daa992421e59d2bd"
+     },
+     {
+      "path": "nativeXbslAstService.ts",
+      "sha256": "f9b95a2bc2649ed48f40acd75e6bd5dc3c0a5047e7138afb134c52117d972e1e"
+     },
+     {
+      "path": "projectContextService.ts",
+      "sha256": "cb0715146fb86fcadbe7342807ec36cf3391e351cac5bd64a95399905fc90f51"
+     },
+     {
+      "path": "projectSemanticService.ts",
+      "sha256": "cb040ca71a28c0032d6000f1c41aa2278511e05a6af11c969574ae72c193482b"
+     },
+     {
+      "path": "projectStructure.ts",
+      "sha256": "aabd3bf404689a49618da6f82164a1fc3b57ed2769aeb972ce62f4b3eb8dd66f"
+     },
+     {
+      "path": "projectToolsService.ts",
+      "sha256": "cd3a4bef6065d83cadd6cae14fdc4bf4c99897d8c2055b176c69da8138346f89"
+     }
+    ]
+   },
+   "current": {
+    "directory": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/src",
+    "sha256": "984855351ebd4637c6fdadff4333b0ea372198dc36cbc9eb9d40eaa12ffee224",
+    "fileCount": 70,
+    "retrievalFiles": [
+     {
+      "path": "contextTools.ts",
+      "sha256": "6de4e4db99009f76600be3a0ec3ed9296f537b769d0284c552e261fc47f4466d"
+     },
+     {
+      "path": "managedContextToolLoopService.ts",
+      "sha256": "754e3717f8bb1f185990064f16a92f4795cbc5bd1ae2db67751988ae9e866ea3"
+     },
+     {
+      "path": "nativeXbslAstService.ts",
+      "sha256": "f9b95a2bc2649ed48f40acd75e6bd5dc3c0a5047e7138afb134c52117d972e1e"
+     },
+     {
+      "path": "projectContextService.ts",
+      "sha256": "6123435e3aa30cb95c0cd3518499f1775ffb156fbfafce92aac2915d6c888fd8"
+     },
+     {
+      "path": "projectSemanticService.ts",
+      "sha256": "ea52d4c766882eca77a217d2e6eae88e2601fbb06efe55a5f295f6f3945ccbee"
+     },
+     {
+      "path": "projectStructure.ts",
+      "sha256": "aabd3bf404689a49618da6f82164a1fc3b57ed2769aeb972ce62f4b3eb8dd66f"
+     },
+     {
+      "path": "projectToolsService.ts",
+      "sha256": "4e76fc018578d7799b8834d1fdd355a5428b73a562ce21434566337aadcf935d"
+     }
+    ]
+   },
+   "resources": [
+    {
+     "path": "/Users/aleksandrvolkov/pet-project/element-ai/theia-plugin-qc/artifacts/server 9.1.9-17/ide/theia/plugins/@1c-appengine-plugin/bin/appengine-lsp/repo/com.e1c.g5rt.lsp.server.appengine-9.1.9-1.jar",
+     "sha256": "51ff437a95ab1e0f7a0140c5a3962f78c891998066f821b9984bd126ff794b6e"
+    },
+    {
+     "path": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/resources/context/ast/native-xbsl-ast.jar",
+     "sha256": "f9461ddb4f4474c79a00c2f2bf7f52f8e24172b875018d3ca11cce314ecfcde9"
+    },
+    {
+     "path": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/resources/context/yaml.cjs",
+     "sha256": "04e072e4af887ecb6a3fb0c50d772117773a94cbf89d40c0830d047000efe8e8"
+    }
+   ],
+   "nativeResourceRoot": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin",
+   "liveLsp": false,
+   "simulatedLsp": false,
+   "runtimeEnvironment": {
+    "node": "v25.9.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "logicalCpus": 11,
+    "totalMemoryBytes": 19327352832,
+    "loadAverageBefore": [
+     3.4580078125,
+     3.58251953125,
+     3.02587890625
+    ],
+    "note": "Repeated after user reported full suite 549/549 complete and build settling; no further heavy jobs planned. Local host is not isolated.",
+    "cpuScope": "Node benchmark process during real 20000-character search only; excludes Java worker CPU, setup and replay/metric computation.",
+    "loadAverageAfter": [
+     3.3935546875,
+     3.5634765625,
+     3.02490234375
+    ]
+   },
+   "latencyProtocol": "Separate stage instances and indexes; index prebuilt with listSymbols; native worker prewarmed with identical tiny method. First pass then two repeated passes, alternating stage order. Wall time includes retrieval and real tool formatting, excludes setup and metric computation. No live LSP, model, network, or token measurement.",
+   "managedProtocol": "Primary comparison: both stages at limits.maxChars=22000. Production-budget comparison: the same stage2 raw result at limits.maxChars=36000. Retain 20000 default-tool results separately. All replays use real ProjectToolsService.search; chars and evidence come from actual result blocks. replayFormattingMs excludes retrieval and is not end-to-end latency. The old global 60000/new 128000-character docs/rules envelope is outside this benchmark. Equal tool budgets do not equalize version-specific internal snippet budgets.",
+   "setup": {
+    "stage1": {
+     "parserStartupMs": 561,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 707
+    },
+    "stage2": {
+     "parserStartupMs": 556,
+     "parserVersion": "9.1.9-1",
+     "indexBuildMs": 661
+    }
+   },
+   "cases": [
+    {
+     "id": "regression-button",
+     "stage1": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 2,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 2,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 20676,
+       "fullPromptBeforeCap": 33173,
+       "deliveredPrompt": 32581
+      },
+      "chars": {
+       "semanticText": 12912,
+       "semanticSnippetText": 5568,
+       "rawCandidatePreviewText": 2859,
+       "formattedPreviewText": 2859,
+       "deliveredPreviewText": 2542,
+       "fullPromptBeforeCap": 20316,
+       "deliveredPrompt": 20000,
+       "removedByPromptCap": 316
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 5568,
+        "uniqueSourceChars": 4910,
+        "duplicateSourceChars": 658
+       },
+       "previews": {
+        "sourceChars": 3547,
+        "uniqueSourceChars": 3052,
+        "duplicateSourceChars": 495
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 9115,
+        "uniqueSourceChars": 6269,
+        "duplicateSourceChars": 2846
+       },
+       "deliveredPrompt": {
+        "sourceChars": 8753,
+        "uniqueSourceChars": 5907,
+        "duplicateSourceChars": 2846
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 10,
+       "formatted": 10,
+       "withDeliveredSource": 10,
+       "fullyDelivered": 10
+      },
+      "diagnostics": [],
+      "textSha256": {
+       "semantic": "d52eff24426e25c02e617be60f93386bc7ee972daa1542591df8998b099d188b",
+       "deliveredPrompt": "6f094892cfc973fd5b995d31e572ad4ca4a5f76d3b3a2f33ae1edf690931d1f5"
+      },
+      "elapsedMs": 110.75,
+      "retrievalMs": 109.85,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 2,
+         "covered": 2,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 33173,
+        "deliveredPrompt": 33173
+       },
+       "chars": {
+        "formattedPreviewText": 2859,
+        "deliveredPreviewText": 2859,
+        "fullPromptBeforeCap": 20316,
+        "deliveredPrompt": 20316,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 3547,
+         "uniqueSourceChars": 3052,
+         "duplicateSourceChars": 495
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 9115,
+         "uniqueSourceChars": 6269,
+         "duplicateSourceChars": 2846
+        },
+        "deliveredPrompt": {
+         "sourceChars": 9115,
+         "uniqueSourceChars": 6269,
+         "duplicateSourceChars": 2846
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 10,
+        "formatted": 10,
+        "withDeliveredSource": 10,
+        "fullyDelivered": 10
+       },
+       "textSha256": {
+        "deliveredPrompt": "aed2a6610c7175f79148d97b8a83f6f9c8bdb19cd3e0025413121d0358eeb0c0"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.16
+      },
+      "runtime": {
+       "retrievalMs": 109.85,
+       "nodeCpuUserMs": 92.773,
+       "nodeCpuSystemMs": 3.628,
+       "astCalls": 1,
+       "astCacheHits": 0,
+       "astProblems": 0,
+       "unavailableLspCalls": 2
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 2,
+      "latencyMs": [
+       110.75,
+       66.12,
+       65.69
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 66.02,
+         "nodeCpuUserMs": 65.767,
+         "nodeCpuSystemMs": 0.941,
+         "astCalls": 1,
+         "astCacheHits": 1,
+         "astProblems": 0,
+         "unavailableLspCalls": 2
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 65.6,
+         "nodeCpuUserMs": 64.662,
+         "nodeCpuSystemMs": 1.162,
+         "astCalls": 1,
+         "astCacheHits": 1,
+         "astProblems": 0,
+         "unavailableLspCalls": 2
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ПерсональныеЗамещенияКомпонент.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ДанныеРедактированияЗамещенияПользователя.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 1,
+       "ready": 1,
+       "cacheHits": 0,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     },
+     "stage2": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 2,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 2,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 27920,
+       "fullPromptBeforeCap": 37687,
+       "deliveredPrompt": 32454
+      },
+      "chars": {
+       "semanticText": 17107,
+       "semanticSnippetText": 7837,
+       "rawCandidatePreviewText": 2859,
+       "formattedPreviewText": 1394,
+       "deliveredPreviewText": 35,
+       "fullPromptBeforeCap": 22994,
+       "deliveredPrompt": 20000,
+       "removedByPromptCap": 2994
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 7837,
+        "uniqueSourceChars": 7837,
+        "duplicateSourceChars": 0
+       },
+       "previews": {
+        "sourceChars": 1704,
+        "uniqueSourceChars": 1704,
+        "duplicateSourceChars": 0
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 9541,
+        "uniqueSourceChars": 9541,
+        "duplicateSourceChars": 0
+       },
+       "deliveredPrompt": {
+        "sourceChars": 7892,
+        "uniqueSourceChars": 7892,
+        "duplicateSourceChars": 0
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 18,
+       "formatted": 18,
+       "withDeliveredSource": 18,
+       "fullyDelivered": 18
+      },
+      "diagnostics": [],
+      "selection": {
+       "intent": "implementation",
+       "maxDepth": 2,
+       "budgetChars": 32000,
+       "omittedRanges": 0
+      },
+      "textSha256": {
+       "semantic": "0099f93e1d1dc6379face3f8544c40d3bfab24c57ccbd0a054472eeda2a64a63",
+       "deliveredPrompt": "117aa0e9cc80f7265f87f4e2f44b78141ee2d9c36ecf1eeaa1f11e1ddf93aa26"
+      },
+      "elapsedMs": 248.22,
+      "retrievalMs": 247.37,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 2,
+         "covered": 2,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 37687,
+        "deliveredPrompt": 35942
+       },
+       "chars": {
+        "formattedPreviewText": 1394,
+        "deliveredPreviewText": 934,
+        "fullPromptBeforeCap": 22994,
+        "deliveredPrompt": 22000,
+        "removedByPromptCap": 994
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 1704,
+         "uniqueSourceChars": 1704,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 9541,
+         "uniqueSourceChars": 9541,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 9001,
+         "uniqueSourceChars": 9001,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 18,
+        "formatted": 18,
+        "withDeliveredSource": 18,
+        "fullyDelivered": 18
+       },
+       "textSha256": {
+        "deliveredPrompt": "ce4a1103804a17032ddb6fd90176ad6dbf0af8120e803c79316849a679c27a9b"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.19
+      },
+      "production36k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 2,
+         "covered": 2,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 37687,
+        "deliveredPrompt": 37687
+       },
+       "chars": {
+        "formattedPreviewText": 1394,
+        "deliveredPreviewText": 1394,
+        "fullPromptBeforeCap": 22994,
+        "deliveredPrompt": 22994,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 1704,
+         "uniqueSourceChars": 1704,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 9541,
+         "uniqueSourceChars": 9541,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 9541,
+         "uniqueSourceChars": 9541,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 18,
+        "formatted": 18,
+        "withDeliveredSource": 18,
+        "fullyDelivered": 18
+       },
+       "textSha256": {
+        "deliveredPrompt": "286e660c3220cd528cf44aff472c53c6454761e48f659d3706bfb981477d90df"
+       },
+       "requestedMaxChars": 36000,
+       "toolOk": true,
+       "replayFormattingMs": 0.17
+      },
+      "runtime": {
+       "retrievalMs": 247.37,
+       "nodeCpuUserMs": 208.827,
+       "nodeCpuSystemMs": 5.644,
+       "astCalls": 2,
+       "astCacheHits": 0,
+       "astProblems": 0,
+       "unavailableLspCalls": 11
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 11,
+      "latencyMs": [
+       248.22,
+       169.22,
+       166.77
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 169.07,
+         "nodeCpuUserMs": 171.111,
+         "nodeCpuSystemMs": 2.441,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 11
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.12,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.1,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 166.64,
+         "nodeCpuUserMs": 166.837,
+         "nodeCpuSystemMs": 2.072,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 11
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.09,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ПерсональныеЗамещенияКомпонент.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ДанныеРедактированияЗамещенияПользователя.yaml",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 2,
+       "ready": 2,
+       "cacheHits": 0,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     }
+    },
+    {
+     "id": "regression-availability",
+     "stage1": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 20728,
+       "fullPromptBeforeCap": 33597,
+       "deliveredPrompt": 32720
+      },
+      "chars": {
+       "semanticText": 12941,
+       "semanticSnippetText": 5597,
+       "rawCandidatePreviewText": 2965,
+       "formattedPreviewText": 2965,
+       "deliveredPreviewText": 2848,
+       "fullPromptBeforeCap": 20528,
+       "deliveredPrompt": 20000,
+       "removedByPromptCap": 528
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 5597,
+        "uniqueSourceChars": 4910,
+        "duplicateSourceChars": 687
+       },
+       "previews": {
+        "sourceChars": 3484,
+        "uniqueSourceChars": 2610,
+        "duplicateSourceChars": 874
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 9081,
+        "uniqueSourceChars": 5858,
+        "duplicateSourceChars": 3223
+       },
+       "deliveredPrompt": {
+        "sourceChars": 8960,
+        "uniqueSourceChars": 5858,
+        "duplicateSourceChars": 3102
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 10,
+       "formatted": 10,
+       "withDeliveredSource": 10,
+       "fullyDelivered": 10
+      },
+      "diagnostics": [],
+      "textSha256": {
+       "semantic": "72e06b866286aa4cc3e0533ce00223b293677a9cdbc012501cba11b8a18d1e62",
+       "deliveredPrompt": "42f82e4d31565207b507fdd755e033f6061c0ba88039e3841ad81f17f4763d08"
+      },
+      "elapsedMs": 77.46,
+      "retrievalMs": 77.28,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 33597,
+        "deliveredPrompt": 33597
+       },
+       "chars": {
+        "formattedPreviewText": 2965,
+        "deliveredPreviewText": 2965,
+        "fullPromptBeforeCap": 20528,
+        "deliveredPrompt": 20528,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 3484,
+         "uniqueSourceChars": 2610,
+         "duplicateSourceChars": 874
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 9081,
+         "uniqueSourceChars": 5858,
+         "duplicateSourceChars": 3223
+        },
+        "deliveredPrompt": {
+         "sourceChars": 9081,
+         "uniqueSourceChars": 5858,
+         "duplicateSourceChars": 3223
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 10,
+        "formatted": 10,
+        "withDeliveredSource": 10,
+        "fullyDelivered": 10
+       },
+       "textSha256": {
+        "deliveredPrompt": "c509273c50e8756d836d90900d86cddfb39dede2ef5c9f8f0326d90dbc0701dd"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.11
+      },
+      "runtime": {
+       "retrievalMs": 77.28,
+       "nodeCpuUserMs": 78.941,
+       "nodeCpuSystemMs": 1.38,
+       "astCalls": 1,
+       "astCacheHits": 1,
+       "astProblems": 0,
+       "unavailableLspCalls": 2
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 2,
+      "latencyMs": [
+       77.46,
+       57.34,
+       57.58
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 57.24,
+         "nodeCpuUserMs": 57.13,
+         "nodeCpuSystemMs": 0.711,
+         "astCalls": 1,
+         "astCacheHits": 1,
+         "astProblems": 0,
+         "unavailableLspCalls": 2
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.1,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 57.48,
+         "nodeCpuUserMs": 57.129,
+         "nodeCpuSystemMs": 0.995,
+         "astCalls": 1,
+         "astCacheHits": 1,
+         "astProblems": 0,
+         "unavailableLspCalls": 2
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ДанныеРедактированияЗамещенияПользователя.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 1,
+       "ready": 1,
+       "cacheHits": 1,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     },
+     "stage2": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 27910,
+       "fullPromptBeforeCap": 36599,
+       "deliveredPrompt": 32497
+      },
+      "chars": {
+       "semanticText": 17102,
+       "semanticSnippetText": 7837,
+       "rawCandidatePreviewText": 2965,
+       "formattedPreviewText": 748,
+       "deliveredPreviewText": 0,
+       "fullPromptBeforeCap": 22394,
+       "deliveredPrompt": 20000,
+       "removedByPromptCap": 2394
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 7837,
+        "uniqueSourceChars": 7837,
+        "duplicateSourceChars": 0
+       },
+       "previews": {
+        "sourceChars": 875,
+        "uniqueSourceChars": 875,
+        "duplicateSourceChars": 0
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 8712,
+        "uniqueSourceChars": 8712,
+        "duplicateSourceChars": 0
+       },
+       "deliveredPrompt": {
+        "sourceChars": 7837,
+        "uniqueSourceChars": 7837,
+        "duplicateSourceChars": 0
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 18,
+       "formatted": 18,
+       "withDeliveredSource": 18,
+       "fullyDelivered": 18
+      },
+      "diagnostics": [],
+      "selection": {
+       "intent": "implementation",
+       "maxDepth": 2,
+       "budgetChars": 32000,
+       "omittedRanges": 0
+      },
+      "textSha256": {
+       "semantic": "8b2f4190f2a7e21760b7d6fa34a5c143e4f6af7d8b71e8cda8a60d21d9c7c65d",
+       "deliveredPrompt": "a047b21961cbd4324491c1631b42eed3d3b7b92b7823b281680e114306916a72"
+      },
+      "elapsedMs": 212.76,
+      "retrievalMs": 212.33,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 36599,
+        "deliveredPrompt": 35962
+       },
+       "chars": {
+        "formattedPreviewText": 748,
+        "deliveredPreviewText": 748,
+        "fullPromptBeforeCap": 22394,
+        "deliveredPrompt": 22000,
+        "removedByPromptCap": 394
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 875,
+         "uniqueSourceChars": 875,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 8712,
+         "uniqueSourceChars": 8712,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 8712,
+         "uniqueSourceChars": 8712,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 18,
+        "formatted": 18,
+        "withDeliveredSource": 18,
+        "fullyDelivered": 18
+       },
+       "textSha256": {
+        "deliveredPrompt": "739bdb3d44560a1940b9113e3be69f42a09a87dfc4ee4340013d2294348a4667"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.35
+      },
+      "production36k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 36599,
+        "deliveredPrompt": 36599
+       },
+       "chars": {
+        "formattedPreviewText": 748,
+        "deliveredPreviewText": 748,
+        "fullPromptBeforeCap": 22394,
+        "deliveredPrompt": 22394,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 875,
+         "uniqueSourceChars": 875,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 8712,
+         "uniqueSourceChars": 8712,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 8712,
+         "uniqueSourceChars": 8712,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 18,
+        "formatted": 18,
+        "withDeliveredSource": 18,
+        "fullyDelivered": 18
+       },
+       "textSha256": {
+        "deliveredPrompt": "96277a007bffe5a9225a9f5830b7ee12922ee03759b80ca0ef0146044e89aff7"
+       },
+       "requestedMaxChars": 36000,
+       "toolOk": true,
+       "replayFormattingMs": 0.42
+      },
+      "runtime": {
+       "retrievalMs": 212.33,
+       "nodeCpuUserMs": 201.529,
+       "nodeCpuSystemMs": 5.093,
+       "astCalls": 2,
+       "astCacheHits": 2,
+       "astProblems": 0,
+       "unavailableLspCalls": 11
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 11,
+      "latencyMs": [
+       212.76,
+       156.43,
+       158.53
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 156.31,
+         "nodeCpuUserMs": 155.966,
+         "nodeCpuSystemMs": 1.901,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 11
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.12,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 158.4,
+         "nodeCpuUserMs": 159.082,
+         "nodeCpuSystemMs": 1.998,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 11
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.1,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ДанныеРедактированияЗамещенияПользователя.yaml",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 2,
+       "ready": 2,
+       "cacheHits": 2,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     }
+    },
+    {
+     "id": "regression-validation",
+     "stage1": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 21778,
+       "fullPromptBeforeCap": 37455,
+       "deliveredPrompt": 32723
+      },
+      "chars": {
+       "semanticText": 13583,
+       "semanticSnippetText": 5970,
+       "rawCandidatePreviewText": 3360,
+       "formattedPreviewText": 3360,
+       "deliveredPreviewText": 2244,
+       "fullPromptBeforeCap": 22632,
+       "deliveredPrompt": 20000,
+       "removedByPromptCap": 2632
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 5970,
+        "uniqueSourceChars": 5364,
+        "duplicateSourceChars": 606
+       },
+       "previews": {
+        "sourceChars": 3896,
+        "uniqueSourceChars": 3401,
+        "duplicateSourceChars": 495
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 9866,
+        "uniqueSourceChars": 7763,
+        "duplicateSourceChars": 2103
+       },
+       "deliveredPrompt": {
+        "sourceChars": 8596,
+        "uniqueSourceChars": 6493,
+        "duplicateSourceChars": 2103
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 10,
+       "formatted": 10,
+       "withDeliveredSource": 10,
+       "fullyDelivered": 10
+      },
+      "diagnostics": [],
+      "textSha256": {
+       "semantic": "497fde156adbafd957cfd39738626382684133c83bc053d44e70ea670d473b6b",
+       "deliveredPrompt": "d4516a37fe15d7bfad7d9233d2986f6041d9ecf5b36e0989f0edb24622440613"
+      },
+      "elapsedMs": 101.05,
+      "retrievalMs": 100.91,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 37455,
+        "deliveredPrompt": 36286
+       },
+       "chars": {
+        "formattedPreviewText": 3360,
+        "deliveredPreviewText": 2940,
+        "fullPromptBeforeCap": 22632,
+        "deliveredPrompt": 22000,
+        "removedByPromptCap": 632
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 3896,
+         "uniqueSourceChars": 3401,
+         "duplicateSourceChars": 495
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 9866,
+         "uniqueSourceChars": 7763,
+         "duplicateSourceChars": 2103
+        },
+        "deliveredPrompt": {
+         "sourceChars": 9406,
+         "uniqueSourceChars": 7303,
+         "duplicateSourceChars": 2103
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 10,
+        "formatted": 10,
+        "withDeliveredSource": 10,
+        "fullyDelivered": 10
+       },
+       "textSha256": {
+        "deliveredPrompt": "e2b6db26a3a15f7415438137cb151b805a2c5885254b69042a75d91ab290ea57"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.13
+      },
+      "runtime": {
+       "retrievalMs": 100.91,
+       "nodeCpuUserMs": 87.718,
+       "nodeCpuSystemMs": 1.763,
+       "astCalls": 2,
+       "astCacheHits": 1,
+       "astProblems": 0,
+       "unavailableLspCalls": 4
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 4,
+      "latencyMs": [
+       101.05,
+       70.95,
+       67.65
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 70.84,
+         "nodeCpuUserMs": 70.468,
+         "nodeCpuSystemMs": 1.602,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 4
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.11,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 67.52,
+         "nodeCpuUserMs": 68.871,
+         "nodeCpuSystemMs": 1.489,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 4
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.12,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/УправлениеПриложением/ПраваДоступа/КлючиПрикладногоДоступа.xbsl",
+        "DOMRF/Start/КадровоеДелопроизводство/КадровоеДелопроизводствоОбновлениеПодсистемы.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ДанныеРедактированияЗамещенияПользователя.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 2,
+       "ready": 2,
+       "cacheHits": 1,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     },
+     "stage2": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 14692,
+       "fullPromptBeforeCap": 28056,
+       "deliveredPrompt": 28056
+      },
+      "chars": {
+       "semanticText": 9128,
+       "semanticSnippetText": 4350,
+       "rawCandidatePreviewText": 3360,
+       "formattedPreviewText": 2100,
+       "deliveredPreviewText": 2099,
+       "fullPromptBeforeCap": 16878,
+       "deliveredPrompt": 16878,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 4350,
+        "uniqueSourceChars": 4350,
+        "duplicateSourceChars": 0
+       },
+       "previews": {
+        "sourceChars": 2399,
+        "uniqueSourceChars": 2399,
+        "duplicateSourceChars": 0
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 6749,
+        "uniqueSourceChars": 6749,
+        "duplicateSourceChars": 0
+       },
+       "deliveredPrompt": {
+        "sourceChars": 6749,
+        "uniqueSourceChars": 6749,
+        "duplicateSourceChars": 0
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 8,
+       "formatted": 8,
+       "withDeliveredSource": 8,
+       "fullyDelivered": 8
+      },
+      "diagnostics": [],
+      "selection": {
+       "intent": "implementation",
+       "maxDepth": 2,
+       "budgetChars": 32000,
+       "omittedRanges": 0
+      },
+      "textSha256": {
+       "semantic": "08d9a534d5efcbc83c423efc01dd1ed23da53396fea0fa12c41c9f89c48d954d",
+       "deliveredPrompt": "950b0500b316dd640f516f805a196e929dc88d9130bff0471d404f12773c8050"
+      },
+      "elapsedMs": 70.76,
+      "retrievalMs": 70.62,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 28056,
+        "deliveredPrompt": 28056
+       },
+       "chars": {
+        "formattedPreviewText": 2100,
+        "deliveredPreviewText": 2099,
+        "fullPromptBeforeCap": 16878,
+        "deliveredPrompt": 16878,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 2399,
+         "uniqueSourceChars": 2399,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 6749,
+         "uniqueSourceChars": 6749,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 6749,
+         "uniqueSourceChars": 6749,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 8,
+        "formatted": 8,
+        "withDeliveredSource": 8,
+        "fullyDelivered": 8
+       },
+       "textSha256": {
+        "deliveredPrompt": "950b0500b316dd640f516f805a196e929dc88d9130bff0471d404f12773c8050"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.13
+      },
+      "production36k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 28056,
+        "deliveredPrompt": 28056
+       },
+       "chars": {
+        "formattedPreviewText": 2100,
+        "deliveredPreviewText": 2099,
+        "fullPromptBeforeCap": 16878,
+        "deliveredPrompt": 16878,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 2399,
+         "uniqueSourceChars": 2399,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 6749,
+         "uniqueSourceChars": 6749,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 6749,
+         "uniqueSourceChars": 6749,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 8,
+        "formatted": 8,
+        "withDeliveredSource": 8,
+        "fullyDelivered": 8
+       },
+       "textSha256": {
+        "deliveredPrompt": "950b0500b316dd640f516f805a196e929dc88d9130bff0471d404f12773c8050"
+       },
+       "requestedMaxChars": 36000,
+       "toolOk": true,
+       "replayFormattingMs": 0.1
+      },
+      "runtime": {
+       "retrievalMs": 70.62,
+       "nodeCpuUserMs": 70.927,
+       "nodeCpuSystemMs": 1.14,
+       "astCalls": 1,
+       "astCacheHits": 1,
+       "astProblems": 0,
+       "unavailableLspCalls": 5
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 5,
+      "latencyMs": [
+       70.76,
+       67.01,
+       68.23
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 66.9,
+         "nodeCpuUserMs": 66.86,
+         "nodeCpuSystemMs": 1.071,
+         "astCalls": 1,
+         "astCacheHits": 1,
+         "astProblems": 0,
+         "unavailableLspCalls": 5
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.09,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 68.12,
+         "nodeCpuUserMs": 68.307,
+         "nodeCpuSystemMs": 1.22,
+         "astCalls": 1,
+         "astCacheHits": 1,
+         "astProblems": 0,
+         "unavailableLspCalls": 5
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.12,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+        "DOMRF/Start/УправлениеПриложением/ПраваДоступа/КлючиПрикладногоДоступа.xbsl",
+        "DOMRF/Start/КадровоеДелопроизводство/КадровоеДелопроизводствоОбновлениеПодсистемы.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ДанныеРедактированияЗамещенияПользователя.yaml",
+        "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 1,
+       "ready": 1,
+       "cacheHits": 1,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     }
+    },
+    {
+     "id": "calendar-dependency",
+     "stage1": {
+      "passed": false,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 1,
+        "missing": [
+         {
+          "label": "КлиентскоеУстройствоМаленькойШирины",
+          "path": "DOMRF/Start/УниверсальныеКомпоненты/ИнтерфейсныеКомпонентыОбщегоНазначения.xbsl",
+          "startLine": 7,
+          "endLine": 9
+         }
+        ]
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 1,
+        "missing": [
+         {
+          "label": "КлиентскоеУстройствоМаленькойШирины",
+          "path": "DOMRF/Start/УниверсальныеКомпоненты/ИнтерфейсныеКомпонентыОбщегоНазначения.xbsl",
+          "startLine": 7,
+          "endLine": 9
+         }
+        ]
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 18783,
+       "fullPromptBeforeCap": 30557,
+       "deliveredPrompt": 30557
+      },
+      "chars": {
+       "semanticText": 12254,
+       "semanticSnippetText": 6472,
+       "rawCandidatePreviewText": 2799,
+       "formattedPreviewText": 2799,
+       "deliveredPreviewText": 2798,
+       "fullPromptBeforeCap": 19603,
+       "deliveredPrompt": 19603,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 6472,
+        "uniqueSourceChars": 5430,
+        "duplicateSourceChars": 1042
+       },
+       "previews": {
+        "sourceChars": 3114,
+        "uniqueSourceChars": 1896,
+        "duplicateSourceChars": 1218
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 9586,
+        "uniqueSourceChars": 6300,
+        "duplicateSourceChars": 3286
+       },
+       "deliveredPrompt": {
+        "sourceChars": 9586,
+        "uniqueSourceChars": 6300,
+        "duplicateSourceChars": 3286
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 10,
+       "formatted": 10,
+       "withDeliveredSource": 10,
+       "fullyDelivered": 10
+      },
+      "diagnostics": [],
+      "textSha256": {
+       "semantic": "a7ab04002d3bf3f5ab41b8985b3fc6fefd08dd3f4ff0e81cdf5ea969599543eb",
+       "deliveredPrompt": "26bd133fefc1dc053c46a72c883cb068e94f5fbdf25556eb2cc8b605b2bead70"
+      },
+      "elapsedMs": 88.83,
+      "retrievalMs": 88.68,
+      "managed22k": {
+       "passed": false,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 2,
+         "covered": 1,
+         "missing": [
+          {
+           "label": "КлиентскоеУстройствоМаленькойШирины",
+           "path": "DOMRF/Start/УниверсальныеКомпоненты/ИнтерфейсныеКомпонентыОбщегоНазначения.xbsl",
+           "startLine": 7,
+           "endLine": 9
+          }
+         ]
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 30557,
+        "deliveredPrompt": 30557
+       },
+       "chars": {
+        "formattedPreviewText": 2799,
+        "deliveredPreviewText": 2798,
+        "fullPromptBeforeCap": 19603,
+        "deliveredPrompt": 19603,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 3114,
+         "uniqueSourceChars": 1896,
+         "duplicateSourceChars": 1218
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 9586,
+         "uniqueSourceChars": 6300,
+         "duplicateSourceChars": 3286
+        },
+        "deliveredPrompt": {
+         "sourceChars": 9586,
+         "uniqueSourceChars": 6300,
+         "duplicateSourceChars": 3286
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 10,
+        "formatted": 10,
+        "withDeliveredSource": 10,
+        "fullyDelivered": 10
+       },
+       "textSha256": {
+        "deliveredPrompt": "26bd133fefc1dc053c46a72c883cb068e94f5fbdf25556eb2cc8b605b2bead70"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.12
+      },
+      "runtime": {
+       "retrievalMs": 88.68,
+       "nodeCpuUserMs": 83.933,
+       "nodeCpuSystemMs": 1.573,
+       "astCalls": 2,
+       "astCacheHits": 0,
+       "astProblems": 0,
+       "unavailableLspCalls": 4
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 4,
+      "latencyMs": [
+       88.83,
+       77.54,
+       75.03
+      ],
+      "repeatChecks": [
+       {
+        "passed": false,
+        "runtime": {
+         "retrievalMs": 77.43,
+         "nodeCpuUserMs": 76.843,
+         "nodeCpuSystemMs": 1.284,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 4
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": false,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": false,
+        "runtime": {
+         "retrievalMs": 74.93,
+         "nodeCpuUserMs": 74.325,
+         "nodeCpuSystemMs": 1.316,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 4
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": false,
+         "replayFormattingMs": 0.1,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.xbsl",
+        "DOMRF/Start/БиблиотекаКартинок/РеализацияКонтрактаПереопределениеЦветовойСхемы.yaml",
+        "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/ФорматТрудоустройства.yaml",
+        "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.yaml"
+       ],
+       "semantic": [
+        "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.xbsl",
+        "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 2,
+       "ready": 2,
+       "cacheHits": 0,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     },
+     "stage2": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 2,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 2,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 9384,
+       "fullPromptBeforeCap": 18449,
+       "deliveredPrompt": 18449
+      },
+      "chars": {
+       "semanticText": 6040,
+       "semanticSnippetText": 1772,
+       "rawCandidatePreviewText": 2799,
+       "formattedPreviewText": 1350,
+       "deliveredPreviewText": 1350,
+       "fullPromptBeforeCap": 11888,
+       "deliveredPrompt": 11888,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 1772,
+        "uniqueSourceChars": 1772,
+        "duplicateSourceChars": 0
+       },
+       "previews": {
+        "sourceChars": 1542,
+        "uniqueSourceChars": 771,
+        "duplicateSourceChars": 771
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 3314,
+        "uniqueSourceChars": 2543,
+        "duplicateSourceChars": 771
+       },
+       "deliveredPrompt": {
+        "sourceChars": 3314,
+        "uniqueSourceChars": 2543,
+        "duplicateSourceChars": 771
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 8,
+       "formatted": 8,
+       "withDeliveredSource": 8,
+       "fullyDelivered": 8
+      },
+      "diagnostics": [],
+      "selection": {
+       "intent": "implementation",
+       "maxDepth": 2,
+       "budgetChars": 32000,
+       "omittedRanges": 0
+      },
+      "textSha256": {
+       "semantic": "950d6c2dfcc0fa51546449748615218621f20a30131d019cf1f9c9dec2410f42",
+       "deliveredPrompt": "378af84cefe92a40c91d70da399124dd6a6e73613da59f8d037243d0861b7539"
+      },
+      "elapsedMs": 234.08,
+      "retrievalMs": 233.88,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 2,
+         "covered": 2,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 18449,
+        "deliveredPrompt": 18449
+       },
+       "chars": {
+        "formattedPreviewText": 1350,
+        "deliveredPreviewText": 1350,
+        "fullPromptBeforeCap": 11888,
+        "deliveredPrompt": 11888,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 1542,
+         "uniqueSourceChars": 771,
+         "duplicateSourceChars": 771
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 3314,
+         "uniqueSourceChars": 2543,
+         "duplicateSourceChars": 771
+        },
+        "deliveredPrompt": {
+         "sourceChars": 3314,
+         "uniqueSourceChars": 2543,
+         "duplicateSourceChars": 771
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 8,
+        "formatted": 8,
+        "withDeliveredSource": 8,
+        "fullyDelivered": 8
+       },
+       "textSha256": {
+        "deliveredPrompt": "378af84cefe92a40c91d70da399124dd6a6e73613da59f8d037243d0861b7539"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.1
+      },
+      "production36k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 2,
+         "covered": 2,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 18449,
+        "deliveredPrompt": 18449
+       },
+       "chars": {
+        "formattedPreviewText": 1350,
+        "deliveredPreviewText": 1350,
+        "fullPromptBeforeCap": 11888,
+        "deliveredPrompt": 11888,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 1542,
+         "uniqueSourceChars": 771,
+         "duplicateSourceChars": 771
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 3314,
+         "uniqueSourceChars": 2543,
+         "duplicateSourceChars": 771
+        },
+        "deliveredPrompt": {
+         "sourceChars": 3314,
+         "uniqueSourceChars": 2543,
+         "duplicateSourceChars": 771
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 8,
+        "formatted": 8,
+        "withDeliveredSource": 8,
+        "fullyDelivered": 8
+       },
+       "textSha256": {
+        "deliveredPrompt": "378af84cefe92a40c91d70da399124dd6a6e73613da59f8d037243d0861b7539"
+       },
+       "requestedMaxChars": 36000,
+       "toolOk": true,
+       "replayFormattingMs": 0.08
+      },
+      "runtime": {
+       "retrievalMs": 233.88,
+       "nodeCpuUserMs": 228.15,
+       "nodeCpuSystemMs": 2.463,
+       "astCalls": 2,
+       "astCacheHits": 0,
+       "astProblems": 0,
+       "unavailableLspCalls": 6
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 6,
+      "latencyMs": [
+       234.08,
+       215.7,
+       218.66
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 215.58,
+         "nodeCpuUserMs": 214.692,
+         "nodeCpuSystemMs": 1.873,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 6
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.09,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 218.49,
+         "nodeCpuUserMs": 222.933,
+         "nodeCpuSystemMs": 2.392,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 6
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.06,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.xbsl",
+        "DOMRF/Start/БиблиотекаКартинок/РеализацияКонтрактаПереопределениеЦветовойСхемы.yaml",
+        "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/ФорматТрудоустройства.yaml",
+        "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.yaml"
+       ],
+       "semantic": [
+        "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.xbsl",
+        "DOMRF/Start/КалендарьСотрудника/ВиджетКандидатыСписокСтрока.yaml",
+        "DOMRF/Start/УниверсальныеКомпоненты/ИнтерфейсныеКомпонентыОбщегоНазначения.xbsl",
+        "DOMRF/Start/УниверсальныеКомпоненты/ИнтерфейсныеКомпонентыОбщегоНазначения.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 2,
+       "ready": 2,
+       "cacheHits": 0,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     }
+    },
+    {
+     "id": "office-model-type",
+     "stage1": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 6,
+        "covered": 6,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 6,
+        "covered": 6,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 12105,
+       "fullPromptBeforeCap": 25034,
+       "deliveredPrompt": 25034
+      },
+      "chars": {
+       "semanticText": 8137,
+       "semanticSnippetText": 3032,
+       "rawCandidatePreviewText": 3123,
+       "formattedPreviewText": 3123,
+       "deliveredPreviewText": 3123,
+       "fullPromptBeforeCap": 15924,
+       "deliveredPrompt": 15924,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 3032,
+        "uniqueSourceChars": 2238,
+        "duplicateSourceChars": 794
+       },
+       "previews": {
+        "sourceChars": 3535,
+        "uniqueSourceChars": 2902,
+        "duplicateSourceChars": 633
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 6567,
+        "uniqueSourceChars": 4671,
+        "duplicateSourceChars": 1896
+       },
+       "deliveredPrompt": {
+        "sourceChars": 6567,
+        "uniqueSourceChars": 4671,
+        "duplicateSourceChars": 1896
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 10,
+       "formatted": 10,
+       "withDeliveredSource": 10,
+       "fullyDelivered": 10
+      },
+      "diagnostics": [],
+      "textSha256": {
+       "semantic": "279bd1028a28c4877793db55eb6aae353c125163e800eea680dc5a54a3981c3a",
+       "deliveredPrompt": "69cbc5434d015fd7c4a9a7f7ce4d216daa39495d94839e5e603f4b0a61ef6794"
+      },
+      "elapsedMs": 85.81,
+      "retrievalMs": 85.62,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 6,
+         "covered": 6,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 25034,
+        "deliveredPrompt": 25034
+       },
+       "chars": {
+        "formattedPreviewText": 3123,
+        "deliveredPreviewText": 3123,
+        "fullPromptBeforeCap": 15924,
+        "deliveredPrompt": 15924,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 3535,
+         "uniqueSourceChars": 2902,
+         "duplicateSourceChars": 633
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 6567,
+         "uniqueSourceChars": 4671,
+         "duplicateSourceChars": 1896
+        },
+        "deliveredPrompt": {
+         "sourceChars": 6567,
+         "uniqueSourceChars": 4671,
+         "duplicateSourceChars": 1896
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 10,
+        "formatted": 10,
+        "withDeliveredSource": 10,
+        "fullyDelivered": 10
+       },
+       "textSha256": {
+        "deliveredPrompt": "69cbc5434d015fd7c4a9a7f7ce4d216daa39495d94839e5e603f4b0a61ef6794"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.16
+      },
+      "runtime": {
+       "retrievalMs": 85.62,
+       "nodeCpuUserMs": 84.181,
+       "nodeCpuSystemMs": 1.986,
+       "astCalls": 2,
+       "astCacheHits": 0,
+       "astProblems": 0,
+       "unavailableLspCalls": 4
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 4,
+      "latencyMs": [
+       85.81,
+       78.15,
+       78.29
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 78.04,
+         "nodeCpuUserMs": 80.163,
+         "nodeCpuSystemMs": 1.772,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 4
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 78.17,
+         "nodeCpuUserMs": 76.894,
+         "nodeCpuSystemMs": 1.524,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 4
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтруктураПредприятия/Офисы.yaml",
+        "DOMRF/Start/СтруктураПредприятия/ОфисыФормаОбъекта.yaml",
+        "DOMRF/Start/СтруктураПредприятия/СтруктураПредприятияОбновлениеПодсистемы.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/Организации.yaml",
+        "DOMRF/Start/УправлениеПриложением/ПользователиПриложенияФормаАдминистрированияДоступа.yaml",
+        "DOMRF/Start/Проект.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтруктураПредприятия/Офисы.yaml",
+        "DOMRF/Start/СтруктураПредприятия/ОфисыФормаОбъекта.yaml",
+        "DOMRF/Start/СтруктураПредприятия/ПринадлежностьОрганизации.yaml",
+        "DOMRF/Start/УниверсальныеКомпоненты/ЛогированиеСобытий/ОперацияАудитаДанных.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 2,
+       "ready": 2,
+       "cacheHits": 0,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     },
+     "stage2": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 6,
+        "covered": 6,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 6,
+        "covered": 6,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 7104,
+       "fullPromptBeforeCap": 18505,
+       "deliveredPrompt": 18505
+      },
+      "chars": {
+       "semanticText": 4646,
+       "semanticSnippetText": 2016,
+       "rawCandidatePreviewText": 3123,
+       "formattedPreviewText": 2283,
+       "deliveredPreviewText": 2283,
+       "fullPromptBeforeCap": 11567,
+       "deliveredPrompt": 11567,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 2016,
+        "uniqueSourceChars": 2016,
+        "duplicateSourceChars": 0
+       },
+       "previews": {
+        "sourceChars": 2597,
+        "uniqueSourceChars": 2433,
+        "duplicateSourceChars": 164
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 4613,
+        "uniqueSourceChars": 4449,
+        "duplicateSourceChars": 164
+       },
+       "deliveredPrompt": {
+        "sourceChars": 4613,
+        "uniqueSourceChars": 4449,
+        "duplicateSourceChars": 164
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 3,
+       "formatted": 3,
+       "withDeliveredSource": 3,
+       "fullyDelivered": 3
+      },
+      "diagnostics": [],
+      "selection": {
+       "intent": "implementation",
+       "maxDepth": 2,
+       "budgetChars": 32000,
+       "omittedRanges": 0
+      },
+      "textSha256": {
+       "semantic": "0ef26de95859fc92cf0f512966c235a210a6ff988163c176e9f0810a4b60008c",
+       "deliveredPrompt": "e7bebe03aeaca733dbfa9628ab8b8241952f79fa091ce5c67fab85aec8cde2d0"
+      },
+      "elapsedMs": 86.36,
+      "retrievalMs": 86.19,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 6,
+         "covered": 6,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 18505,
+        "deliveredPrompt": 18505
+       },
+       "chars": {
+        "formattedPreviewText": 2283,
+        "deliveredPreviewText": 2283,
+        "fullPromptBeforeCap": 11567,
+        "deliveredPrompt": 11567,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 2597,
+         "uniqueSourceChars": 2433,
+         "duplicateSourceChars": 164
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 4613,
+         "uniqueSourceChars": 4449,
+         "duplicateSourceChars": 164
+        },
+        "deliveredPrompt": {
+         "sourceChars": 4613,
+         "uniqueSourceChars": 4449,
+         "duplicateSourceChars": 164
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 3,
+        "formatted": 3,
+        "withDeliveredSource": 3,
+        "fullyDelivered": 3
+       },
+       "textSha256": {
+        "deliveredPrompt": "e7bebe03aeaca733dbfa9628ab8b8241952f79fa091ce5c67fab85aec8cde2d0"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.1
+      },
+      "production36k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 6,
+         "covered": 6,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 18505,
+        "deliveredPrompt": 18505
+       },
+       "chars": {
+        "formattedPreviewText": 2283,
+        "deliveredPreviewText": 2283,
+        "fullPromptBeforeCap": 11567,
+        "deliveredPrompt": 11567,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 2597,
+         "uniqueSourceChars": 2433,
+         "duplicateSourceChars": 164
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 4613,
+         "uniqueSourceChars": 4449,
+         "duplicateSourceChars": 164
+        },
+        "deliveredPrompt": {
+         "sourceChars": 4613,
+         "uniqueSourceChars": 4449,
+         "duplicateSourceChars": 164
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 3,
+        "formatted": 3,
+        "withDeliveredSource": 3,
+        "fullyDelivered": 3
+       },
+       "textSha256": {
+        "deliveredPrompt": "e7bebe03aeaca733dbfa9628ab8b8241952f79fa091ce5c67fab85aec8cde2d0"
+       },
+       "requestedMaxChars": 36000,
+       "toolOk": true,
+       "replayFormattingMs": 0.11
+      },
+      "runtime": {
+       "retrievalMs": 86.19,
+       "nodeCpuUserMs": 85.674,
+       "nodeCpuSystemMs": 1.957,
+       "astCalls": 2,
+       "astCacheHits": 0,
+       "astProblems": 0,
+       "unavailableLspCalls": 5
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 5,
+      "latencyMs": [
+       86.36,
+       76.28,
+       76.23
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 76.18,
+         "nodeCpuUserMs": 75.241,
+         "nodeCpuSystemMs": 1.366,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 5
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 76.1,
+         "nodeCpuUserMs": 78.355,
+         "nodeCpuSystemMs": 1.391,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 5
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.1,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтруктураПредприятия/Офисы.yaml",
+        "DOMRF/Start/СтруктураПредприятия/ОфисыФормаОбъекта.yaml",
+        "DOMRF/Start/СтруктураПредприятия/СтруктураПредприятияОбновлениеПодсистемы.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/Организации.yaml",
+        "DOMRF/Start/УправлениеПриложением/ПользователиПриложенияФормаАдминистрированияДоступа.yaml",
+        "DOMRF/Start/Проект.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтруктураПредприятия/ПринадлежностьОрганизации.yaml",
+        "DOMRF/Start/УниверсальныеКомпоненты/ЛогированиеСобытий/ОперацияАудитаДанных.yaml",
+        "DOMRF/Start/СтруктураПредприятия/Офисы.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 2,
+       "ready": 2,
+       "cacheHits": 0,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     }
+    },
+    {
+     "id": "signature-only",
+     "stage1": {
+      "passed": false,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "signatures": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "excludedBodyChars": 1559
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "signatures": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "excludedBodyChars": 1559
+      },
+      "bytes": {
+       "semanticText": 19397,
+       "fullPromptBeforeCap": 33367,
+       "deliveredPrompt": 33367
+      },
+      "chars": {
+       "semanticText": 11678,
+       "semanticSnippetText": 3874,
+       "rawCandidatePreviewText": 2660,
+       "formattedPreviewText": 2660,
+       "deliveredPreviewText": 2660,
+       "fullPromptBeforeCap": 19839,
+       "deliveredPrompt": 19839,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 3874,
+        "uniqueSourceChars": 3874,
+        "duplicateSourceChars": 0
+       },
+       "previews": {
+        "sourceChars": 2844,
+        "uniqueSourceChars": 2714,
+        "duplicateSourceChars": 130
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 6718,
+        "uniqueSourceChars": 6438,
+        "duplicateSourceChars": 280
+       },
+       "deliveredPrompt": {
+        "sourceChars": 6718,
+        "uniqueSourceChars": 6438,
+        "duplicateSourceChars": 280
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 10,
+       "formatted": 10,
+       "withDeliveredSource": 10,
+       "fullyDelivered": 10
+      },
+      "diagnostics": [],
+      "textSha256": {
+       "semantic": "8dc3d287d74c2c6bb51b7fa3f47cf4195697cdf757448c5c8d921076b820979e",
+       "deliveredPrompt": "ab21b77e2cc890b523ffdd43ab7eecaf351ed2e4d878461adcbe05a03cff7bd2"
+      },
+      "elapsedMs": 85.17,
+      "retrievalMs": 85.05,
+      "managed22k": {
+       "passed": false,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "signatures": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "excludedBodyChars": 1559
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 33367,
+        "deliveredPrompt": 33367
+       },
+       "chars": {
+        "formattedPreviewText": 2660,
+        "deliveredPreviewText": 2660,
+        "fullPromptBeforeCap": 19839,
+        "deliveredPrompt": 19839,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 2844,
+         "uniqueSourceChars": 2714,
+         "duplicateSourceChars": 130
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 6718,
+         "uniqueSourceChars": 6438,
+         "duplicateSourceChars": 280
+        },
+        "deliveredPrompt": {
+         "sourceChars": 6718,
+         "uniqueSourceChars": 6438,
+         "duplicateSourceChars": 280
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 10,
+        "formatted": 10,
+        "withDeliveredSource": 10,
+        "fullyDelivered": 10
+       },
+       "textSha256": {
+        "deliveredPrompt": "ab21b77e2cc890b523ffdd43ab7eecaf351ed2e4d878461adcbe05a03cff7bd2"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.09
+      },
+      "runtime": {
+       "retrievalMs": 85.05,
+       "nodeCpuUserMs": 81.456,
+       "nodeCpuSystemMs": 1.556,
+       "astCalls": 2,
+       "astCacheHits": 1,
+       "astProblems": 0,
+       "unavailableLspCalls": 4
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 4,
+      "latencyMs": [
+       85.17,
+       78.39,
+       80.73
+      ],
+      "repeatChecks": [
+       {
+        "passed": false,
+        "runtime": {
+         "retrievalMs": 78.28,
+         "nodeCpuUserMs": 77.448,
+         "nodeCpuSystemMs": 1.407,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 4
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": false,
+         "replayFormattingMs": 0.1,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": false,
+        "runtime": {
+         "retrievalMs": 80.62,
+         "nodeCpuUserMs": 79.728,
+         "nodeCpuSystemMs": 1.42,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 4
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": false,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+        "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/ВизуальныеКомпоненты/УчастникиПроцессаПриемаФормаИзменения.xbsl",
+        "DOMRF/Start/КадровоеДелопроизводство/Кандидаты.Объект.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/Организации.yaml",
+        "DOMRF/Start/СтруктураПредприятия/Офисы.yaml",
+        "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/РеализацияКонтрактов/СодержимоеРазделаНастройкиПодсистемы.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.yaml",
+        "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/ВизуальныеКомпоненты/УчастникиПроцессаПриемаФормаИзменения.yaml",
+        "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/ВизуальныеКомпоненты/УчастникиПроцессаПриемаФормаИзменения.xbsl",
+        "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/РольУчастникаПроцессаПриема.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 2,
+       "ready": 2,
+       "cacheHits": 1,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     },
+     "stage2": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "signatures": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "signatures": {
+        "required": 1,
+        "covered": 1,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 4046,
+       "fullPromptBeforeCap": 17209,
+       "deliveredPrompt": 17209
+      },
+      "chars": {
+       "semanticText": 2573,
+       "semanticSnippetText": 516,
+       "rawCandidatePreviewText": 2660,
+       "formattedPreviewText": 2240,
+       "deliveredPreviewText": 2240,
+       "fullPromptBeforeCap": 10301,
+       "deliveredPrompt": 10301,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 516,
+        "uniqueSourceChars": 516,
+        "duplicateSourceChars": 0
+       },
+       "previews": {
+        "sourceChars": 2416,
+        "uniqueSourceChars": 2286,
+        "duplicateSourceChars": 130
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 2932,
+        "uniqueSourceChars": 2802,
+        "duplicateSourceChars": 130
+       },
+       "deliveredPrompt": {
+        "sourceChars": 2932,
+        "uniqueSourceChars": 2802,
+        "duplicateSourceChars": 130
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 6,
+       "formatted": 6,
+       "withDeliveredSource": 6,
+       "fullyDelivered": 6
+      },
+      "diagnostics": [],
+      "selection": {
+       "intent": "declaration",
+       "maxDepth": 2,
+       "budgetChars": 32000,
+       "omittedRanges": 0
+      },
+      "textSha256": {
+       "semantic": "169c5f293c54ea79dd22bf87a970c3f9ab48687eab433da317e5b71df5d1938c",
+       "deliveredPrompt": "593cb5d376a088de05dbdfd3f74a8b2d328666ebb56fd6f40958937b8e608370"
+      },
+      "elapsedMs": 80.58,
+      "retrievalMs": 80.44,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "signatures": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 17209,
+        "deliveredPrompt": 17209
+       },
+       "chars": {
+        "formattedPreviewText": 2240,
+        "deliveredPreviewText": 2240,
+        "fullPromptBeforeCap": 10301,
+        "deliveredPrompt": 10301,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 2416,
+         "uniqueSourceChars": 2286,
+         "duplicateSourceChars": 130
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 2932,
+         "uniqueSourceChars": 2802,
+         "duplicateSourceChars": 130
+        },
+        "deliveredPrompt": {
+         "sourceChars": 2932,
+         "uniqueSourceChars": 2802,
+         "duplicateSourceChars": 130
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 6,
+        "formatted": 6,
+        "withDeliveredSource": 6,
+        "fullyDelivered": 6
+       },
+       "textSha256": {
+        "deliveredPrompt": "593cb5d376a088de05dbdfd3f74a8b2d328666ebb56fd6f40958937b8e608370"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.08
+      },
+      "production36k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "signatures": {
+         "required": 1,
+         "covered": 1,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 17209,
+        "deliveredPrompt": 17209
+       },
+       "chars": {
+        "formattedPreviewText": 2240,
+        "deliveredPreviewText": 2240,
+        "fullPromptBeforeCap": 10301,
+        "deliveredPrompt": 10301,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 2416,
+         "uniqueSourceChars": 2286,
+         "duplicateSourceChars": 130
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 2932,
+         "uniqueSourceChars": 2802,
+         "duplicateSourceChars": 130
+        },
+        "deliveredPrompt": {
+         "sourceChars": 2932,
+         "uniqueSourceChars": 2802,
+         "duplicateSourceChars": 130
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 6,
+        "formatted": 6,
+        "withDeliveredSource": 6,
+        "fullyDelivered": 6
+       },
+       "textSha256": {
+        "deliveredPrompt": "593cb5d376a088de05dbdfd3f74a8b2d328666ebb56fd6f40958937b8e608370"
+       },
+       "requestedMaxChars": 36000,
+       "toolOk": true,
+       "replayFormattingMs": 0.06
+      },
+      "runtime": {
+       "retrievalMs": 80.44,
+       "nodeCpuUserMs": 80.409,
+       "nodeCpuSystemMs": 1.014,
+       "astCalls": 1,
+       "astCacheHits": 1,
+       "astProblems": 0,
+       "unavailableLspCalls": 2
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 2,
+      "latencyMs": [
+       80.58,
+       80.89,
+       78.18
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 80.78,
+         "nodeCpuUserMs": 139.225,
+         "nodeCpuSystemMs": 1.191,
+         "astCalls": 1,
+         "astCacheHits": 1,
+         "astProblems": 0,
+         "unavailableLspCalls": 2
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.11,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.06,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 78.08,
+         "nodeCpuUserMs": 77.55,
+         "nodeCpuSystemMs": 0.978,
+         "astCalls": 1,
+         "astCacheHits": 1,
+         "astProblems": 0,
+         "unavailableLspCalls": 2
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+        "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/ВизуальныеКомпоненты/УчастникиПроцессаПриемаФормаИзменения.xbsl",
+        "DOMRF/Start/КадровоеДелопроизводство/Кандидаты.Объект.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/Организации.yaml",
+        "DOMRF/Start/СтруктураПредприятия/Офисы.yaml",
+        "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/РеализацияКонтрактов/СодержимоеРазделаНастройкиПодсистемы.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 1,
+       "ready": 1,
+       "cacheHits": 1,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     }
+    },
+    {
+     "id": "duplicate-names",
+     "stage1": {
+      "passed": false,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 1,
+        "missing": [
+         {
+          "label": "Organization address method",
+          "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.xbsl",
+          "startLine": 13,
+          "endLine": 15
+         }
+        ]
+       },
+       "exactYaml": {
+        "required": 2,
+        "covered": 1,
+        "missing": [
+         {
+          "label": "Organization address binding",
+          "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.yaml",
+          "startLine": 28,
+          "endLine": 30
+         }
+        ]
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 1,
+        "missing": [
+         {
+          "label": "Organization address method",
+          "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.xbsl",
+          "startLine": 13,
+          "endLine": 15
+         }
+        ]
+       },
+       "exactYaml": {
+        "required": 2,
+        "covered": 1,
+        "missing": [
+         {
+          "label": "Organization address binding",
+          "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.yaml",
+          "startLine": 28,
+          "endLine": 30
+         }
+        ]
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 11870,
+       "fullPromptBeforeCap": 24790,
+       "deliveredPrompt": 24790
+      },
+      "chars": {
+       "semanticText": 7440,
+       "semanticSnippetText": 3228,
+       "rawCandidatePreviewText": 2640,
+       "formattedPreviewText": 2640,
+       "deliveredPreviewText": 2639,
+       "fullPromptBeforeCap": 15111,
+       "deliveredPrompt": 15111,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 3228,
+        "uniqueSourceChars": 1318,
+        "duplicateSourceChars": 1910
+       },
+       "previews": {
+        "sourceChars": 3128,
+        "uniqueSourceChars": 2440,
+        "duplicateSourceChars": 688
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 6356,
+        "uniqueSourceChars": 2460,
+        "duplicateSourceChars": 3896
+       },
+       "deliveredPrompt": {
+        "sourceChars": 6356,
+        "uniqueSourceChars": 2460,
+        "duplicateSourceChars": 3896
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 8,
+       "formatted": 8,
+       "withDeliveredSource": 8,
+       "fullyDelivered": 8
+      },
+      "diagnostics": [],
+      "textSha256": {
+       "semantic": "21b4ea119b3c33251c07644dcb1a98d4754ed3cb59640c889c18fef31227c45c",
+       "deliveredPrompt": "a608a4f17eb1757358a62073bfca971cf854c9b87f7a34773dfb5fb5e810814d"
+      },
+      "elapsedMs": 84.9,
+      "retrievalMs": 84.81,
+      "managed22k": {
+       "passed": false,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 2,
+         "covered": 1,
+         "missing": [
+          {
+           "label": "Organization address method",
+           "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.xbsl",
+           "startLine": 13,
+           "endLine": 15
+          }
+         ]
+        },
+        "exactYaml": {
+         "required": 2,
+         "covered": 1,
+         "missing": [
+          {
+           "label": "Organization address binding",
+           "path": "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.yaml",
+           "startLine": 28,
+           "endLine": 30
+          }
+         ]
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 24790,
+        "deliveredPrompt": 24790
+       },
+       "chars": {
+        "formattedPreviewText": 2640,
+        "deliveredPreviewText": 2639,
+        "fullPromptBeforeCap": 15111,
+        "deliveredPrompt": 15111,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 3128,
+         "uniqueSourceChars": 2440,
+         "duplicateSourceChars": 688
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 6356,
+         "uniqueSourceChars": 2460,
+         "duplicateSourceChars": 3896
+        },
+        "deliveredPrompt": {
+         "sourceChars": 6356,
+         "uniqueSourceChars": 2460,
+         "duplicateSourceChars": 3896
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 8,
+        "formatted": 8,
+        "withDeliveredSource": 8,
+        "fullyDelivered": 8
+       },
+       "textSha256": {
+        "deliveredPrompt": "a608a4f17eb1757358a62073bfca971cf854c9b87f7a34773dfb5fb5e810814d"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.09
+      },
+      "runtime": {
+       "retrievalMs": 84.81,
+       "nodeCpuUserMs": 82.938,
+       "nodeCpuSystemMs": 0.777,
+       "astCalls": 1,
+       "astCacheHits": 0,
+       "astProblems": 0,
+       "unavailableLspCalls": 2
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 2,
+      "latencyMs": [
+       84.9,
+       82.92,
+       82.63
+      ],
+      "repeatChecks": [
+       {
+        "passed": false,
+        "runtime": {
+         "retrievalMs": 82.83,
+         "nodeCpuUserMs": 82.47,
+         "nodeCpuSystemMs": 0.795,
+         "astCalls": 1,
+         "astCacheHits": 1,
+         "astProblems": 0,
+         "unavailableLspCalls": 2
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": false,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": false,
+        "runtime": {
+         "retrievalMs": 82.55,
+         "nodeCpuUserMs": 81.938,
+         "nodeCpuSystemMs": 0.768,
+         "astCalls": 1,
+         "astCacheHits": 1,
+         "astProblems": 0,
+         "unavailableLspCalls": 2
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": false,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.yaml",
+        "DOMRF/Start/СинхронизацияДанных/РеализацияКонтрактов/СодержимоеРазделаНастройкиПодсистемы.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 1,
+       "ready": 1,
+       "cacheHits": 0,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     },
+     "stage2": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 2,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 2,
+        "covered": 2,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 2,
+        "covered": 2,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 2,
+        "covered": 2,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 10676,
+       "fullPromptBeforeCap": 19844,
+       "deliveredPrompt": 19844
+      },
+      "chars": {
+       "semanticText": 6611,
+       "semanticSnippetText": 1979,
+       "rawCandidatePreviewText": 2640,
+       "formattedPreviewText": 649,
+       "deliveredPreviewText": 649,
+       "fullPromptBeforeCap": 12213,
+       "deliveredPrompt": 12213,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 1979,
+        "uniqueSourceChars": 1979,
+        "duplicateSourceChars": 0
+       },
+       "previews": {
+        "sourceChars": 713,
+        "uniqueSourceChars": 713,
+        "duplicateSourceChars": 0
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 2692,
+        "uniqueSourceChars": 2692,
+        "duplicateSourceChars": 0
+       },
+       "deliveredPrompt": {
+        "sourceChars": 2692,
+        "uniqueSourceChars": 2692,
+        "duplicateSourceChars": 0
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 5,
+       "formatted": 5,
+       "withDeliveredSource": 5,
+       "fullyDelivered": 5
+      },
+      "diagnostics": [],
+      "selection": {
+       "intent": "implementation",
+       "maxDepth": 2,
+       "budgetChars": 32000,
+       "omittedRanges": 0
+      },
+      "textSha256": {
+       "semantic": "082d353da3974440ba26913089246949844398126fd2dbd8b5eb10d81242a6fe",
+       "deliveredPrompt": "dbaab39aa73613b5e708f5a4de316fa0c5f6e3dc37d448aebc777319f1d58b38"
+      },
+      "elapsedMs": 88.74,
+      "retrievalMs": 88.62,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 2,
+         "covered": 2,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 2,
+         "covered": 2,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 19844,
+        "deliveredPrompt": 19844
+       },
+       "chars": {
+        "formattedPreviewText": 649,
+        "deliveredPreviewText": 649,
+        "fullPromptBeforeCap": 12213,
+        "deliveredPrompt": 12213,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 713,
+         "uniqueSourceChars": 713,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 2692,
+         "uniqueSourceChars": 2692,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 2692,
+         "uniqueSourceChars": 2692,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 5,
+        "formatted": 5,
+        "withDeliveredSource": 5,
+        "fullyDelivered": 5
+       },
+       "textSha256": {
+        "deliveredPrompt": "dbaab39aa73613b5e708f5a4de316fa0c5f6e3dc37d448aebc777319f1d58b38"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.09
+      },
+      "production36k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 2,
+         "covered": 2,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 2,
+         "covered": 2,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 19844,
+        "deliveredPrompt": 19844
+       },
+       "chars": {
+        "formattedPreviewText": 649,
+        "deliveredPreviewText": 649,
+        "fullPromptBeforeCap": 12213,
+        "deliveredPrompt": 12213,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 713,
+         "uniqueSourceChars": 713,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 2692,
+         "uniqueSourceChars": 2692,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 2692,
+         "uniqueSourceChars": 2692,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 5,
+        "formatted": 5,
+        "withDeliveredSource": 5,
+        "fullyDelivered": 5
+       },
+       "textSha256": {
+        "deliveredPrompt": "dbaab39aa73613b5e708f5a4de316fa0c5f6e3dc37d448aebc777319f1d58b38"
+       },
+       "requestedMaxChars": 36000,
+       "toolOk": true,
+       "replayFormattingMs": 0.07
+      },
+      "runtime": {
+       "retrievalMs": 88.62,
+       "nodeCpuUserMs": 84.286,
+       "nodeCpuSystemMs": 1.575,
+       "astCalls": 2,
+       "astCacheHits": 0,
+       "astProblems": 0,
+       "unavailableLspCalls": 4
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 4,
+      "latencyMs": [
+       88.74,
+       86.08,
+       84.34
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 85.98,
+         "nodeCpuUserMs": 85.302,
+         "nodeCpuSystemMs": 1.282,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 4
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.12,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.06,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 84.22,
+         "nodeCpuUserMs": 83.707,
+         "nodeCpuSystemMs": 1.316,
+         "astCalls": 2,
+         "astCacheHits": 2,
+         "astProblems": 0,
+         "unavailableLspCalls": 4
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.1,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.06,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.yaml",
+        "DOMRF/Start/СинхронизацияДанных/РеализацияКонтрактов/СодержимоеРазделаНастройкиПодсистемы.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.xbsl"
+       ],
+       "semantic": [
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.xbsl",
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОрганизацииПользовательскийСписокСтрока.yaml",
+        "DOMRF/Start/СтруктураПредприятия/ВизуальныеКомпоненты/ОфисыПользовательскийСписокСтрока.yaml"
+       ]
+      },
+      "nativeAst": {
+       "calls": 2,
+       "ready": 2,
+       "cacheHits": 0,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     }
+    },
+    {
+     "id": "unknown-symbol",
+     "stage1": {
+      "passed": false,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 487,
+       "fullPromptBeforeCap": 8285,
+       "deliveredPrompt": 8285
+      },
+      "chars": {
+       "semanticText": 304,
+       "semanticSnippetText": 0,
+       "rawCandidatePreviewText": 2935,
+       "formattedPreviewText": 2935,
+       "deliveredPreviewText": 2935,
+       "fullPromptBeforeCap": 5842,
+       "deliveredPrompt": 5842,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 0,
+        "uniqueSourceChars": 0,
+        "duplicateSourceChars": 0
+       },
+       "previews": {
+        "sourceChars": 2948,
+        "uniqueSourceChars": 2948,
+        "duplicateSourceChars": 0
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 2948,
+        "uniqueSourceChars": 2948,
+        "duplicateSourceChars": 0
+       },
+       "deliveredPrompt": {
+        "sourceChars": 2948,
+        "uniqueSourceChars": 2948,
+        "duplicateSourceChars": 0
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 0,
+       "formatted": 0,
+       "withDeliveredSource": 0,
+       "fullyDelivered": 0
+      },
+      "abstention": {
+       "passed": false,
+       "returnedChunks": 8,
+       "returnedSnippets": 0,
+       "note": "Returning unrelated fallback context fails abstention; it is not evidence of a fabricated symbol."
+      },
+      "diagnostics": [],
+      "textSha256": {
+       "semantic": "a4d25052fef35279aec2f6951f8a1bd99aab93cb7abf9492a6882bda5f121e18",
+       "deliveredPrompt": "964d430924699306d7fb3b6bac457957a8279edd61a0e1f133111dd580501e42"
+      },
+      "elapsedMs": 34.29,
+      "retrievalMs": 34.17,
+      "managed22k": {
+       "passed": false,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 8285,
+        "deliveredPrompt": 8285
+       },
+       "chars": {
+        "formattedPreviewText": 2935,
+        "deliveredPreviewText": 2935,
+        "fullPromptBeforeCap": 5842,
+        "deliveredPrompt": 5842,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 2948,
+         "uniqueSourceChars": 2948,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 2948,
+         "uniqueSourceChars": 2948,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 2948,
+         "uniqueSourceChars": 2948,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 0,
+        "formatted": 0,
+        "withDeliveredSource": 0,
+        "fullyDelivered": 0
+       },
+       "textSha256": {
+        "deliveredPrompt": "964d430924699306d7fb3b6bac457957a8279edd61a0e1f133111dd580501e42"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": true,
+       "replayFormattingMs": 0.06,
+       "abstention": {
+        "passed": false,
+        "returnedChunks": 8,
+        "returnedSnippets": 0,
+        "note": "Returning unrelated fallback context fails abstention; it is not evidence of a fabricated symbol."
+       }
+      },
+      "runtime": {
+       "retrievalMs": 34.17,
+       "nodeCpuUserMs": 35.666,
+       "nodeCpuSystemMs": 0.334,
+       "astCalls": 0,
+       "astCacheHits": 0,
+       "astProblems": 0,
+       "unavailableLspCalls": 0
+      },
+      "toolOk": true,
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 0,
+      "latencyMs": [
+       34.29,
+       33.9,
+       33.29
+      ],
+      "repeatChecks": [
+       {
+        "passed": false,
+        "runtime": {
+         "retrievalMs": 33.8,
+         "nodeCpuUserMs": 34.539,
+         "nodeCpuSystemMs": 0.147,
+         "astCalls": 0,
+         "astCacheHits": 0,
+         "astProblems": 0,
+         "unavailableLspCalls": 0
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": false,
+         "replayFormattingMs": 0.08,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": false,
+        "runtime": {
+         "retrievalMs": 33.2,
+         "nodeCpuUserMs": 33.148,
+         "nodeCpuSystemMs": 0.247,
+         "astCalls": 0,
+         "astCacheHits": 0,
+         "astProblems": 0,
+         "unavailableLspCalls": 0
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": false,
+         "replayFormattingMs": 0.07,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [
+        "docs/README.md",
+        "specs/README.md",
+        ".local-codex/migration-audit/README.md",
+        ".local-codex/raw/README.md",
+        ".local-codex/tests/README.md",
+        ".local-codex/raw/assets/README.md",
+        ".local-codex/raw/sources/README.md",
+        "docs/reference/decisions/README.md"
+       ],
+       "semantic": []
+      },
+      "nativeAst": {
+       "calls": 0,
+       "ready": 0,
+       "cacheHits": 0,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     },
+     "stage2": {
+      "passed": true,
+      "semanticCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "promptCoverage": {
+       "fullMethods": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "exactYaml": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "signatures": {
+        "required": 0,
+        "covered": 0,
+        "missing": []
+       },
+       "excludedBodyChars": 0
+      },
+      "bytes": {
+       "semanticText": 720,
+       "fullPromptBeforeCap": 0,
+       "deliveredPrompt": 0
+      },
+      "chars": {
+       "semanticText": 434,
+       "semanticSnippetText": 0,
+       "rawCandidatePreviewText": 0,
+       "formattedPreviewText": 0,
+       "deliveredPreviewText": 0,
+       "fullPromptBeforeCap": 0,
+       "deliveredPrompt": 0,
+       "removedByPromptCap": 0
+      },
+      "overlap": {
+       "semantic": {
+        "sourceChars": 0,
+        "uniqueSourceChars": 0,
+        "duplicateSourceChars": 0
+       },
+       "previews": {
+        "sourceChars": 0,
+        "uniqueSourceChars": 0,
+        "duplicateSourceChars": 0
+       },
+       "fullPromptBeforeCap": {
+        "sourceChars": 0,
+        "uniqueSourceChars": 0,
+        "duplicateSourceChars": 0
+       },
+       "deliveredPrompt": {
+        "sourceChars": 0,
+        "uniqueSourceChars": 0,
+        "duplicateSourceChars": 0
+       }
+      },
+      "snippetDelivery": {
+       "retrieved": 0,
+       "formatted": 0,
+       "withDeliveredSource": 0,
+       "fullyDelivered": 0
+      },
+      "abstention": {
+       "passed": true,
+       "returnedChunks": 0,
+       "returnedSnippets": 0,
+       "note": "Returning unrelated fallback context fails abstention; it is not evidence of a fabricated symbol."
+      },
+      "diagnostics": [],
+      "selection": {
+       "intent": "implementation",
+       "maxDepth": 2,
+       "budgetChars": 32000,
+       "omittedRanges": 0
+      },
+      "textSha256": {
+       "semantic": "4675629316aed9c4916ae5443f4568ef7e508d624298b56e67a3476a1d7ba9d3",
+       "deliveredPrompt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "elapsedMs": 30.6,
+      "retrievalMs": 30.44,
+      "managed22k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 0,
+        "deliveredPrompt": 0
+       },
+       "chars": {
+        "formattedPreviewText": 0,
+        "deliveredPreviewText": 0,
+        "fullPromptBeforeCap": 0,
+        "deliveredPrompt": 0,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 0,
+         "uniqueSourceChars": 0,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 0,
+         "uniqueSourceChars": 0,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 0,
+         "uniqueSourceChars": 0,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 0,
+        "formatted": 0,
+        "withDeliveredSource": 0,
+        "fullyDelivered": 0
+       },
+       "textSha256": {
+        "deliveredPrompt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+       },
+       "requestedMaxChars": 22000,
+       "toolOk": false,
+       "toolError": {
+        "code": "notFound",
+        "message": "No project chunks matched the query.",
+        "retryable": true
+       },
+       "replayFormattingMs": 0.06,
+       "abstention": {
+        "passed": true,
+        "returnedChunks": 0,
+        "returnedSnippets": 0,
+        "note": "Returning unrelated fallback context fails abstention; it is not evidence of a fabricated symbol."
+       }
+      },
+      "production36k": {
+       "passed": true,
+       "promptCoverage": {
+        "fullMethods": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "exactYaml": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "signatures": {
+         "required": 0,
+         "covered": 0,
+         "missing": []
+        },
+        "excludedBodyChars": 0
+       },
+       "bytes": {
+        "fullPromptBeforeCap": 0,
+        "deliveredPrompt": 0
+       },
+       "chars": {
+        "formattedPreviewText": 0,
+        "deliveredPreviewText": 0,
+        "fullPromptBeforeCap": 0,
+        "deliveredPrompt": 0,
+        "removedByPromptCap": 0
+       },
+       "overlap": {
+        "previews": {
+         "sourceChars": 0,
+         "uniqueSourceChars": 0,
+         "duplicateSourceChars": 0
+        },
+        "fullPromptBeforeCap": {
+         "sourceChars": 0,
+         "uniqueSourceChars": 0,
+         "duplicateSourceChars": 0
+        },
+        "deliveredPrompt": {
+         "sourceChars": 0,
+         "uniqueSourceChars": 0,
+         "duplicateSourceChars": 0
+        }
+       },
+       "snippetDelivery": {
+        "retrieved": 0,
+        "formatted": 0,
+        "withDeliveredSource": 0,
+        "fullyDelivered": 0
+       },
+       "textSha256": {
+        "deliveredPrompt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+       },
+       "requestedMaxChars": 36000,
+       "toolOk": false,
+       "toolError": {
+        "code": "notFound",
+        "message": "No project chunks matched the query.",
+        "retryable": true
+       },
+       "replayFormattingMs": 0.03,
+       "abstention": {
+        "passed": true,
+        "returnedChunks": 0,
+        "returnedSnippets": 0,
+        "note": "Returning unrelated fallback context fails abstention; it is not evidence of a fabricated symbol."
+       }
+      },
+      "runtime": {
+       "retrievalMs": 30.44,
+       "nodeCpuUserMs": 30.566,
+       "nodeCpuSystemMs": 0.136,
+       "astCalls": 0,
+       "astCacheHits": 0,
+       "astProblems": 0,
+       "unavailableLspCalls": 0
+      },
+      "toolOk": false,
+      "toolError": {
+       "code": "notFound",
+       "message": "No project chunks matched the query.",
+       "retryable": true
+      },
+      "totalFiles": 1014,
+      "totalChunks": 4625,
+      "unavailableLspCalls": 0,
+      "latencyMs": [
+       30.6,
+       30.66,
+       30.19
+      ],
+      "repeatChecks": [
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 30.59,
+         "nodeCpuUserMs": 30.568,
+         "nodeCpuSystemMs": 0.234,
+         "astCalls": 0,
+         "astCacheHits": 0,
+         "astProblems": 0,
+         "unavailableLspCalls": 0
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.05,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.02,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       },
+       {
+        "passed": true,
+        "runtime": {
+         "retrievalMs": 30.12,
+         "nodeCpuUserMs": 30.027,
+         "nodeCpuSystemMs": 0.162,
+         "astCalls": 0,
+         "astCacheHits": 0,
+         "astProblems": 0,
+         "unavailableLspCalls": 0
+        },
+        "sameSemanticText": true,
+        "sameCoverage": true,
+        "managed22k": {
+         "passed": true,
+         "replayFormattingMs": 0.05,
+         "samePromptText": true,
+         "sameCoverage": true
+        },
+        "production36k": {
+         "passed": true,
+         "replayFormattingMs": 0.03,
+         "samePromptText": true,
+         "sameCoverage": true
+        }
+       }
+      ],
+      "paths": {
+       "candidates": [],
+       "semantic": []
+      },
+      "nativeAst": {
+       "calls": 0,
+       "ready": 0,
+       "cacheHits": 0,
+       "partial": 0,
+       "diagnosticCount": 0,
+       "problems": []
+      }
+     }
+    }
+   ],
+   "currentSourceChangedDuringRun": false,
+   "integrity": {
+    "baselineBefore": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+    "baselineAfter": "d3196fbac50da63e1fb899c5887cb70cf5d6b43ee77068dfe0c52a5d8ace6354",
+    "currentBefore": "984855351ebd4637c6fdadff4333b0ea372198dc36cbc9eb9d40eaa12ffee224",
+    "currentAfter": "984855351ebd4637c6fdadff4333b0ea372198dc36cbc9eb9d40eaa12ffee224",
+    "oracleBefore": "22e5284ec7ea54b8ca45e410ecc6bd59a79fc4250add32b55954282a66f0fc8a",
+    "oracleAfter": "22e5284ec7ea54b8ca45e410ecc6bd59a79fc4250add32b55954282a66f0fc8a",
+    "fixtureSha256": "3f3289852f6107b93a527ed5462f987cdc6cf0f94d616d16e53e54b5441069e1",
+    "resourcesUnchanged": true
+   },
+   "summary": {
+    "stage1": {
+     "passedCases": 4,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 79249,
+     "deliveredPromptChars": 136319,
+     "semanticDuplicateChars": 5697,
+     "promptDuplicateChars": 17409,
+     "failedCases": [
+      "calendar-dependency",
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    },
+    "stage2": {
+     "passedCases": 8,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 63641,
+     "deliveredPromptChars": 102847,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": []
+    }
+   },
+   "managed22kSummary": {
+    "stage1": {
+     "passedCases": 4,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 6,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 11,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 79249,
+     "deliveredPromptChars": 139163,
+     "semanticDuplicateChars": 5697,
+     "promptDuplicateChars": 17530,
+     "failedCases": [
+      "calendar-dependency",
+      "signature-only",
+      "duplicate-names",
+      "unknown-symbol"
+     ]
+    },
+    "stage2": {
+     "passedCases": 8,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 63641,
+     "deliveredPromptChars": 106847,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": []
+    }
+   },
+   "production36kSummary": {
+    "stage2": {
+     "passedCases": 8,
+     "totalCases": 8,
+     "semanticCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "promptCoverage": {
+      "fullMethods": {
+       "covered": 8,
+       "required": 8
+      },
+      "exactYaml": {
+       "covered": 12,
+       "required": 12
+      },
+      "signatures": {
+       "covered": 1,
+       "required": 1
+      }
+     },
+     "semanticChars": 63641,
+     "deliveredPromptChars": 108235,
+     "semanticDuplicateChars": 0,
+     "promptDuplicateChars": 1065,
+     "failedCases": []
+    }
+   },
+   "completedAt": "2026-10-13T23:20:50.546Z",
+   "debugDump": {
+    "path": "/tmp/codex-context-stage2-debug/run-2026-10-13T23-20-42-708Z-984855351ebd.json",
+    "bytes": 2806550,
+    "sha256": "0dad547f80c8ae1a69d895e53a6605feb60ea7786a4648274584ff1a373b6d95"
+   }
+  }
+ ]
+}

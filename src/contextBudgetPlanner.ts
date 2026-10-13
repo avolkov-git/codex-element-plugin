@@ -43,7 +43,7 @@ export interface ContextBudgetResult {
   sourceReports: ContextBudgetSourceReport[];
 }
 
-const MAX_SERVICE_CONTEXT_CHARS = 60_000;
+const MAX_SERVICE_CONTEXT_CHARS = 128_000;
 const MIN_USEFUL_BLOCK_CHARS = 400;
 
 const DEFAULT_SOURCE_PRIORITIES: Record<ContextBlock["source"], number> = {
@@ -150,12 +150,16 @@ export function applyContextBudget(blocks: readonly ContextBlock[], options: Con
     .map((block, index) => ({
       block,
       originalIndex: index,
+      // A larger project neighbourhood must not displace the user's coding requirements.
+      instruction: ["technicalProject", "explicitProject", "projectNoContext"].includes(route)
+        && (block.source === "baseRules" || block.source === "rules"),
       priority: getEffectivePriority(block, route),
       score: getFiniteNumber(block.score),
       tokensEstimate: estimateTokens(block)
     }))
     .sort((left, right) =>
-      right.priority - left.priority
+      Number(right.instruction) - Number(left.instruction)
+      || right.priority - left.priority
       || right.score - left.score
       || left.tokensEstimate - right.tokensEstimate
       || left.originalIndex - right.originalIndex

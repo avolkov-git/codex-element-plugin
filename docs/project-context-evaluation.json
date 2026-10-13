@@ -1,0 +1,249 @@
+{
+  "projectCommit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+  "baselineRef": "e5d60e0c4fbad9cafb01645549cd5353b5ce1cf7",
+  "baselineCommit": "e5d60e0c4fbad9cafb01645549cd5353b5ce1cf7",
+  "parser": "9.1.9-1",
+  "nativeAstStatus": "ready",
+  "liveLsp": false,
+  "parserPrewarmed": true,
+  "note": "Deterministic retrieval comparison in one form, not an end-to-end model quality measurement. Before counts search previews; after counts bounded semantic context. Context size is not matched.",
+  "cases": [
+    {
+      "name": "Кнопка и обработчик",
+      "query": "В ЗамещениеПользователяФорма проверь ПриНажатии Применить: какая проверка выполняется перед изменением замещения?",
+      "before": {
+        "elapsedMs": 519,
+        "completeMethods": 0,
+        "contextChars": 2462,
+        "paths": [
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+          "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/ОбъектыПередачиДанных/ОбъектПередачиДанных.yaml",
+          "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/СистемаПотокОбъектыПередачиДанных.yaml",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ДанныеРедактированияЗамещенияПользователя.yaml",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ПерсональныеЗамещенияКомпонент.yaml",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/РежимРедактированияЗамещенияПользователя.yaml",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/СтрокаПерсональногоЗамещения.yaml",
+          "DOMRF/Start/СтруктураПредприятия/ЗамещенияПользователейПриложенияПроверки.yaml"
+        ]
+      },
+      "after": {
+        "elapsedMs": 721,
+        "completeMethods": 2,
+        "contextChars": 12912,
+        "paths": [
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ДанныеРедактированияЗамещенияПользователя.yaml"
+        ],
+        "expectedLink": [
+          {
+            "from": {
+              "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+              "startLine": 67,
+              "endLine": 67
+            },
+            "name": "Применить",
+            "kind": "handler",
+            "confidence": "structural",
+            "targets": [
+              {
+                "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+                "startLine": 83,
+                "endLine": 103
+              }
+            ]
+          }
+        ],
+        "documentationQueries": [
+          "Форма",
+          "Булево",
+          "ПроизвольныйШаблонФормы",
+          "Группа",
+          "Надпись",
+          "ПолеВвода"
+        ],
+        "providers": [
+          {
+            "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+            "ast": "not-applicable",
+            "lsp": "unavailable"
+          },
+          {
+            "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+            "ast": "ready",
+            "lsp": "unavailable",
+            "parserVersion": "9.1.9-1"
+          }
+        ],
+        "diagnostics": []
+      },
+      "expectedMethods": 2
+    },
+    {
+      "name": "Условие доступности",
+      "query": "В ЗамещениеПользователяФорма почему МожноПрименить не разрешает сохранить замещение с неправильным периодом?",
+      "before": {
+        "elapsedMs": 28,
+        "completeMethods": 0,
+        "contextChars": 2780,
+        "paths": [
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+          "DOMRF/Start/КадровоеДелопроизводство/РассылкиИУведомления/ОписаниеКаналаПочтаСЗамещением.yaml",
+          "DOMRF/Start/КадровоеДелопроизводство/РассылкиИУведомления/ПочтаСЗамещениемПрограммныйИнтерфейс.yaml",
+          "DOMRF/Start/КадровоеДелопроизводство/РассылкиИУведомления/ПочтовыеОтправителиСЗамещением.yaml",
+          ".local-codex/diagnostics/manager-notification/substitution-148-before.json",
+          ".local-codex/diagnostics/test-cleanup-150-before.json",
+          "DOMRF/Start/КадровоеДелопроизводство/ВидОснованияКлючаКандидата.yaml"
+        ]
+      },
+      "after": {
+        "elapsedMs": 60,
+        "completeMethods": 1,
+        "contextChars": 12941,
+        "paths": [
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ДанныеРедактированияЗамещенияПользователя.yaml"
+        ],
+        "expectedLink": [
+          {
+            "from": {
+              "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+              "startLine": 66,
+              "endLine": 66
+            },
+            "name": "МожноПрименить",
+            "kind": "expression",
+            "confidence": "structural",
+            "targets": [
+              {
+                "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+                "startLine": 39,
+                "endLine": 53
+              }
+            ]
+          }
+        ],
+        "documentationQueries": [
+          "Форма",
+          "Булево",
+          "ПроизвольныйШаблонФормы",
+          "Группа",
+          "Надпись",
+          "ПолеВвода"
+        ],
+        "providers": [
+          {
+            "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+            "ast": "not-applicable",
+            "lsp": "unavailable"
+          },
+          {
+            "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+            "ast": "ready",
+            "lsp": "unavailable",
+            "parserVersion": "9.1.9-1"
+          }
+        ],
+        "diagnostics": []
+      },
+      "expectedMethods": 1
+    },
+    {
+      "name": "Текст ошибки",
+      "query": "В ЗамещениеПользователяФорма найди ПодсказкаПроверки: почему нельзя назначить самого себя замещающим?",
+      "before": {
+        "elapsedMs": 32,
+        "completeMethods": 0,
+        "contextChars": 3367,
+        "paths": [
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+          ".local-codex/diagnostics/manager-notification/substitution-148-before.json",
+          ".local-codex/diagnostics/test-cleanup-150-before.json",
+          "DOMRF/Start/СтруктураПредприятия/ЗамещенияПользователейПриложенияПроверки.xbsl",
+          "docs/reference/investigations/cpop-email-notifications.md",
+          ".local-codex/diagnostics/cpop-fix-154-before.json",
+          ".local-codex/diagnostics/mail-settings-155-before.json"
+        ]
+      },
+      "after": {
+        "elapsedMs": 99,
+        "completeMethods": 1,
+        "contextChars": 13583,
+        "paths": [
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+          "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ДанныеРедактированияЗамещенияПользователя.yaml"
+        ],
+        "expectedLink": [
+          {
+            "from": {
+              "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+              "startLine": 60,
+              "endLine": 60
+            },
+            "name": "ПодсказкаПроверки",
+            "kind": "expression",
+            "confidence": "structural",
+            "targets": [
+              {
+                "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+                "startLine": 55,
+                "endLine": 81
+              }
+            ]
+          }
+        ],
+        "documentationQueries": [
+          "СобытиеПриНажатии",
+          "Кнопка",
+          "Строка",
+          "Булево",
+          "Ссылка",
+          "ИсключениеНедопустимоеСостояние"
+        ],
+        "providers": [
+          {
+            "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.xbsl",
+            "ast": "ready",
+            "lsp": "unavailable",
+            "parserVersion": "9.1.9-1"
+          },
+          {
+            "path": "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.xbsl",
+            "ast": "ready",
+            "lsp": "unavailable",
+            "parserVersion": "9.1.9-1"
+          },
+          {
+            "path": "DOMRF/Start/СтандартноеПриложение/ПерсональныеНастройкиПользователя/ЗамещениеПользователяФорма.yaml",
+            "ast": "not-applicable",
+            "lsp": "unavailable"
+          },
+          {
+            "path": "DOMRF/Start/СтруктураПредприятия/ПерсональныеЗамещенияПрограммныйИнтерфейс.yaml",
+            "ast": "not-applicable",
+            "lsp": "unavailable"
+          }
+        ],
+        "diagnostics": []
+      },
+      "expectedMethods": 1
+    }
+  ],
+  "warmQueryMs": 68,
+  "nativeScan": {
+    "files": 258,
+    "ready": 258,
+    "partial": 0,
+    "diagnostics": 0,
+    "nodes": 60236,
+    "nodeKinds": 67,
+    "methods": 1064,
+    "calls": 2909,
+    "dynamicCalls": 2291,
+    "elapsedMs": 904
+  }
+}

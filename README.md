@@ -347,6 +347,7 @@ npm run preflight:runtime
 
 - [Контракт Codex app-server 0.154.0 и проверка совместимости](docs/app-server-0.154.0.md)
 - [Экспериментальный контекст Codex](docs/experimental-context.md)
+- [Контекст YAML и XBSL: штатный AST, Language Server и документация](docs/project-semantic-context.md)
 - [Unix smoke checklist](docs/unix-smoke-checklist.md)
 
 Проект распространяется по [лицензии MIT](LICENSE). Copyright (c) 2026 Alexandr Volkov.

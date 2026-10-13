@@ -6,6 +6,7 @@ import {
 } from "./contextTools";
 import { DiagnosticsToolsService } from "./diagnosticsToolsService";
 import { DocsToolsService } from "./docsToolsService";
+import { normalizePlatformVersion } from "./documentationCompatibility";
 import { Logger } from "./logger";
 import { ProjectToolsService } from "./projectToolsService";
 import { ChatKind } from "./types";
@@ -58,7 +59,7 @@ interface ToolOutcome {
 const DOCS_CONTEXT_CHARS = 22_000;
 const DOCS_CONTEXT_ITEMS = 8;
 const DOCS_OVERVIEW_CHARS = 24_000;
-const PROJECT_CONTEXT_CHARS = 22_000;
+const PROJECT_CONTEXT_CHARS = 36_000;
 const PROJECT_CONTEXT_ITEMS = 8;
 const PROJECT_SYMBOLS_CHARS = 8_000;
 const PROJECT_SYMBOLS_ITEMS = 50;
@@ -122,6 +123,30 @@ export class ManagedContextToolLoopService {
       });
       outcomes.push({ name: search.toolName, route: routeFromResult(search, "added"), result: search });
       blocks.push(...blocksFromResult(search));
+
+      // Concrete types from YAML/AST complement prompt-only documentation search.
+      // They are lookup candidates, not a claim that the installed docs match the runtime version.
+      const linkedQueries = search.ok && Array.isArray(search.metadata.documentationQueries)
+        ? search.metadata.documentationQueries.filter((query): query is string => typeof query === "string")
+        : [];
+      if (!request.hasExplicitDocs && request.routing.shouldUseDocsContext && linkedQueries.length) {
+        const linkedDocs = await this.options.docsTools.read({
+          chatId: request.chatId,
+          symbolNames: linkedQueries,
+          expectedPlatformVersion: normalizePlatformVersion(search.metadata.platformVersion),
+          reason: "Документация по точным идентификаторам заголовков из YAML/XBSL с проверкой явных меток версии",
+          limits: { maxItems: 3, maxChars: 7000 }
+        });
+        outcomes.push({ name: linkedDocs.toolName, route: routeFromResult(linkedDocs, "added"), result: linkedDocs });
+        const linkedBlocks = blocksFromResult(linkedDocs);
+        const existing = new Set(blocks.map((block) => block.text));
+        for (const block of linkedBlocks) {
+          if (!existing.has(block.text)) {
+            blocks.push(block);
+            existing.add(block.text);
+          }
+        }
+      }
 
       const symbols = await this.options.projectTools.listSymbols({
         chatId: request.chatId,

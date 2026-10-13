@@ -29,6 +29,15 @@ export interface DocsCorpusDiscovery {
   error?: string;
 }
 
+export interface DocsDocumentationVersion {
+  sourceVersion?: string;
+  productVersion?: string;
+  provenance: "official-html";
+  metadataPath: string;
+  recordId: string;
+  sourcePath?: string;
+}
+
 export interface DocsFragment {
   corpus: string;
   corpusLabel: string;
@@ -42,6 +51,7 @@ export interface DocsFragment {
   excerpt: string;
   text: string;
   indexPath: string;
+  documentationVersion?: DocsDocumentationVersion;
 }
 
 export interface LoadedDocsCorpus {
@@ -76,7 +86,8 @@ export function docsFragmentChars(fragment: DocsFragment): number {
     + fragment.sourcePath.length + fragment.url.length + fragment.indexPath.length
     + fragment.corpus.length + fragment.corpusLabel.length
     + fragment.breadcrumbs.reduce((sum, item) => sum + item.length, 0)
-    + fragment.keywords.reduce((sum, item) => sum + item.length, 0);
+    + fragment.keywords.reduce((sum, item) => sum + item.length, 0)
+    + Object.values(fragment.documentationVersion ?? {}).reduce((sum, value) => sum + (value?.length ?? 0), 0);
 }
 
 interface ManifestFileEntry {
@@ -563,6 +574,8 @@ function parseJsonlFragment(corpus: DocsCorpusInfo, file: DocsCorpusFile, line: 
     if (!text) {
       return undefined;
     }
+    const documentationVersion = !file.contentField || file.contentField === "text"
+      ? parseDocumentationVersion(value, file.path) : undefined;
     return {
       corpus: corpus.corpus,
       corpusLabel: corpus.label,
@@ -575,11 +588,29 @@ function parseJsonlFragment(corpus: DocsCorpusInfo, file: DocsCorpusFile, line: 
       keywords,
       excerpt: firstString(value.summary, value.excerpt, value.description),
       text: trimFragmentText(text),
-      indexPath: corpus.indexPath
+      indexPath: corpus.indexPath,
+      ...(documentationVersion ? { documentationVersion } : {})
     };
   } catch {
     return undefined;
   }
+}
+
+function parseDocumentationVersion(value: Record<string, unknown>, metadataPath: string): DocsDocumentationVersion | undefined {
+  // Observed codex-docs language schema: source_version is the docs release;
+  // product_version identifies its bundle snapshot, not API compatibility.
+  if (value.corpus !== "lang" || value.provenance !== "official-html"
+    || (value.kind !== "standard-library" && value.kind !== "language-topic")
+    || !getString(value.text) || !getString(value.id) || getString(value.id).length > 1024) return undefined;
+  const field = (raw: unknown, maximum: number): string | undefined => {
+    const text = getString(raw);
+    return text && text.length <= maximum ? text : undefined;
+  };
+  return {
+    sourceVersion: field(value.source_version, 40), productVersion: field(value.product_version, 40),
+    provenance: "official-html", metadataPath, recordId: getString(value.id),
+    sourcePath: field(value.source_path, 1024)
+  };
 }
 
 function extractContent(value: Record<string, unknown>, file: DocsCorpusFile): string {

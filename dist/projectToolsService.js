@@ -2,12 +2,13 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProjectToolsService = void 0;
 const contextTools_1 = require("./contextTools");
+const projectSemanticService_1 = require("./projectSemanticService");
 const projectContextService_1 = require("./projectContextService");
 const PROJECT_SOURCE = "project";
 const DEFAULT_SEARCH_ITEMS = 8;
 const DEFAULT_SYMBOL_ITEMS = 60;
 const DEFAULT_READ_CHARS = 16000;
-const DEFAULT_BLOCK_CHARS = 20000;
+const DEFAULT_BLOCK_CHARS = 36000;
 class ProjectToolsService {
     constructor(projectContext, logger, getProfileId) {
         this.projectContext = projectContext;
@@ -26,7 +27,7 @@ class ProjectToolsService {
             limits: options.limits,
             scope: {
                 workspaceOnly: true,
-                allowUnsavedEditorText: false
+                allowUnsavedEditorText: true
             }
         }));
     }
@@ -65,7 +66,7 @@ class ProjectToolsService {
             limits: options.limits,
             scope: {
                 workspaceOnly: true,
-                allowUnsavedEditorText: false
+                allowUnsavedEditorText: true
             }
         }));
     }
@@ -132,7 +133,7 @@ class ProjectToolsService {
                 retryable: true
             }, [], metadataFromSearch(search));
         }
-        const text = trimToolBlock(formatSearchBlock(search), request.limits.maxChars ?? DEFAULT_BLOCK_CHARS);
+        const text = trimToolBlock(formatSearchBlock(search, request.limits.maxChars ?? DEFAULT_BLOCK_CHARS), request.limits.maxChars ?? DEFAULT_BLOCK_CHARS);
         return (0, contextTools_1.createContextToolSuccess)(request, [{
                 source: PROJECT_SOURCE,
                 text,
@@ -143,7 +144,11 @@ class ProjectToolsService {
                     query,
                     totalFiles: search.totalFiles,
                     totalChunks: search.totalChunks,
-                    truncated: text.endsWith("…")
+                    documentationQueries: search.semantic?.documentationQueries ?? [],
+                    semanticLinks: search.semantic?.links.length ?? 0,
+                    truncated: text.endsWith("…") || text.includes("Не включено в лимит вывода")
+                        || Boolean(search.semantic?.selection?.omittedRanges)
+                        || Boolean(search.semantic?.snippets.some(snippet => snippet.truncated))
                 },
                 origin: {
                     toolName: request.toolName,
@@ -231,15 +236,23 @@ class ProjectToolsService {
     }
 }
 exports.ProjectToolsService = ProjectToolsService;
-function formatSearchBlock(search) {
-    return [
+function formatSearchBlock(search, maxChars) {
+    const header = [
         "[PROJECT TOOL: search]",
         `Query: ${search.query}`,
         `Workspace: ${search.workspaceRoot}`,
-        `Index: v2, files=${search.totalFiles}, chunks=${search.totalChunks}, updated=${search.updatedAt}`,
+        `Index: v3, files=${search.totalFiles}, chunks=${search.totalChunks}, updated=${search.updatedAt}`,
         "Use these candidates only as an index. Call project.readFile for exact file content before relying on details outside the preview.",
-        "",
-        ...search.chunks.map((chunk, index) => formatChunkRef(index + 1, chunk))
+        ""
+    ].join("\n");
+    const limit = Math.max(1000, Math.min(48000, Math.floor(maxChars)));
+    return [header,
+        ...(search.semantic ? [(0, projectSemanticService_1.formatSemanticContext)(search.semantic, Math.max(500, limit - header.length - 800)), ""] : []),
+        ...search.chunks.map((chunk, index) => {
+            const covered = search.semantic?.snippets.some(snippet => !snippet.truncated && snippet.path === chunk.path
+                && snippet.startLine <= chunk.endLine && snippet.endLine >= chunk.startLine);
+            return formatChunkRef(index + 1, covered ? { ...chunk, preview: "" } : chunk);
+        })
     ].join("\n");
 }
 function formatReadFileBlock(file) {
@@ -261,7 +274,7 @@ function formatSymbolsBlock(result) {
         result.query ? `Query: ${result.query}` : "",
         result.path ? `Path: ${result.path}` : "",
         `Workspace: ${result.workspaceRoot}`,
-        `Index: v2, files=${result.totalFiles}, chunks=${result.totalChunks}, updated=${result.updatedAt}`,
+        `Index: v3, files=${result.totalFiles}, chunks=${result.totalChunks}, updated=${result.updatedAt}`,
         "",
         ...result.symbols.map((symbol, index) => [
             `${index + 1}. ${symbol.name}`,
@@ -284,6 +297,7 @@ function formatChunkRef(index, chunk) {
     ].filter(Boolean).join("\n");
 }
 function metadataFromSearch(search) {
+    const platformVersions = unique((search.semantic?.providers ?? []).map(provider => provider.parserVersion).filter((version) => !!version));
     return {
         roots: [search.workspaceRoot],
         indexPath: search.indexPath,
@@ -292,7 +306,11 @@ function metadataFromSearch(search) {
         files: search.totalFiles,
         chunks: search.totalChunks,
         selectedChunks: search.chunks.length,
-        paths: unique(search.chunks.map((chunk) => chunk.path))
+        documentationQueries: search.semantic?.documentationQueries ?? [],
+        semanticProviders: search.semantic?.providers ?? [],
+        platformVersion: platformVersions.length === 1 ? platformVersions[0] : undefined,
+        contextSelection: search.semantic?.selection,
+        paths: unique([...search.chunks.map((chunk) => chunk.path), ...(search.semantic?.snippets.map(snippet => snippet.path) ?? [])])
     };
 }
 function metadataFromReadFile(file) {
@@ -328,7 +346,7 @@ function asOptionalNumber(value) {
     return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 function trimToolBlock(value, maxChars) {
-    const limit = Math.max(1000, Math.min(30000, Math.floor(maxChars)));
+    const limit = Math.max(1000, Math.min(48000, Math.floor(maxChars)));
     return value.length > limit ? `${value.slice(0, limit - 1)}…` : value;
 }
 function unique(values) {

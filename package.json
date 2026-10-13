@@ -2,7 +2,7 @@
   "name": "codex-element-v1",
   "displayName": "Codex for 1C: Element",
   "description": "Расширение Codex для Theia IDE (1С:Элемент)",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "Alexandr Volkov",
   "license": "MIT",
   "homepage": "https://xbsl.io/plugins/213de8b5-1edb-4336-9970-8bb6020b6ab6",
@@ -36,10 +36,45 @@
     "onCommand:codexElement.explainSelection"
   ],
   "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "xbsl": {
+    "schemaVersion": 1,
+    "compatibility": {
+      "basis": "element-dependent",
+      "elementServer": [
+        "8.x",
+        "9.x",
+        "10.x"
+      ]
+    },
+    "package": {
+      "dependenciesBundled": true,
+      "requiredFiles": [
+        "bin/runtime-manifest.json",
+        "media/chat.js",
+        "media/chat.css",
+        "media/sidebar.js",
+        "media/sidebar.css",
+        "media/settings.js",
+        "media/settings.css",
+        "media/settings-icons.js",
+        "media/xbsl-highlighter.js",
+        "resources/context/codex-element-language-rules.md",
+        "resources/context/yaml.cjs",
+        "resources/context/yaml.LICENSE",
+        "resources/context/ast/native-xbsl-ast.jar",
+        "resources/context/ast/build.json"
+      ]
+    }
+  },
   "scripts": {
-    "build": "npm run build:webview && tsc -p ./",
+    "build": "npm run build:context && npm run build:webview && tsc -p ./",
+    "build:context": "node scripts/build-context-vendor.js && node scripts/build-native-ast.js",
+    "check:context": "node scripts/build-context-vendor.js --check && node scripts/build-native-ast.js --check && node --test tests/project-structure.test.cjs tests/native-xbsl-ast.test.cjs tests/element-language-service.test.cjs tests/project-semantic.test.cjs tests/project-semantic-stage2.test.cjs tests/project-context-snapshot.test.cjs tests/project-context-cache.test.cjs tests/project-context-format.test.cjs tests/project-context-evaluation.test.cjs tests/docs-symbol-links.test.cjs tests/documentation-compatibility.test.cjs",
     "build:webview": "node scripts/build-xbsl-highlighter.js && node scripts/build-chat-ui.js && node scripts/build-settings-icons.js",
-    "check": "npm run check:webview && npm run check:highlight && tsc -p ./ --noEmit",
+    "check": "npm run check:context && npm run check:webview && npm run check:highlight && tsc -p ./ --noEmit",
     "check:webview": "node scripts/build-xbsl-highlighter.js --check && node scripts/build-chat-ui.js --check && node scripts/build-settings-icons.js --check && tsc -p webview/chat/tsconfig.json",
     "check:chat-ui": "node scripts/chat-ui-check.cjs",
     "check:chat-shortcuts": "node scripts/chat-composer-shortcuts-check.cjs",
@@ -266,6 +301,7 @@
     "react-dom": "19.2.8",
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "yaml": "2.9.1"
   }
 }
