@@ -52,8 +52,8 @@ test("linked read searches individual symbols and reads only exact heading IDs",
   const result = await h.service.read({ ...options, symbolNames: ["Форма", "Булево"] });
   assert.equal(result.ok, true);
   assert.deepEqual(h.calls.search, [
-    { query: "Форма", maxItems: 12, maxPreviewChars: 120 },
-    { query: "Булево", maxItems: 12, maxPreviewChars: 120 },
+    { query: "Форма", maxItems: 12, maxPreviewChars: 120, exactTitle: true, expectedPlatformVersion: undefined },
+    { query: "Булево", maxItems: 12, maxPreviewChars: 120, exactTitle: true, expectedPlatformVersion: undefined },
   ]);
   assert.deepEqual(h.calls.read, [{ fragmentIds: ["exact-form", "exact-boolean"], maxItems: 2, maxCharsPerItem: 3500 }]);
   assert.doesNotMatch(result.blocks[0].text, /ФормаОбъекта|МояФорма/);
@@ -123,7 +123,7 @@ for (const [symbol, title, matches] of headingCases) {
   });
 }
 
-test("at most three distinct valid identifiers and twelve candidates per search", async () => {
+test("at most three distinct valid identifiers request twelve exact candidates per search", async () => {
   const h = harness({
     Форма: [ref("Форма")], Булево: [ref("Булево")], Строка: [ref("Строка")], Число: [ref("Число")],
   });
@@ -132,13 +132,25 @@ test("at most three distinct valid identifiers and twelve candidates per search"
   ], limits: { maxItems: 100 } });
   assert.equal(result.ok, true);
   assert.deepEqual(h.calls.search.map(call => call.query), ["Форма", "Булево", "Строка"]);
+  assert.ok(h.calls.search.every(call => call.exactTitle === true && call.maxItems === 12));
   assert.equal(h.calls.read[0].maxItems, 3);
+});
 
+test("a backend violating the exact search contract cannot inject an unbounded or fuzzy replacement", async () => {
   const beyondLimit = harness({ Форма: [...Array.from({ length: 12 }, (_, i) => ref(`Форма${i}`)), ref("Форма")] });
   const missing = await beyondLimit.service.read({ ...options, symbolNames: ["Форма"] });
   assert.equal(missing.ok, false);
   assert.equal(missing.error.code, "notFound");
   assert.equal(beyondLimit.calls.read.length, 0);
+});
+
+test("linked exact lookup forwards only a normalized project version to the backend", async () => {
+  for (const [version, expected] of [[" 9.1.9-1 ", "9.1.9-1"], ["latest", undefined], [null, undefined]]) {
+    const h = harness({ Форма: [ref("Форма")] });
+    await h.service.read({ ...options, symbolNames: ["Форма"], expectedPlatformVersion: version });
+    assert.equal(h.calls.search[0].exactTitle, true);
+    assert.equal(h.calls.search[0].expectedPlatformVersion, expected);
+  }
 });
 
 test("invalid symbol input never falls back to a query read", async () => {

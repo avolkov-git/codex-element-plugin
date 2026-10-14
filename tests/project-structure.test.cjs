@@ -21,7 +21,8 @@ test("Russian Element YAML captures identity, generics, handlers and expression 
   assert.deepEqual(result.element, { kind: "КомпонентИнтерфейса", id: "83b22b30-5f1f-4812-a0cf-dfc72eb621f2", name: "ФормаРедактирования" });
   assert.deepEqual(references(result, "import").map(reference => reference.name), ["Общие", "Стд::Интерфейс"]);
   assert.deepEqual(references(result, "type").map(reference => reference.name), ["Форма", "Булево", "Кнопка"]);
-  assert.deepEqual(references(result, "handler"), [{ name: "Применить", kind: "handler", startLine: 12, endLine: 12, yamlPath: "$.Наследует.Содержимое[0].ПриНажатии" }]);
+  assert.deepEqual(references(result, "handler"), [{ name: "Применить", kind: "handler", startLine: 12, endLine: 12,
+    yamlPath: "$.Наследует.Содержимое[0].ПриНажатии", contextRange: { startLine: 10, endLine: 14 } }]);
   assert.deepEqual(references(result, "expression").map(reference => reference.name), ["ДанныеРедактирования.Замещающий", "ЗаголовокФормы"]);
   assert.deepEqual(result.symbols[0], { name: "ФормаРедактирования", kind: "yaml-element", startLine: 1, endLine: 14, selectionLine: 3, selectionCharacter: 5 });
   assert.deepEqual(result.symbols[1], { name: "Применить", kind: "yaml-name", startLine: 10, endLine: 14, selectionLine: 10, selectionCharacter: 11 });

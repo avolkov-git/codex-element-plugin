@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-14",
+  "baseCommit": "3ad75e409940e63350712049d0a0f5d09f024b84",
+  "version": "1.0.4",
+  "fixedLimitations": ["retrieval/R03", "retrieval/R04", "retrieval/R07", "ast-lsp/S4", "docs/S02"],
+  "verification": {
+    "unitTests": { "total": 687, "passed": 687, "skipped": 0 },
+    "contextChecks": { "total": 380, "passed": 380, "skipped": 0 },
+    "build": true,
+    "typecheck": true,
+    "acceptance": { "total": 12, "passed": 12 },
+    "originalAudit": {
+      "total": 54,
+      "passed": 54,
+      "assertionsUnchanged": true,
+      "retrieval": { "total": 10, "passed": 10, "assertions": 47, "passedAssertions": 47 },
+      "cache": { "total": 10, "passed": 10 },
+      "astLsp": { "total": 9, "passed": 9 },
+      "documentation": { "total": 9, "passed": 9 },
+      "deployment": { "total": 10, "passed": 10 },
+      "integration": { "total": 6, "passed": 6 }
+    },
+    "additionalConfirmations": { "total": 5, "passed": 5 }
+  },
+  "benchmark": {
+    "project": "privet-dom-app",
+    "fixtureCommit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+    "fixtureSha256": "3f3289852f6107b93a527ed5462f987cdc6cf0f94d616d16e53e54b5441069e1",
+    "oracleSha256": "22e5284ec7ea54b8ca45e410ecc6bd59a79fc4250add32b55954282a66f0fc8a",
+    "sourceSha256": "09f403ea60c04f5d563a5224ec9521c3a42e4512b63808145c37860ddcd51231",
+    "runStartedAt": "2026-10-14T07:55:25.436Z",
+    "oracleUnchanged": true,
+    "sourceChangedDuringRun": false,
+    "resourcesUnchanged": true,
+    "liveLsp": false,
+    "modelAnswersEvaluated": false,
+    "files": 1014,
+    "chunks": 4625,
+    "results": [
+      { "maxChars": 20000, "passed": 8, "total": 8, "beforeDeliveredChars": 99698, "afterDeliveredChars": 91274 },
+      { "maxChars": 22000, "passed": 8, "total": 8, "beforeDeliveredChars": 103698, "afterDeliveredChars": 91685 },
+      { "maxChars": 36000, "passed": 8, "total": 8, "beforeDeliveredChars": 105732, "afterDeliveredChars": 91685 }
+    ],
+    "fullMethods": { "covered": 8, "required": 8 },
+    "yamlRanges": { "covered": 12, "required": 12 },
+    "signatures": { "covered": 1, "required": 1 },
+    "characterTotalsScope": "Sum across eight unchanged tasks; characters, not tokens"
+  },
+  "evidenceRoot": "/tmp/codex-limitations-3ad75e4",
+  "liveIdeChecked": false,
+  "windowsServerChecked": false,
+  "deployed": false
+}

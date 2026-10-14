@@ -42,6 +42,8 @@ const path = __importStar(require("path"));
 const node_perf_hooks_1 = require("node:perf_hooks");
 const docsCorpusService_1 = require("./docsCorpusService");
 const docsWorkerProtocol_1 = require("./docsWorkerProtocol");
+const documentationCompatibility_1 = require("./documentationCompatibility");
+const docsSymbolMatching_1 = require("./docsSymbolMatching");
 const MAX_DOCS = 6;
 const MAX_EXPLICIT_OVERVIEW_DOCS = 6;
 const MAX_PLANNER_DOCS = 12;
@@ -322,7 +324,9 @@ class DocsSearchEngine {
         const fragmentsPool = caches.flatMap((cache) => cache.loaded.fragments);
         const maxItems = clampPositiveInteger(options.maxItems, 8, 1, 24);
         const maxPreviewChars = clampPositiveInteger(options.maxPreviewChars, 360, 120, 1200);
-        const matches = searchFragments(fragmentsPool, query).slice(0, maxItems);
+        const matches = options.exactTitle
+            ? searchExactTitleFragments(fragmentsPool, query, maxItems, options.expectedPlatformVersion)
+            : searchFragments(fragmentsPool, query).slice(0, maxItems);
         return {
             query,
             roots: summarizeCaches(caches),
@@ -568,6 +572,39 @@ function selectReadFragments(fragments, options) {
     }
     const query = options.query?.trim();
     return query ? searchFragments(fragments, query).map((item) => item.fragment) : [];
+}
+function searchExactTitleFragments(fragments, query, maxItems, expectedVersion) {
+    const symbol = (0, docsSymbolMatching_1.normalizeDocsSymbolName)(query);
+    if (!symbol)
+        return [];
+    const expected = (0, documentationCompatibility_1.normalizePlatformVersion)(expectedVersion);
+    const terms = tokenize(symbol);
+    const intent = detectIntent(symbol);
+    const selected = [];
+    // The loaded pool is corpus-budgeted. Keep only a bounded top-k while scanning
+    // every exact heading; neither fuzzy rank nor duplicate roots can consume its cap.
+    for (const fragment of fragments) {
+        if (!(0, docsSymbolMatching_1.titleMatchesSymbol)(fragment.title, symbol))
+            continue;
+        const id = docsFragmentId(fragment);
+        const score = scoreFragment(fragment, terms, intent);
+        const duplicate = selected.findIndex(item => item.id === id);
+        if (duplicate >= 0) {
+            if (selected[duplicate].score >= score)
+                continue;
+            selected.splice(duplicate, 1);
+        }
+        const versionRank = (0, documentationCompatibility_1.documentationVersionRank)((0, documentationCompatibility_1.compareDocumentationVersion)(id, expected, fragment.documentationVersion));
+        const position = selected.findIndex(item => versionRank > item.versionRank
+            || (versionRank === item.versionRank && score > item.score));
+        if (position >= 0)
+            selected.splice(position, 0, { fragment, score, id, versionRank });
+        else if (selected.length < maxItems)
+            selected.push({ fragment, score, id, versionRank });
+        if (selected.length > maxItems)
+            selected.pop();
+    }
+    return selected;
 }
 function searchFragments(fragments, prompt) {
     const terms = tokenize(prompt);

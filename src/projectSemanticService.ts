@@ -5,6 +5,7 @@ import { Logger } from "./logger";
 import { analyzeProjectStructure, ProjectStructure, StructureSymbol } from "./projectStructure";
 import { NativeXbslAstService } from "./nativeXbslAstService";
 import { ElementLanguageService, ElementLanguageResult, ElementLanguageSymbol, ElementLanguageRange } from "./elementLanguageService";
+import { collectAstReferences } from "./projectAstReferences";
 
 interface SourceFile { path: string; hash: string; structure?: ProjectStructure }
 interface SourceText { text: string; truncated: boolean; fromOpenDocument: boolean; startLine: number; endLine: number }
@@ -48,7 +49,9 @@ export interface SemanticContextResult {
   diagnostics: string[];
   hovers: { path: string; line: number; text: string }[];
   providers: { path: string; ast: string; lsp: string; parserVersion?: string }[];
-  selection?: { intent: "implementation" | "declaration"; maxDepth: number; budgetChars: number; omittedRanges: number };
+  /** A named YAML control restricts code selection; lexical previews must not widen it again. */
+  focusedFiles?: string[];
+  selection?: { intent: "implementation" | "declaration"; maxDepth: number; budgetChars: number; omittedRanges: number; omittedComponents?: string[] };
   /** All consulted providers completed; excludes errors/partial readiness from result-cache reuse. */
   cacheable?: boolean;
 }
@@ -80,19 +83,35 @@ export class ProjectSemanticService {
     let supplementalReady = true;
     const staleFiles = new Set<string>();
     const candidates = [...new Set(request.selected.filter((item) => /\.(xbsl|ya?ml)$/i.test(item.path)).map((item) => item.path))];
-    const explicitFiles = candidates.filter(file => containsIdentifier(request.query, path.posix.basename(file).replace(/\.(xbsl|ya?ml)$/i, "")));
-    const seeds: string[] = [];
-    for (const file of explicitFiles.length ? explicitFiles : candidates) {
-      // A YAML/XBSL pair is one seed, so comparing two elements cannot spend both slots on the first pair.
-      if (seeds.some(seed => isCompanion(seed, file))) continue;
-      seeds.push(file);
-      if (seeds.length === 2) break;
+    const explicitFiles = request.files.filter(file => /\.(xbsl|ya?ml)$/i.test(file.path)
+      && (containsIdentifier(request.query, path.posix.basename(file.path).replace(/\.(xbsl|ya?ml)$/i, ""))
+        || !!file.structure?.element?.name && containsIdentifier(request.query, file.structure.element.name))).map(file => file.path);
+    const coveredMethodNames = new Set(request.files.filter(file => explicitFiles.some(explicit => explicit === file.path || isCompanion(explicit, file.path)))
+      .flatMap(file => (file.structure?.symbols ?? []).filter(symbol => isMethodKind(symbol.kind)).map(symbol => symbol.name.toLowerCase())));
+    for (const file of candidates) {
+      if (!explicitFiles.includes(file) && request.files.find(item => item.path === file)?.structure?.symbols
+        .some(symbol => isMethodKind(symbol.kind) && !coveredMethodNames.has(symbol.name.toLowerCase())
+          && containsIdentifier(request.query, symbol.name))) explicitFiles.push(file);
     }
-    const selectedFiles = new Set(seeds);
-    for (const seed of selectedFiles) {
-      for (const file of request.files) {
-        if (isCompanion(seed, file.path) && selectedFiles.size < 6) selectedFiles.add(file.path);
+    const selectedFiles = new Set<string>();
+    let seedCount = 0;
+    let omittedSeeds = 0;
+    const omittedComponents: string[] = [];
+    const considered = new Set<string>();
+    for (const file of explicitFiles.length ? explicitFiles : candidates) {
+      if (considered.has(file)) continue;
+      const yaml = /\.ya?ml$/i.test(file) ? file : request.files.find(candidate => isCompanion(file, candidate.path))?.path;
+      const group = [...new Set([file, ...(yaml ? [yaml] : []),
+        ...request.files.filter(candidate => isCompanion(yaml ?? file, candidate.path)).map(candidate => candidate.path)])];
+      group.forEach(member => considered.add(member));
+      // Keep a component and its code together; explicit comparisons are not restricted to two seeds.
+      if ((!explicitFiles.length && seedCount >= 2) || selectedFiles.size + group.filter(member => !selectedFiles.has(member)).length > MAX_FILES) {
+        omittedSeeds++;
+        if (omittedComponents.length < 64) omittedComponents.push(file);
+        continue;
       }
+      group.forEach(member => selectedFiles.add(member));
+      seedCount++;
     }
     const sources = new Map<string, SourceText>();
     const structures = new Map<string, ProjectStructure>();
@@ -102,7 +121,9 @@ export class ProjectSemanticService {
     const attemptedFiles = new Set<string>();
     const inspectedPositions = new Map<string, Set<string>>();
     const intent = contextIntent(request.query);
-    result.selection = { intent, maxDepth: MAX_DEPTH, budgetChars: CONTEXT_CHARS, omittedRanges: 0 };
+    result.selection = { intent, maxDepth: MAX_DEPTH, budgetChars: CONTEXT_CHARS, omittedRanges: omittedSeeds, omittedComponents };
+    if (omittedSeeds) result.diagnostics.push(`Не включено компонентов: ${omittedSeeds}; лимит ${MAX_FILES} связанных файлов. Продолжите через project.readFile.`);
+    for (const component of omittedComponents) result.diagnostics.push(`Не включен компонент ${component}: лимит начального набора связанных файлов.`);
     const loadFile = async (filePath: string, focus: readonly { startLine: number; endLine: number }[] = []): Promise<void> => {
       if (attemptedFiles.has(filePath)) return;
       if (attemptedFiles.size >= MAX_FILES) {
@@ -172,11 +193,17 @@ export class ProjectSemanticService {
     };
     for (const filePath of selectedFiles) await loadFile(filePath);
 
+    const focusedFiles = new Set<string>();
     for (const [filePath, structure] of structures) {
       if (!/\.ya?ml$/i.test(filePath)) continue;
+      if (hasYamlFocus(structure, request.query)) {
+        focusedFiles.add(filePath);
+        for (const candidate of sources.keys()) if (isCompanion(filePath, candidate)) focusedFiles.add(candidate);
+      }
       const references = relevantYamlReferences(structure, request.query, request.selected.filter(item => item.path === filePath));
-      for (const reference of references) {
-        if (result.links.length >= 48) break;
+      const selectedReferences = references.slice(0, 48);
+      result.selection.omittedRanges += references.length - selectedReferences.length;
+      for (const reference of selectedReferences) {
         if (reference.kind !== "handler" && reference.kind !== "expression" && reference.kind !== "type") continue;
         if (reference.kind === "type") addDocumentationTerms(docs, reference.name);
         const targets: SemanticLink["targets"] = [];
@@ -202,6 +229,7 @@ export class ProjectSemanticService {
           targets: unique.slice(0, 6) });
       }
     }
+    result.focusedFiles = [...focusedFiles];
 
     const requests: ContextRange[] = [];
     const queued = new Set<string>();
@@ -215,13 +243,13 @@ export class ProjectSemanticService {
       const named = entries.filter(entry => containsIdentifier(request.query, entry.symbol.name));
       for (const { symbol, source } of entries) {
         if (!containsIdentifier(request.query, symbol.name)) continue;
-        const focusedYaml = source === "yaml" && symbol.kind === "yaml-element"
-          && structures.get(filePath)?.references.some(reference => reference.kind !== "type" && containsIdentifier(request.query, reference.name));
-        enqueue({ path: filePath, ...symbol, endLine: focusedYaml ? Math.min(symbol.endLine, symbol.startLine + 10) : symbol.endLine, source,
+        const focusedYaml = source === "yaml" && symbol.kind === "yaml-element" && focusedFiles.has(filePath);
+        enqueue({ path: filePath, ...symbol, startLine: focusedYaml ? symbol.selectionLine : symbol.startLine,
+          endLine: focusedYaml ? symbol.selectionLine : symbol.endLine, source,
           purpose: source === "yaml" ? "evidence" : intent, priority: source === "yaml" ? 75 : 110, depth: 0,
-          reason: focusedYaml ? "Идентичность элемента YAML; обработчики показаны отдельно" : "Объявление названо в запросе" });
+          reason: focusedYaml ? `Идентичность элемента YAML (${structures.get(filePath)?.element?.kind ?? "элемент"}); обработчики показаны отдельно` : "Объявление названо в запросе" });
       }
-      if (!named.length && /\.xbsl$/i.test(filePath)) {
+      if (!named.length && /\.xbsl$/i.test(filePath) && !focusedFiles.has(filePath)) {
         const selected = request.selected.filter(item => item.path === filePath).slice(0, 2);
         for (const selection of selected) {
           const candidates = entries.filter(entry => overlaps(entry.symbol, selection))
@@ -234,7 +262,18 @@ export class ProjectSemanticService {
     }
     for (const link of result.links) {
       if (link.kind === "definition") continue; // Follow provider facts only from the focused declarations below.
-      enqueue({ ...link.from, startLine: Math.max(1, link.from.startLine - 2), endLine: link.from.endLine + 2,
+      let yamlRange = { startLine: Math.max(1, link.from.startLine - 2), endLine: link.from.endLine + 2 };
+      if (focusedFiles.has(link.from.path)) {
+        const structure = structures.get(link.from.path);
+        const reference = structure?.references.find(item => item.name === link.name
+          && item.startLine === link.from.startLine && item.endLine === link.from.endLine);
+        // An inherited base type can contain the entire UI; only a focused handler/expression needs its mapping.
+        yamlRange = link.kind === "type" ? link.from : reference?.contextRange
+          ?? structure?.symbols.filter(symbol => symbol.kind === "yaml-name"
+            && symbol.startLine <= link.from.startLine && symbol.endLine >= link.from.endLine)
+            .sort((a, b) => (a.endLine - a.startLine) - (b.endLine - b.startLine))[0] ?? link.from;
+      }
+      enqueue({ ...link.from, startLine: yamlRange.startLine, endLine: yamlRange.endLine,
         source: "yaml", purpose: "evidence", priority: 85, depth: 0, reason: `YAML: ${link.kind} ${link.name}` });
       for (const target of link.targets.slice(0, 2)) {
         const matched = symbols.get(target.path)?.find((entry) => entry.symbol.startLine === target.startLine);
@@ -248,10 +287,11 @@ export class ProjectSemanticService {
         const structure = structures.get(selected.path)!;
         const named = structure.symbols.filter(symbol => containsIdentifier(request.query, symbol.name));
         const local = named.filter(symbol => symbol.kind !== "yaml-element");
-        const ranges = local.length ? local : [{ startLine: selected.startLine, endLine: Math.min(selected.endLine, selected.startLine + 45) }];
+        const ranges = local.length ? local : focusedFiles.has(selected.path) ? []
+          : [{ startLine: selected.startLine, endLine: Math.min(selected.endLine, selected.startLine + 45) }];
         for (const range of ranges) enqueue({ path: selected.path, ...range, source: "yaml", purpose: "evidence",
           priority: 60, depth: 0, reason: "Контекст элемента YAML" });
-      } else if (!requests.some(item => item.path === selected.path)) enqueue({ ...selected, source: "lexical", purpose: "evidence",
+      } else if (!focusedFiles.has(selected.path) && !requests.some(item => item.path === selected.path)) enqueue({ ...selected, source: "lexical", purpose: "evidence",
         priority: 50, depth: 0, reason: "Поисковое совпадение без полного объявления" });
     }
 
@@ -306,14 +346,20 @@ export class ProjectSemanticService {
       const definitions = result.links.filter(link => link.kind === "definition" && link.from.path === selection.path && overlaps(link.from, range));
       for (const link of definitions) {
         for (const target of link.targets.slice(0, 2)) enqueue({ ...target, source: "lsp", purpose: "implementation",
-          priority: 88 - range.depth * 5, depth: range.depth + 1, reason: `Определение ${link.name} из Language Server` });
+          priority: (containsIdentifier(request.query, link.name) ? 105 : 88) - range.depth * 5,
+          depth: range.depth + 1, reason: `Определение ${link.name} из Language Server` });
       }
       const method = entry?.astNode;
       if (entry?.scope !== "module" || method?.kind !== "Method") continue;
       const calls: TreeNode[] = [];
       walkTree(method, node => { if (/MethodInvocation$/.test(node.kind)) calls.push(node); },
         node => node !== method && (isAstDeclaration(node.kind) || node.kind === "Lambda"));
-      for (const call of calls.sort((a, b) => a.startOffset - b.startOffset).slice(0, 12)) {
+      calls.push(...collectAstReferences(method, source.text, { skipNestedScopes: true })
+        .filter(reference => reference.kind === "method-reference").map(reference => reference.node));
+      const selectedCalls = selectCalls(calls, source.text, request.query);
+      result.selection.omittedRanges += selectedCalls.omitted;
+      if (selectedCalls.omitted) result.diagnostics.push(`${selection.path}:${method.startLine}: лимит обхода вызовов; не включено ${selectedCalls.omitted}. Явно запрошенные зависимости имеют приоритет.`);
+      for (const call of selectedCalls.nodes) {
         const nameNode = invocationName(call);
         const name = nameNode?.attributes.name;
         if (typeof name !== "string") continue;
@@ -326,8 +372,14 @@ export class ProjectSemanticService {
         if (position && definitions.some(link => link.name === name && link.from.startLine === from.startLine
           && link.from.startCharacter === from.startCharacter)) continue;
         let candidateFiles = [selection.path];
-        let kind = "native-call";
-        if (call.kind !== "StaticMethodInvocation" || hasNamespace(nameNode)) {
+        const methodReference = call.kind === "MethodRef";
+        let kind = methodReference ? "native-method-reference" : "native-call";
+        if (methodReference && (hasNamespace(nameNode) || call.attributes.explicitObjectCtx === true
+          || call.attributes.explicitGlobalCtx === true || call.children.some(node => node.role === "segments"))) {
+          result.links.push({ from, kind: "method-reference", name, confidence: "unresolved", targets: [] });
+          continue;
+        }
+        if (!methodReference && (call.kind !== "StaticMethodInvocation" || hasNamespace(nameNode))) {
           // Only an explicit shared-module receiver is a structural candidate. Object dispatch needs LSP.
           const receiver = call.children.find(node => node.role === "prefix")?.children.find(node => node.role === "source");
           const moduleName = receiver?.kind === "StaticVariableAccess" ? receiver.attributes.name : undefined;
@@ -356,7 +408,10 @@ export class ProjectSemanticService {
             continue;
           }
         }
-        if (kind === "native-call" && shadowsName(method, name)) continue;
+        if ((kind === "native-call" || kind === "native-method-reference") && shadowsName(method, name)) {
+          if (methodReference) result.links.push({ from, kind: "method-reference", name, confidence: "unresolved", targets: [] });
+          continue;
+        }
         const targets: SemanticLink["targets"] = [];
         for (const candidate of candidateFiles.slice(0, 3)) {
           await loadFile(candidate);
@@ -371,7 +426,8 @@ export class ProjectSemanticService {
           confidence: unique.length > 1 || candidateFiles.length > 1 ? "ambiguous" : unique.length ? "candidate" : "unresolved", targets: unique };
         if (!result.links.some(existing => linkKey(existing) === linkKey(link))) result.links.push(link);
         for (const target of unique.slice(0, 2)) enqueue({ ...target, source: "native-ast", purpose: "implementation",
-          priority: 85 - range.depth * 5, depth: range.depth + 1, reason: `${kind}: ${name} [${link.confidence}]` });
+          priority: (containsIdentifier(request.query, name) ? 105 : 85) - range.depth * 5,
+          depth: range.depth + 1, reason: `${kind}: ${name} [${link.confidence}]` });
       }
     }
     result.selection.omittedRanges += Math.max(0, requests.length - 64);
@@ -593,18 +649,11 @@ function collectAstDocumentation(root: TreeNode, text: string, docs: Set<string>
 }
 
 function positionsFromAst(root: TreeNode, text: string, query: string, focus: readonly { startLine: number; endLine: number }[] = [], limit = 3): { line: number; character: number }[] {
-  const candidates: { offset: number; score: number }[] = [];
-  walkTree(root, (node) => {
-    const invocation = /MethodInvocation$/.test(node.kind);
-    const prefix = invocation ? node.children.find((child) => child.role === "prefix") : undefined;
-    const named = invocation ? prefix?.children.find((child) => child.role === "name") ?? prefix : node.kind === "TypeName" ? node : undefined;
-    const offset = identifierOffset(named, text);
-    if (offset === undefined || typeof named?.attributes.name !== "string") return;
-    if (focus.length && !focus.some(range => overlaps(node, range)) && !containsIdentifier(query, named.attributes.name)) return;
-    candidates.push({ offset, score: containsIdentifier(query, named.attributes.name) ? 2 : invocation ? 1 : 0 });
-  });
-  const offsets = [...new Set(candidates.sort((a, b) => b.score - a.score || a.offset - b.offset).map((item) => item.offset))].slice(0, limit);
-  return offsets.map(offset => positionAtOffset(text, offset));
+  return collectAstReferences(root, text)
+    .filter(reference => !focus.length || focus.some(range => overlaps(reference.node, range)) || containsIdentifier(query, reference.name))
+    .map(reference => ({ ...reference, score: containsIdentifier(query, reference.name) ? 2 : reference.kind === "type" ? 0 : 1 }))
+    .sort((a, b) => b.score - a.score || a.position.line - b.position.line || a.position.character - b.position.character)
+    .slice(0, limit).map(reference => reference.position);
 }
 
 function identifierOffset(node: TreeNode | undefined, text: string): number | undefined {
@@ -653,8 +702,42 @@ function declarationEndLine(entry: SemanticSymbolEntry, text: string): number {
 }
 
 function invocationName(call: TreeNode): TreeNode | undefined {
+  if (call.kind === "MethodRef") {
+    const segments = call.children.filter(node => node.role === "segments");
+    return segments.length ? segments[segments.length - 1] : call.children.find(node => node.role === "first");
+  }
   const prefix = call.children.find(node => node.role === "prefix");
   return prefix?.children.find(node => node.role === "name") ?? prefix;
+}
+
+function selectCalls(calls: readonly TreeNode[], text: string, query: string): { nodes: TreeNode[]; omitted: number } {
+  const groups = new Map<string, { nodes: TreeNode[]; explicit: boolean }>();
+  for (const call of [...calls].sort((a, b) => a.startOffset - b.startOffset)) {
+    const prefix = call.children.find(node => node.role === "prefix")
+      ?? (call.kind === "MethodRef" ? { ...call, endOffset: invocationName(call)?.endOffset ?? call.endOffset } : undefined);
+    const name = invocationName(call)?.attributes.name;
+    if (typeof name !== "string") continue;
+    // Repeated calls share a traversal slot, but retain each occurrence for LSP evidence.
+    // Receivers/namespaces remain distinct; a same-name object call is not a local call.
+    const key = `${call.kind}:${name}:${prefix ? text.slice(prefix.startOffset, prefix.endOffset) : ""}`;
+    const explicit = containsIdentifier(query, name)
+      || !!prefix && (text.slice(prefix.startOffset, prefix.endOffset).match(/[\p{L}_][\p{L}\p{N}_]*/gu) ?? []).some(word => containsIdentifier(query, word));
+    const group = groups.get(key);
+    if (group) group.nodes.push(call); else groups.set(key, { nodes: [call], explicit });
+  }
+  const ordered = [...groups.values()].sort((a, b) => Number(b.explicit) - Number(a.explicit));
+  const selected = ordered.slice(0, 12);
+  const nodes: TreeNode[] = [];
+  // Reserve an occurrence for every selected dependency before spending slots on repeats.
+  for (let occurrence = 0; nodes.length < 96; occurrence++) {
+    const before = nodes.length;
+    for (const group of selected) {
+      if (group.nodes[occurrence]) nodes.push(group.nodes[occurrence]);
+      if (nodes.length === 96) break;
+    }
+    if (nodes.length === before) break;
+  }
+  return { nodes, omitted: Math.max(0, ordered.length - 12) + selected.reduce((sum, group) => sum + group.nodes.length, 0) - nodes.length };
 }
 
 function hasNamespace(node: TreeNode | undefined): boolean {
@@ -665,7 +748,8 @@ function shadowsName(method: TreeNode, name: string): boolean {
   let found = false;
   walkTree(method, node => {
     if (/^(Parameter|Variable|VariableDeclaration|DeclareVariableStatement|Const|Constant)$/.test(node.kind) && node.attributes.name === name) found = true;
-  });
+  }, node => node !== method && (node.kind === "Lambda" || node.kind === "ObjectConstructor"
+    || isAstDeclaration(node.kind) && !/^(Const|Constant)$/.test(node.kind)));
   return found;
 }
 
@@ -681,9 +765,15 @@ function relevantYamlReferences(structure: ProjectStructure, query: string, sele
   const focused = references.filter(reference => direct.includes(reference)
     || containers.some(container => container.startLine <= reference.startLine && container.endLine >= reference.endLine)
     || (reference.yamlPath && parents.has(reference.yamlPath.replace(/\.[^.]+$/, ""))));
-  const candidates = focused.length ? focused : references.filter(reference => !selected.length || selected.some(range => overlaps(reference, range)));
+  const wholeComponent = !!structure.element?.name && containsIdentifier(query, structure.element.name) && !hasYamlFocus(structure, query);
+  const candidates = hasYamlFocus(structure, query) ? focused : references.filter(reference => wholeComponent || !selected.length || selected.some(range => overlaps(reference, range)));
   const baseTypes = references.filter(reference => reference.kind === "type" && (reference.yamlPath?.split(".").length ?? 0) <= 3).slice(0, 4);
-  return [...new Set([...candidates, ...baseTypes])].sort((a, b) => Number(direct.includes(b)) - Number(direct.includes(a)) || a.startLine - b.startLine).slice(0, 14);
+  return [...new Set([...candidates, ...baseTypes])].sort((a, b) => Number(direct.includes(b)) - Number(direct.includes(a)) || a.startLine - b.startLine);
+}
+
+function hasYamlFocus(structure: ProjectStructure, query: string): boolean {
+  return structure.symbols.some(symbol => symbol.kind === "yaml-name" && containsIdentifier(query, symbol.name))
+    || structure.references.some(reference => ["handler", "expression"].includes(reference.kind) && containsIdentifier(query, reference.name));
 }
 
 function mergeContextRanges(ranges: readonly ContextRange[]): ContextRange[] {

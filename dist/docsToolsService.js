@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DocsToolsService = void 0;
 const contextTools_1 = require("./contextTools");
+const docsSymbolMatching_1 = require("./docsSymbolMatching");
 const documentationCompatibility_1 = require("./documentationCompatibility");
 const DOCS_SOURCE = "docs";
 const DEFAULT_SEARCH_ITEMS = 8;
@@ -10,10 +11,6 @@ const DEFAULT_OVERVIEW_ITEMS = 6;
 const DEFAULT_BLOCK_CHARS = 7200;
 const SYMBOL_READ_CHARS = 7000;
 const MAX_SYMBOLS = 3;
-const SYMBOL_IDENTIFIER = "[\\p{L}_][\\p{L}\\p{N}\\p{M}_]*";
-const QUALIFIED_SYMBOL = `${SYMBOL_IDENTIFIER}(?:(?:::|\\.)${SYMBOL_IDENTIFIER})*`;
-const SYMBOL_PATTERN = new RegExp(`^${QUALIFIED_SYMBOL}$`, "u");
-const TITLE_SYMBOL_PATTERN = new RegExp('^["`«]?(' + QUALIFIED_SYMBOL + ')(?=$|[^\\p{L}\\p{N}\\p{M}_:.])', "u");
 class DocsToolsService {
     constructor(docsContext, logger) {
         this.docsContext = docsContext;
@@ -194,13 +191,15 @@ class DocsToolsService {
         const compatibility = (ref) => (0, documentationCompatibility_1.compareDocumentationVersion)(ref.id, expectedPlatformVersion, ref.documentationVersion);
         const maxItems = boundedLimit(request.limits.maxItems, MAX_SYMBOLS, MAX_SYMBOLS);
         for (const symbol of symbolNames) {
-            const search = await this.docsContext.searchTool(symbol, { maxItems: 12, maxPreviewChars: 120 });
+            const search = await this.docsContext.searchTool(symbol, {
+                maxItems: 12, maxPreviewChars: 120, exactTitle: true, expectedPlatformVersion
+            });
             if (!search) {
                 unavailableSymbols.push(symbol);
                 continue;
             }
             search.roots.forEach(root => roots.add(root.root));
-            candidates.set(symbol, search.fragments.slice(0, 12).filter(fragment => titleMatchesSymbol(fragment.title, symbol)));
+            candidates.set(symbol, search.fragments.slice(0, 12).filter(fragment => (0, docsSymbolMatching_1.titleMatchesSymbol)(fragment.title, symbol)));
         }
         for (const [symbol, exact] of candidates) {
             const preferred = exact.sort((a, b) => (0, documentationCompatibility_1.documentationVersionRank)(compatibility(b)) - (0, documentationCompatibility_1.documentationVersionRank)(compatibility(a)))[0];
@@ -234,7 +233,7 @@ class DocsToolsService {
         // Recheck IDs and titles after reading: a changed corpus must not introduce a fuzzy replacement.
         const fragments = read.fragments.filter(fragment => {
             const symbol = selected.get(fragment.ref.id);
-            return symbol !== undefined && titleMatchesSymbol(fragment.ref.title, symbol);
+            return symbol !== undefined && (0, docsSymbolMatching_1.titleMatchesSymbol)(fragment.ref.title, symbol);
         }).slice(0, maxItems);
         const matchedSymbols = unique(fragments.map(fragment => selected.get(fragment.ref.id)));
         const resultMetadata = {
@@ -290,7 +289,7 @@ function createDocsReadResult(request, read, metadata, maxChars) {
     const formattedBlocks = groups.map(fragments => {
         const versionMetadata = versionsFor(fragments);
         const matchedSymbols = getMetadataStringArray(metadata.matchedSymbols)
-            .filter(symbol => fragments.some(fragment => titleMatchesSymbol(fragment.ref.title, symbol)));
+            .filter(symbol => fragments.some(fragment => (0, docsSymbolMatching_1.titleMatchesSymbol)(fragment.ref.title, symbol)));
         const introduction = (matchedSymbols.length ? `Точное совпадение идентификаторов заголовков: ${matchedSymbols.join(", ")}. ` : "")
             + `Совместимость версии документации: ${(0, documentationCompatibility_1.documentationVersionLabel)(versionMetadata.versionCompatibility)}. `
             + "Сопоставлены только явные метки версий; совместимость API и соответствие разрешённому типу не проверены. "
@@ -384,11 +383,11 @@ function normalizeSymbolNames(value) {
     const names = [];
     const seen = new Set();
     for (const item of value) {
-        if (typeof item !== "string")
+        const name = (0, docsSymbolMatching_1.normalizeDocsSymbolName)(item);
+        if (!name)
             continue;
-        const name = item.trim().normalize("NFC");
         const key = name.toLowerCase();
-        if (!name || name.length > 200 || !SYMBOL_PATTERN.test(name) || seen.has(key))
+        if (seen.has(key))
             continue;
         seen.add(key);
         names.push(name);
@@ -396,12 +395,6 @@ function normalizeSymbolNames(value) {
             break;
     }
     return names;
-}
-function titleMatchesSymbol(title, symbol) {
-    // Compare the declared heading identifier, not parameter names, generic arguments or prose mentions.
-    const heading = title.trim().normalize("NFC").replace(/^#{1,6}\s+/u, "")
-        .replace(/^(?:тип|класс|интерфейс|структура|перечисление|метод|свойство|пространство им[её]н|компонент интерфейса|type|class|interface component|interface|structure|enum|method|property|namespace)\s*:?\s+(?=[\p{L}_`"«])/iu, "");
-    return TITLE_SYMBOL_PATTERN.exec(heading)?.[1].toLowerCase() === symbol.toLowerCase();
 }
 function boundedLimit(value, fallback, maximum) {
     return typeof value === "number" && Number.isFinite(value) ? Math.max(1, Math.min(maximum, Math.floor(value))) : fallback;

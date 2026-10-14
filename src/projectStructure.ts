@@ -20,6 +20,8 @@ export interface StructureReference {
   startLine: number;
   endLine: number;
   yamlPath?: string;
+  /** The containing YAML mapping, when it is not the document root. */
+  contextRange?: { startLine: number; endLine: number };
 }
 
 export interface ProjectStructure {
@@ -85,14 +87,15 @@ function analyzeYaml(text: string, result: ProjectStructure): void {
       };
     }
 
-    function addReferences(value: string, kind: StructureReference["kind"], node: YamlNode, yamlPath: string): void {
+    function addReferences(value: string, kind: StructureReference["kind"], node: YamlNode, yamlPath: string, container?: YamlNode): void {
       const names = kind === "id" ? [value] : identifierNames(maskXbsl(value).text);
       for (const name of names) {
         const range = location(node);
         const key = JSON.stringify([kind, name, yamlPath, range.startLine, range.endLine]);
         if (!referenceKeys.has(key)) {
           referenceKeys.add(key);
-          result.references.push({ name, kind, ...range, yamlPath });
+          result.references.push({ name, kind, ...range, yamlPath,
+            ...(container ? { contextRange: location(container) } : {}) });
         }
       }
     }
@@ -161,11 +164,12 @@ function analyzeYaml(text: string, result: ProjectStructure): void {
             result.symbols.push(symbol);
             if (segments.length === 1) rootSymbols.push(symbol);
           }
-          if (value.startsWith("=")) addReferences(value.slice(1), "expression", source, yamlPath);
-          else if (ID_KEYS.has(normalizedKey)) addReferences(value, "id", source, yamlPath);
-          else if (IMPORT_KEYS.has(normalizedKey)) addReferences(value, "import", source, yamlPath);
-          else if (TYPE_KEYS.has(normalizedKey)) addReferences(value, "type", source, yamlPath);
-          else if (isHandlerKey(key)) addReferences(value, "handler", source, yamlPath);
+          const context = container !== document.contents ? occurrence ?? container : undefined;
+          if (value.startsWith("=")) addReferences(value.slice(1), "expression", source, yamlPath, context);
+          else if (ID_KEYS.has(normalizedKey)) addReferences(value, "id", source, yamlPath, context);
+          else if (IMPORT_KEYS.has(normalizedKey)) addReferences(value, "import", source, yamlPath, context);
+          else if (TYPE_KEYS.has(normalizedKey)) addReferences(value, "type", source, yamlPath, context);
+          else if (isHandlerKey(key)) addReferences(value, "handler", source, yamlPath, context);
         }
       } finally {
         activeNodes.delete(node);

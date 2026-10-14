@@ -15,6 +15,7 @@ import {
   DocsToolReadResult,
   DocsToolSearchResult
 } from "./docsContextService";
+import { normalizeDocsSymbolName, titleMatchesSymbol } from "./docsSymbolMatching";
 import { Logger } from "./logger";
 import {
   compareDocumentationVersion,
@@ -54,10 +55,6 @@ const DEFAULT_OVERVIEW_ITEMS = 6;
 const DEFAULT_BLOCK_CHARS = 7200;
 const SYMBOL_READ_CHARS = 7000;
 const MAX_SYMBOLS = 3;
-const SYMBOL_IDENTIFIER = "[\\p{L}_][\\p{L}\\p{N}\\p{M}_]*";
-const QUALIFIED_SYMBOL = `${SYMBOL_IDENTIFIER}(?:(?:::|\\.)${SYMBOL_IDENTIFIER})*`;
-const SYMBOL_PATTERN = new RegExp(`^${QUALIFIED_SYMBOL}$`, "u");
-const TITLE_SYMBOL_PATTERN = new RegExp('^["`«]?(' + QUALIFIED_SYMBOL + ')(?=$|[^\\p{L}\\p{N}\\p{M}_:.])', "u");
 
 export class DocsToolsService {
   constructor(
@@ -279,7 +276,9 @@ export class DocsToolsService {
     const compatibility = (ref: DocsToolFragmentRef) => compareDocumentationVersion(ref.id, expectedPlatformVersion, ref.documentationVersion);
     const maxItems = boundedLimit(request.limits.maxItems, MAX_SYMBOLS, MAX_SYMBOLS);
     for (const symbol of symbolNames) {
-      const search = await this.docsContext.searchTool(symbol, { maxItems: 12, maxPreviewChars: 120 });
+      const search = await this.docsContext.searchTool(symbol, {
+        maxItems: 12, maxPreviewChars: 120, exactTitle: true, expectedPlatformVersion
+      });
       if (!search) { unavailableSymbols.push(symbol); continue; }
       search.roots.forEach(root => roots.add(root.root));
       candidates.set(symbol, search.fragments.slice(0, 12).filter(fragment => titleMatchesSymbol(fragment.title, symbol)));
@@ -476,22 +475,15 @@ function normalizeSymbolNames(value: unknown): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
   for (const item of value) {
-    if (typeof item !== "string") continue;
-    const name = item.trim().normalize("NFC");
+    const name = normalizeDocsSymbolName(item);
+    if (!name) continue;
     const key = name.toLowerCase();
-    if (!name || name.length > 200 || !SYMBOL_PATTERN.test(name) || seen.has(key)) continue;
+    if (seen.has(key)) continue;
     seen.add(key);
     names.push(name);
     if (names.length === MAX_SYMBOLS) break;
   }
   return names;
-}
-
-function titleMatchesSymbol(title: string, symbol: string): boolean {
-  // Compare the declared heading identifier, not parameter names, generic arguments or prose mentions.
-  const heading = title.trim().normalize("NFC").replace(/^#{1,6}\s+/u, "")
-    .replace(/^(?:тип|класс|интерфейс|структура|перечисление|метод|свойство|пространство им[её]н|компонент интерфейса|type|class|interface component|interface|structure|enum|method|property|namespace)\s*:?\s+(?=[\p{L}_`"«])/iu, "");
-  return TITLE_SYMBOL_PATTERN.exec(heading)?.[1].toLowerCase() === symbol.toLowerCase();
 }
 
 function boundedLimit(value: number | undefined, fallback: number, maximum: number): number {

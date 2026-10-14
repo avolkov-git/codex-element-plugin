@@ -15,6 +15,8 @@ import {
 import type { Logger } from "./logger";
 import type { SettingsService } from "./settingsService";
 import { DOCS_WORKER_LIMITS, DocsCapacityError } from "./docsWorkerProtocol";
+import { compareDocumentationVersion, documentationVersionRank, normalizePlatformVersion } from "./documentationCompatibility";
+import { normalizeDocsSymbolName, titleMatchesSymbol } from "./docsSymbolMatching";
 import type { DocsContextDetails, DocsRootDetail } from "./types";
 
 interface DocsCache {
@@ -441,6 +443,8 @@ export class DocsSearchEngine {
   async searchTool(query: string, options: {
     readonly maxItems?: number;
     readonly maxPreviewChars?: number;
+    readonly exactTitle?: boolean;
+    readonly expectedPlatformVersion?: string;
   } = {}): Promise<DocsToolSearchResult | undefined> {
     const caches = await this.loadAllowedDocsCaches(this.getAllowedRootCandidates());
     if (!caches.length) {
@@ -450,7 +454,9 @@ export class DocsSearchEngine {
     const fragmentsPool = caches.flatMap((cache) => cache.loaded.fragments);
     const maxItems = clampPositiveInteger(options.maxItems, 8, 1, 24);
     const maxPreviewChars = clampPositiveInteger(options.maxPreviewChars, 360, 120, 1200);
-    const matches = searchFragments(fragmentsPool, query).slice(0, maxItems);
+    const matches = options.exactTitle
+      ? searchExactTitleFragments(fragmentsPool, query, maxItems, options.expectedPlatformVersion)
+      : searchFragments(fragmentsPool, query).slice(0, maxItems);
     return {
       query,
       roots: summarizeCaches(caches),
@@ -731,6 +737,36 @@ function selectReadFragments(
 
   const query = options.query?.trim();
   return query ? searchFragments(fragments, query).map((item) => item.fragment) : [];
+}
+
+function searchExactTitleFragments(
+  fragments: readonly DocsFragment[], query: string, maxItems: number, expectedVersion?: string
+): ScoredFragment[] {
+  const symbol = normalizeDocsSymbolName(query);
+  if (!symbol) return [];
+  const expected = normalizePlatformVersion(expectedVersion);
+  const terms = tokenize(symbol);
+  const intent = detectIntent(symbol);
+  const selected: Array<ScoredFragment & { id: string; versionRank: number }> = [];
+  // The loaded pool is corpus-budgeted. Keep only a bounded top-k while scanning
+  // every exact heading; neither fuzzy rank nor duplicate roots can consume its cap.
+  for (const fragment of fragments) {
+    if (!titleMatchesSymbol(fragment.title, symbol)) continue;
+    const id = docsFragmentId(fragment);
+    const score = scoreFragment(fragment, terms, intent);
+    const duplicate = selected.findIndex(item => item.id === id);
+    if (duplicate >= 0) {
+      if (selected[duplicate].score >= score) continue;
+      selected.splice(duplicate, 1);
+    }
+    const versionRank = documentationVersionRank(compareDocumentationVersion(id, expected, fragment.documentationVersion));
+    const position = selected.findIndex(item => versionRank > item.versionRank
+      || (versionRank === item.versionRank && score > item.score));
+    if (position >= 0) selected.splice(position, 0, { fragment, score, id, versionRank });
+    else if (selected.length < maxItems) selected.push({ fragment, score, id, versionRank });
+    if (selected.length > maxItems) selected.pop();
+  }
+  return selected;
 }
 
 function searchFragments(fragments: DocsFragment[], prompt: string): ScoredFragment[] {

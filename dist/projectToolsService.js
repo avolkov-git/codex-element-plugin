@@ -251,7 +251,9 @@ function formatSearchBlock(search, maxChars) {
         ...search.chunks.map((chunk, index) => {
             const covered = search.semantic?.snippets.some(snippet => !snippet.truncated && snippet.path === chunk.path
                 && snippet.startLine <= chunk.endLine && snippet.endLine >= chunk.startLine);
-            return formatChunkRef(index + 1, covered ? { ...chunk, preview: "" } : chunk);
+            const focused = search.semantic?.focusedFiles?.includes(chunk.path);
+            return formatChunkRef(index + 1, focused ? { ...chunk, preview: "", symbols: [], keywords: [] }
+                : covered ? { ...chunk, preview: "" } : chunk);
         })
     ].join("\n");
 }
