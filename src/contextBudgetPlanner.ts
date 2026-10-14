@@ -153,12 +153,18 @@ export function applyContextBudget(blocks: readonly ContextBlock[], options: Con
       // A larger project neighbourhood must not displace the user's coding requirements.
       instruction: ["technicalProject", "explicitProject", "projectNoContext"].includes(route)
         && (block.source === "baseRules" || block.source === "rules"),
+      mandatory: block.source === "baseRules" || (block.source === "rules" && block.metadata?.scopedRules !== true),
+      // Outside project routes, retain the existing docs ordering and spend only spare space on scoped rules.
+      supplementalLast: !["technicalProject", "explicitProject", "projectNoContext"].includes(route)
+        && block.source === "rules" && block.metadata?.scopedRules === true,
       priority: getEffectivePriority(block, route),
       score: getFiniteNumber(block.score),
       tokensEstimate: estimateTokens(block)
     }))
     .sort((left, right) =>
-      Number(right.instruction) - Number(left.instruction)
+      Number(left.supplementalLast) - Number(right.supplementalLast)
+      || Number(right.instruction) - Number(left.instruction)
+      || (left.instruction && right.instruction ? Number(right.mandatory) - Number(left.mandatory) : 0)
       || right.priority - left.priority
       || right.score - left.score
       || left.tokensEstimate - right.tokensEstimate

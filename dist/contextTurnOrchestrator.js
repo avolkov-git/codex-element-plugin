@@ -1,6 +1,40 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ContextTurnOrchestrator = void 0;
+const path = __importStar(require("path"));
 const contextBudgetPlanner_1 = require("./contextBudgetPlanner");
 class ContextTurnOrchestrator {
     constructor(options) {
@@ -116,10 +150,20 @@ class ContextTurnOrchestrator {
             }
         }
         if (shouldUseSupportContext && request.chatKind === "project") {
-            const rules = await this.options.rulesContext.buildContext(request.chatKind, request.rulesEnabled);
+            const targets = contextBlocks.flatMap(block => {
+                if (!["project", "editorFile", "editorSelection"].includes(block.source))
+                    return [];
+                if (block.source === "project" && (typeof block.metadata?.ruleRoot !== "string"
+                    || path.relative(path.resolve(request.cwd), path.resolve(block.metadata.ruleRoot)) !== ""))
+                    return [];
+                const values = block.metadata?.ruleTargets ?? (block.metadata?.changeReview ? block.metadata.targets : undefined);
+                return Array.isArray(values) ? values.filter((value) => !!value && typeof value === "object" && typeof value.path === "string"
+                    && (value.elementKind === undefined || typeof value.elementKind === "string")) : [];
+            });
+            const rules = await this.options.rulesContext.buildContext(request.chatKind, request.rulesEnabled, targets);
             this.options.state.setRulesContext(rules.status);
             this.notify(request.chatId);
-            rulesRoute = rules.status.status === "active" && rules.text
+            rulesRoute = rules.status.status === "active" && (rules.text || rules.scopedText)
                 ? "added"
                 : rules.status.status;
             if (rules.text) {
@@ -127,8 +171,14 @@ class ContextTurnOrchestrator {
                     source: "rules",
                     text: rules.text,
                     matchCount: rules.matchCount,
-                    mode: "matched"
+                    mode: "matched",
+                    metadata: { mandatoryProjectRules: true }
                 });
+            }
+            if (rules.scopedText) {
+                contextBlocks.push({ source: "rules", text: rules.scopedText,
+                    matchCount: rules.scopedMatchCount ?? 0, mode: "matched",
+                    metadata: { scopedRules: true, paths: rules.scopedPaths ?? [], warnings: rules.warnings ?? [] } });
             }
         }
         else if (request.chatKind === "general") {

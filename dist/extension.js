@@ -74,6 +74,7 @@ const projectSemanticService_1 = require("./projectSemanticService");
 const pluginFeatureService_1 = require("./pluginFeatureService");
 const ripgrepInstallerService_1 = require("./ripgrepInstallerService");
 const rulesContextService_1 = require("./rulesContextService");
+const projectChangeReviewService_1 = require("./projectChangeReviewService");
 const settingsPanelManager_1 = require("./settingsPanelManager");
 const settingsService_1 = require("./settingsService");
 const sidebarProvider_1 = require("./sidebarProvider");
@@ -115,6 +116,7 @@ async function activate(context) {
     const projectContext = new projectContextService_1.ProjectContextService(context, settings.getConfigRoot(), logger, projectSemantic);
     context.subscriptions.push(nativeAst, elementLanguage);
     const profiles = new userProfileService_1.UserProfileService(context, identity);
+    const changeReview = new projectChangeReviewService_1.ProjectChangeReviewService(projectContext, nativeAst, elementLanguage, () => profiles.getCurrentProfileId(), logger);
     const docsTools = new docsToolsService_1.DocsToolsService(docsCorpusContext, logger);
     const projectTools = new projectToolsService_1.ProjectToolsService(projectContext, logger, () => profiles.getCurrentProfileId());
     const diagnosticsTools = new diagnosticsToolsService_1.DiagnosticsToolsService(diagnosticsContext, logger);
@@ -452,6 +454,7 @@ async function activate(context) {
         contextOrchestrator,
         docsContext,
         diagnosticsContext,
+        changeReview,
         attachments,
         nativeContextTools,
         profiles,

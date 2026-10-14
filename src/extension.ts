@@ -37,6 +37,7 @@ import { ProjectSemanticService } from "./projectSemanticService";
 import { PluginFeatureService } from "./pluginFeatureService";
 import { RipgrepInstallerService } from "./ripgrepInstallerService";
 import { RulesContextService } from "./rulesContextService";
+import { ProjectChangeReviewService } from "./projectChangeReviewService";
 import { SettingsPanelManager } from "./settingsPanelManager";
 import { SettingsService } from "./settingsService";
 import { SidebarProvider } from "./sidebarProvider";
@@ -82,6 +83,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const projectContext = new ProjectContextService(context, settings.getConfigRoot(), logger, projectSemantic);
   context.subscriptions.push(nativeAst, elementLanguage);
   const profiles = new UserProfileService(context, identity);
+  const changeReview = new ProjectChangeReviewService(projectContext, nativeAst, elementLanguage, () => profiles.getCurrentProfileId(), logger);
   const docsTools = new DocsToolsService(docsCorpusContext, logger);
   const projectTools = new ProjectToolsService(projectContext, logger, () => profiles.getCurrentProfileId());
   const diagnosticsTools = new DiagnosticsToolsService(diagnosticsContext, logger);
@@ -381,6 +383,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     contextOrchestrator,
     docsContext,
     diagnosticsContext,
+    changeReview,
     attachments,
     nativeContextTools,
     profiles,

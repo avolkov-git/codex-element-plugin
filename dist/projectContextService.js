@@ -34,11 +34,25 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProjectContextService = exports.ProjectToolError = void 0;
+exports.projectRuleTargets = projectRuleTargets;
 const crypto = __importStar(require("crypto"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const projectStructure_1 = require("./projectStructure");
+function projectRuleTargets(files, paths) {
+    const indexed = new Map(files.map(file => [file.path, file]));
+    const candidates = paths.flatMap(filePath => /\.ya?ml$/u.test(filePath)
+        ? [filePath, ...[".xbsl", ".Объект.xbsl", ".Object.xbsl"].map(extension => filePath.replace(/\.ya?ml$/u, extension))] : [filePath]);
+    return [...new Set(candidates)].filter(filePath => indexed.has(filePath)).slice(0, 64).map(filePath => {
+        if (/\.ya?ml$/u.test(filePath))
+            return { path: filePath, elementKind: indexed.get(filePath)?.structure?.element?.kind };
+        const stem = filePath.replace(/(?:\.Объект|\.Object)?\.xbsl$/u, "").replace(/\.ya?ml$/u, "");
+        const kinds = new Set([`${stem}.yaml`, `${stem}.yml`]
+            .map(name => indexed.get(name)?.structure?.element?.kind).filter((kind) => Boolean(kind)));
+        return { path: filePath, elementKind: kinds.size === 1 ? [...kinds][0] : undefined };
+    });
+}
 class ProjectToolError extends Error {
     constructor(code, message) {
         super(message);
@@ -462,7 +476,8 @@ class ProjectContextService {
             totalFiles: index.files.length,
             totalChunks: index.chunks.length,
             chunks,
-            semantic
+            semantic,
+            ruleTargets: projectRuleTargets(index.files, [...chunks.map(chunk => chunk.path), ...(semantic?.snippets.map(snippet => snippet.path) ?? [])])
         };
     }
     async readFileTool(profileId, options) {
@@ -472,6 +487,53 @@ class ProjectContextService {
         const read = await this.readFileInScope(scope, options);
         this.assertScope(scope);
         return read;
+    }
+    async captureChangeSnapshot(profileId, refresh = false) {
+        const scope = this.captureScope();
+        if (refresh) {
+            this.dirty = true;
+            this.forceReindexRevision += 1;
+            this.clearSemanticCache();
+        }
+        const { index: diskIndex, fileRevision } = await this.ensureToolIndex(profileId, scope);
+        const snapshot = this.captureSnapshot(scope, fileRevision);
+        const index = await this.withOpenDocuments(diskIndex, snapshot);
+        this.assertSnapshot(snapshot, index);
+        const files = index.files.filter(file => /\.(?:xbsl|ya?ml)$/i.test(file.path))
+            .map(file => ({ path: file.path, hash: file.hash, structure: file.structure
+                ? JSON.parse(JSON.stringify(file.structure)) : undefined }));
+        const hashes = new Map(files.map(file => [file.path, file.hash]));
+        return {
+            workspaceRoot: scope.workspaceRoot,
+            files,
+            coverage: "bounded-index",
+            // Baselines survive edits, but never a workspace transition (including away/back).
+            isCurrent: () => { try {
+                this.assertScope(scope);
+                return true;
+            }
+            catch {
+                return false;
+            } },
+            isContentCurrent: () => { try {
+                this.assertSnapshot(snapshot, index);
+                return true;
+            }
+            catch {
+                return false;
+            } },
+            readFile: async (filePath) => {
+                this.assertSnapshot(snapshot, index);
+                const hash = hashes.get(filePath);
+                if (!hash)
+                    throw new ProjectToolError("notFound", "Файл не входит в снимок проверки.");
+                const read = await this.readFileInScope(scope, { filePath, maxChars: MAX_FILE_BYTES, maxBytes: MAX_FILE_BYTES }, hash);
+                this.assertSnapshot(snapshot, index);
+                if (read.truncated)
+                    throw new ProjectToolError("tooLarge", "Файл не помещается в лимит проверки.");
+                return { text: read.text, hash: crypto.createHash("sha256").update(read.text).digest("hex") };
+            }
+        };
     }
     async readFileInScope(scope, options, expectedHash) {
         this.assertScope(scope);

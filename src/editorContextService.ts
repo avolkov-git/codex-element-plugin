@@ -50,6 +50,7 @@ export class EditorContextService {
       byteLength,
       contextBlock: {
         source: "editorFile",
+        metadata: { ruleTargets: [{ path: document.uri.fsPath }] },
         text: [
           `Файл: ${relativePath}`,
           `Язык: ${document.languageId || languageFromPath(relativePath)}`,
@@ -93,6 +94,7 @@ export class EditorContextService {
       byteLength,
       contextBlock: {
         source: "editorSelection",
+        metadata: { ruleTargets: [{ path: document.uri.fsPath }] },
         text: [
           `Файл: ${relativePath}`,
           `Диапазон: ${startLine}-${endLine}`,

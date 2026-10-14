@@ -14,6 +14,21 @@ const uri = file => ({ scheme: "file", fsPath: file, path: file, toString: () =>
 const semanticResult = () => ({ links: [], snippets: [], documentationQueries: [], diagnostics: [], providers: [], hovers: [] });
 const unavailable = error => error?.code === "unavailable";
 
+test("rule targets retain indexed XBSL and object modules without guessing ambiguous element kinds", () => {
+  const { projectRuleTargets } = loadSource("src/projectContextService.ts", { vscode: {} });
+  const element = kind => ({ element: { kind } });
+  const files = [
+    { path: "Form.yaml", structure: element("Component") }, { path: "Form.xbsl" }, { path: "Form.Объект.xbsl" },
+    { path: "Ambiguous.yaml", structure: element("Component") }, { path: "Ambiguous.yml", structure: element("Module") },
+    { path: "Ambiguous.xbsl" }, { path: "CodeOnly.xbsl" }
+  ];
+  const targets = projectRuleTargets(files, ["Form.xbsl", "Form.Объект.xbsl", "Ambiguous.xbsl", "CodeOnly.xbsl", "Missing.xbsl", "Form.xbsl"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(targets)), [
+    { path: "Form.xbsl", elementKind: "Component" }, { path: "Form.Объект.xbsl", elementKind: "Component" },
+    { path: "Ambiguous.xbsl" }, { path: "CodeOnly.xbsl" }
+  ]);
+});
+
 function fixture(t, options = {}) {
   const temporary = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "project-snapshot-")));
   const rootA = path.join(temporary, "A");
@@ -74,6 +89,42 @@ function fixture(t, options = {}) {
   t.after(() => { service.dispose(); fs.rmSync(temporary, { recursive: true, force: true }); });
   return f;
 }
+
+test("change snapshots are detached and force-refresh detects stat-preserving shell rewrites", async t => {
+  const f = fixture(t);
+  const before = await f.service.captureChangeSnapshot("user", true);
+  const stat = fs.statSync(f.fileA);
+  const changed = codeA.replace("FromA", "FromZ");
+  fs.writeFileSync(f.fileA, changed);
+  fs.utimesSync(f.fileA, stat.atime, stat.mtime);
+  const after = await f.service.captureChangeSnapshot("user", true);
+  assert.equal(before.files[0].hash, hash(codeA));
+  assert.equal(after.files[0].hash, hash(changed));
+  assert.equal(before.isCurrent(), true, "baseline scope survives expected file edits");
+  assert.equal((await after.readFile("Form.xbsl")).text, changed);
+  await assert.rejects(before.readFile("Form.xbsl"), unavailable);
+});
+
+test("change snapshot rejects workspace away/back and non-snapshot paths", async t => {
+  const f = fixture(t);
+  const snapshot = await f.service.captureChangeSnapshot("user");
+  await assert.rejects(snapshot.readFile("../B/Form.xbsl"));
+  f.switchRoot(f.rootB); f.switchRoot(f.rootA);
+  assert.equal(snapshot.isCurrent(), false);
+  await assert.rejects(snapshot.readFile("Form.xbsl"), unavailable);
+});
+
+test("change snapshots honor unsaved editor text and exclude its mutation after capture", async t => {
+  const f = fixture(t);
+  const doc = f.open(codeA.replace("FromA", "Local"));
+  const snapshot = await f.service.captureChangeSnapshot("user", true);
+  assert.equal(snapshot.files[0].hash, hash(doc.text));
+  assert.equal((await snapshot.readFile("Form.xbsl")).text, doc.text);
+  doc.text = codeB; doc.version++;
+  assert.equal(snapshot.isCurrent(), true, "baseline scope remains usable");
+  assert.equal(snapshot.isContentCurrent(), false, "result revision must be invalidated even before any reads");
+  await assert.rejects(snapshot.readFile("Form.xbsl"), unavailable);
+});
 
 test("full reads preserve raw CRLF bytes and the hash used by Language Server", async t => {
   const f = fixture(t);

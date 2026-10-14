@@ -37,6 +37,7 @@ exports.RulesContextService = void 0;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
+const scopedProjectRules_1 = require("./scopedProjectRules");
 const RULES_RELATIVE_PATH = path.join(".local-codex", "rules.md");
 const MAX_RULES_BYTES = 64 * 1024;
 const MAX_RULES_CONTEXT_CHARS = 12000;
@@ -71,57 +72,93 @@ class RulesContextService {
         }
         return { status: "active", label: "Правила проекта активны" };
     }
-    async buildContext(chatKind, rulesEnabled) {
-        const status = this.getStatus(chatKind, rulesEnabled);
-        if (status.status !== "active") {
+    async buildContext(chatKind, rulesEnabled, targets = []) {
+        if (chatKind !== "project" || !rulesEnabled) {
+            const status = this.getStatus(chatKind, rulesEnabled);
             this.logger.info(`Rules context skipped: ${status.label}.`);
             return { matchCount: 0, status };
         }
-        const rulesPath = this.resolveRulesPath();
-        if (!rulesPath) {
+        const root = getWorkspaceRoot();
+        if (!root) {
             return {
                 matchCount: 0,
                 status: { status: "missing", label: "Workspace не найден, правила проекта недоступны" }
             };
         }
+        // Snapshot caller-owned input and observe even an A -> B -> A workspace switch.
+        const selected = targets.slice(0, scopedProjectRules_1.SCOPED_RULES_LIMITS.targets).map(target => ({ path: target.path, elementKind: target.elementKind }));
+        let changed = false;
+        const subscription = vscode.workspace.onDidChangeWorkspaceFolders?.(() => { changed = true; });
+        const assertCurrent = () => {
+            if (changed || getWorkspaceRoot() !== root)
+                throw new Error("Workspace изменился во время чтения правил. Повторите запрос.");
+        };
+        const rulesPath = path.join(root, RULES_RELATIVE_PATH);
+        const result = {
+            sourcePath: rulesPath, matchCount: 0, scopedMatchCount: 0, scopedPaths: [],
+            status: { status: "missing", label: "Файл .local-codex/rules.md не найден" },
+        };
+        const warnings = [];
         try {
-            const stat = await fs.promises.stat(rulesPath);
-            if (stat.size > MAX_RULES_BYTES) {
-                const message = `Файл правил слишком большой: ${Math.round(stat.size / 1024)}KB.`;
-                this.logger.warn(`Rules context skipped: ${message}`);
-                return {
-                    sourcePath: rulesPath,
-                    matchCount: 0,
-                    status: { status: "error", label: "Правила проекта слишком большие" }
-                };
+            const workspace = await scopedProjectRules_1.RulesWorkspace.create(root, assertCurrent);
+            try {
+                const rules = (await workspace.read(RULES_RELATIVE_PATH, MAX_RULES_BYTES)).trim();
+                if (rules) {
+                    result.text = formatRulesContext(rulesPath, rules);
+                    result.matchCount = 1;
+                    if (rules.replace(/\r\n/g, "\n").length > MAX_RULES_CONTEXT_CHARS) {
+                        warnings.push("Контекст .local-codex/rules.md усечен: прежний лимит 12000 символов.");
+                    }
+                }
+                else {
+                    result.status = { status: "missing", label: "Файл правил пуст" };
+                }
             }
-            const raw = await fs.promises.readFile(rulesPath, "utf8");
-            const rules = raw.trim();
-            if (!rules) {
-                this.logger.info("Rules context skipped: rules file is empty.");
-                return {
-                    sourcePath: rulesPath,
-                    matchCount: 0,
-                    status: { status: "missing", label: "Файл правил пуст" }
-                };
+            catch (error) {
+                if (!(0, scopedProjectRules_1.isMissingRulesFile)(error)) {
+                    warnings.push(`.local-codex/rules.md: ${error instanceof Error ? error.message : "правила недоступны"}`);
+                    result.status = { status: "error", label: "Общепроектные правила недоступны" };
+                }
             }
-            const text = formatRulesContext(rulesPath, rules);
-            this.logger.info(`Rules context added: ${rulesPath}.`);
-            return {
-                text,
-                sourcePath: rulesPath,
-                matchCount: 1,
-                status: { status: "active", label: "Правила проекта активны" }
-            };
+            assertCurrent();
+            const scoped = await (0, scopedProjectRules_1.loadScopedRules)(workspace, selected);
+            result.scopedText = scoped.scopedText;
+            result.scopedMatchCount = scoped.scopedMatchCount;
+            result.scopedPaths = scoped.scopedPaths;
+            warnings.push(...scoped.warnings);
+            if (targets.length > scopedProjectRules_1.SCOPED_RULES_LIMITS.targets)
+                warnings.push("Подбор целей усечен: использованы первые 64 цели.");
+            if (result.text) {
+                try {
+                    await workspace.validateRead(RULES_RELATIVE_PATH);
+                }
+                catch {
+                    delete result.text;
+                    result.matchCount = 0;
+                    warnings.push("Общепроектные правила изменились во время сборки контекста и не добавлены. Повторите запрос.");
+                }
+            }
+            await workspace.checkCurrent();
+            if (result.text || result.scopedText) {
+                result.status = { status: "active", label: warnings.length ? "Правила проекта активны с предупреждениями" : "Правила проекта активны" };
+            }
+            else if (warnings.length) {
+                result.status = { status: "error", label: "Правила проекта не добавлены; проверьте предупреждения" };
+            }
+            if (warnings.length) {
+                result.warnings = warnings;
+                this.logger.warn(`Rules context warnings: ${warnings.join(" ")}`);
+            }
+            return result;
         }
         catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            this.logger.warn(`Rules context skipped: ${message}.`);
-            return {
-                sourcePath: rulesPath,
-                matchCount: 0,
-                status: { status: "error", label: "Правила проекта недоступны" }
-            };
+            const warning = error instanceof Error ? error.message : "Правила проекта недоступны. Повторите запрос.";
+            this.logger.warn(`Rules context skipped: ${warning}`);
+            // Never return a partial result belonging to a workspace that is no longer current.
+            return { matchCount: 0, status: { status: "error", label: "Правила проекта недоступны" }, warnings: [warning] };
+        }
+        finally {
+            subscription?.dispose();
         }
     }
     async openRulesFile() {

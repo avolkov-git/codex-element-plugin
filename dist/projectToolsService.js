@@ -146,6 +146,8 @@ class ProjectToolsService {
                     totalChunks: search.totalChunks,
                     documentationQueries: search.semantic?.documentationQueries ?? [],
                     semanticLinks: search.semantic?.links.length ?? 0,
+                    ruleTargets: search.ruleTargets ?? [],
+                    ruleRoot: search.workspaceRoot,
                     truncated: text.endsWith("…") || text.includes("Не включено в лимит вывода")
                         || Boolean(search.semantic?.selection?.omittedRanges)
                         || Boolean(search.semantic?.snippets.some(snippet => snippet.truncated))
@@ -183,6 +185,8 @@ class ProjectToolsService {
                 mode: "matched",
                 metadata: {
                     path: file.path,
+                    ruleTargets: [{ path: file.path }],
+                    ruleRoot: file.workspaceRoot,
                     language: file.language,
                     startLine: file.startLine,
                     endLine: file.endLine,
@@ -221,6 +225,8 @@ class ProjectToolsService {
                 metadata: {
                     query: symbols.query,
                     path: symbols.path,
+                    ruleTargets: [...new Set(symbols.symbols.map(symbol => symbol.path))].map(path => ({ path })),
+                    ruleRoot: symbols.workspaceRoot,
                     totalFiles: symbols.totalFiles,
                     totalChunks: symbols.totalChunks,
                     truncated: text.endsWith("…")

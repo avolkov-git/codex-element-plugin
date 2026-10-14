@@ -1,3 +1,4 @@
+import * as path from "path";
 import { BaseContextService } from "./baseContextService";
 import { applyContextBudget, ContextBudgetResult } from "./contextBudgetPlanner";
 import { ContextBlock, ContextRouterService } from "./contextRouterService";
@@ -222,10 +223,19 @@ export class ContextTurnOrchestrator {
     }
 
     if (shouldUseSupportContext && request.chatKind === "project") {
-      const rules = await this.options.rulesContext.buildContext(request.chatKind, request.rulesEnabled);
+      const targets = contextBlocks.flatMap(block => {
+        if (!["project", "editorFile", "editorSelection"].includes(block.source)) return [];
+        if (block.source === "project" && (typeof block.metadata?.ruleRoot !== "string"
+          || path.relative(path.resolve(request.cwd), path.resolve(block.metadata.ruleRoot)) !== "")) return [];
+        const values = block.metadata?.ruleTargets ?? (block.metadata?.changeReview ? block.metadata.targets : undefined);
+        return Array.isArray(values) ? values.filter((value): value is { path: string; elementKind?: string } =>
+          !!value && typeof value === "object" && typeof value.path === "string"
+          && (value.elementKind === undefined || typeof value.elementKind === "string")) : [];
+      });
+      const rules = await this.options.rulesContext.buildContext(request.chatKind, request.rulesEnabled, targets);
       this.options.state.setRulesContext(rules.status);
       this.notify(request.chatId);
-      rulesRoute = rules.status.status === "active" && rules.text
+      rulesRoute = rules.status.status === "active" && (rules.text || rules.scopedText)
         ? "added"
         : rules.status.status;
       if (rules.text) {
@@ -233,8 +243,14 @@ export class ContextTurnOrchestrator {
           source: "rules",
           text: rules.text,
           matchCount: rules.matchCount,
-          mode: "matched"
+          mode: "matched",
+          metadata: { mandatoryProjectRules: true }
         });
+      }
+      if (rules.scopedText) {
+        contextBlocks.push({ source: "rules", text: rules.scopedText,
+          matchCount: rules.scopedMatchCount ?? 0, mode: "matched",
+          metadata: { scopedRules: true, paths: rules.scopedPaths ?? [], warnings: rules.warnings ?? [] } });
       }
     } else if (request.chatKind === "general") {
       this.options.state.setRulesContext({

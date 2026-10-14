@@ -92,3 +92,48 @@ test("general chat retains explicit input without project rules or index", async
   assert.ok(result.input[0].text.includes(input.explicitContextBlocks[0].text));
   assert.deepEqual(h.counts(), { rulesReads: 0, projectReads: 0 });
 });
+
+test("scoped-only rules reach input with verified-source targets, not documentation metadata", async () => {
+  const h = harness();
+  let targets;
+  h.orchestrator.options.rulesContext.buildContext = async (_kind, _enabled, selected) => {
+    targets = selected;
+    return { scopedText: "MODULE_RULE_MARKER", scopedMatchCount: 1, scopedPaths: ["module.md"],
+      matchCount: 0, status: { status: "active" } };
+  };
+  const input = request();
+  input.explicitContextBlocks = [
+    { source: "editorSelection", text: "selected code", matchCount: 1, mode: "matched", metadata: { ruleTargets: [{ path: "/warehouse/Ledger.xbsl" }] } },
+    { source: "project", text: "prior review", matchCount: 1, mode: "matched", metadata: { changeReview: true, ruleRoot: "/warehouse", targets: [{ path: "Form.xbsl", elementKind: "Component" }] } },
+    { source: "project", text: "stale source", matchCount: 1, mode: "matched", metadata: { ruleRoot: "/other-project", ruleTargets: [{ path: "Stale.xbsl" }] } },
+    { source: "docs", text: "reference", matchCount: 1, mode: "matched", metadata: { ruleTargets: [{ path: "NotProject.xbsl" }] } }
+  ];
+  const result = await h.orchestrator.buildTurnContext(input);
+  assert.deepEqual(JSON.parse(JSON.stringify(targets)), [{ path: "/warehouse/Ledger.xbsl" }, { path: "Form.xbsl", elementKind: "Component" }]);
+  assert.equal(result.rulesRoute, "added");
+  assert.match(result.input[0].text, /MODULE_RULE_MARKER/);
+  assert.equal(result.blocks.find(block => block.text === "MODULE_RULE_MARKER").metadata.scopedRules, true);
+});
+
+for (const route of ["technicalProject", "docsLookup", "docsOverview"]) test(`supplemental rules cannot displace global and base rules under ${route} pressure`, () => {
+  const { applyContextBudget } = loadSource("src/contextBudgetPlanner.ts");
+  const result = applyContextBudget([
+    { source: "rules", text: "s".repeat(12000), matchCount: 1, mode: "matched", priority: 999, metadata: { scopedRules: true } },
+    { source: "rules", text: "GLOBAL" + "r".repeat(6000), matchCount: 1, mode: "matched" },
+    { source: "baseRules", text: "BASE" + "b".repeat(6000), matchCount: 1, mode: "matched" }
+  ], { route, totalChars: 12500 });
+  assert.ok(result.blocks.some(block => block.text === "GLOBAL" + "r".repeat(6000)));
+  assert.ok(result.blocks.some(block => block.text === "BASE" + "b".repeat(6000)));
+});
+
+test("editor file and selection use the actual file path as a scoped-rule target", async () => {
+  const { EditorContextService } = loadSource("src/editorContextService.ts", {
+    vscode: { workspace: { asRelativePath: () => "Ledger.xbsl" }, window: { showWarningMessage() {} } }
+  });
+  const service = new EditorContextService();
+  const document = { uri: { scheme: "file", fsPath: "/warehouse/Ledger.xbsl" }, languageId: "xbsl", getText: () => "code" };
+  const selection = { isEmpty: false, start: { line: 0 }, end: { line: 1 } };
+  for (const built of [service.buildFileRequest(document), service.buildSelectionRequest({ document, selections: [selection] })]) {
+    assert.deepEqual(JSON.parse(JSON.stringify(built.contextBlock.metadata.ruleTargets)), [{ path: document.uri.fsPath }]);
+  }
+});

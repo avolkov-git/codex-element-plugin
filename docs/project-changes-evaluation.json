@@ -1,0 +1,2237 @@
+{
+  "schemaVersion": 1,
+  "oracle": {
+    "method": "Manually read real source before AST/analyzer execution; pinned hashes and line evidence, never learned from findings.",
+    "definitionsSha256": "6b67b5c508b6fd505b1f99d33c8548813fae8dde9c3c2ac1b5c348314008ee88",
+    "pins": {
+      "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl": "c0b6a75560d5b6cbbbe33a141cc2f0028cbd438d6553d579f569107a3a3cf208",
+      "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml": "fa1b871e3cd1fbe11466b3c84bddb6cf82e21959d8d2c0de0d5be1eabe754d4b",
+      "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl": "4b4de08c404857e12ebce5bafaf04066ba18aae6e1593c915b3a44bf1cdd77db",
+      "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl": "858e81ae3ce370742355fd6d086e4827a127f6a14c0c3c8e9ff1bc74e2f69335",
+      ".local-codex/rules.md": "21c77b782419552b39533c644915af36a56da75246e43a9b810489e47dd92eac"
+    },
+    "evidence": [
+      {
+        "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+        "line": 10,
+        "contains": "метод ВыполнитьПроверкуДоступности(",
+        "role": "handler declaration",
+        "textSha256": "619f01b5b47f4815a0090ac27d51901b0ae7a18781372eae2473bce673965da6"
+      },
+      {
+        "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+        "line": 40,
+        "contains": "ПриНажатии: ВыполнитьПроверкуДоступности",
+        "role": "button binding",
+        "textSha256": "4e2d863c9278a08d687fcd54888df6470ee60827fa2c719955f757e6405a6745"
+      },
+      {
+        "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+        "line": 56,
+        "contains": "ПриНажатии: ВыполнитьПроверкуДоступностиПорта",
+        "role": "unchanged binding",
+        "textSha256": "e8f1873e9e6af72dba0b5d880cac0c285dcb97dbbf07166e69c8a7d69a2d5253"
+      },
+      {
+        "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+        "line": 66,
+        "contains": "ПриНажатии: ИдентификаторыВнешнихСистемКнопкаПриНажатии",
+        "role": "unchanged binding",
+        "textSha256": "0757e628ab82bcc64d09c95657aa774a5ec39d0ace0f69a862a383ba8f5d857a"
+      },
+      {
+        "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+        "line": 13,
+        "contains": "метод РазделительЗапланированныхЗаданий()",
+        "role": "common method declaration",
+        "textSha256": "75344f67363300bec0fd697a1fead73feee4e8b2632a4ea8e41337132881e921"
+      },
+      {
+        "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+        "line": 40,
+        "contains": "метод ПолнаяЗагрузкаОрганизаций()",
+        "role": "common method declaration",
+        "textSha256": "0de60b82fafb8ef8c24d68e99c10199b81d309eeebef10393e20a23d93919d8b"
+      },
+      {
+        "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+        "line": 56,
+        "contains": "ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.РазделительЗапланированныхЗаданий()",
+        "role": "direct inbound call",
+        "textSha256": "1fa000a4a5435102a5392eed51e6e007f773898f123331e063d1b21b6816ae17"
+      },
+      {
+        "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+        "line": 5,
+        "contains": "&ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.ПолнаяЗагрузкаОрганизаций",
+        "role": "inbound method reference",
+        "textSha256": "079a9863947f04632451d0fe6b5751698b861bb6e7ca20c925b85a672764ca55"
+      }
+    ],
+    "cases": [
+      {
+        "id": "handler-rename-without-yaml",
+        "edits": [
+          {
+            "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+            "from": "метод ВыполнитьПроверкуДоступности(",
+            "to": "метод ВыполнитьПроверкуДоступностиStage3("
+          }
+        ],
+        "target": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент",
+        "rules": [
+          ".local-codex/rules/10-sync.md"
+        ],
+        "expected": {
+          "handler": {
+            "name": "ВыполнитьПроверкуДоступности",
+            "line": 40,
+            "evidence": "candidate",
+            "resolution": "unresolved"
+          },
+          "structuralHandlers": 2,
+          "syntax": false
+        }
+      },
+      {
+        "id": "handler-consistent-rename",
+        "edits": [
+          {
+            "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+            "from": "метод ВыполнитьПроверкуДоступности(",
+            "to": "метод ВыполнитьПроверкуДоступностиStage3("
+          },
+          {
+            "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+            "from": "ПриНажатии: ВыполнитьПроверкуДоступности\n",
+            "to": "ПриНажатии: ВыполнитьПроверкуДоступностиStage3\n"
+          }
+        ],
+        "target": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент",
+        "rules": [
+          ".local-codex/rules/10-sync.md"
+        ],
+        "expected": {
+          "handler": {
+            "name": "ВыполнитьПроверкуДоступностиStage3",
+            "line": 40,
+            "evidence": "structural",
+            "resolution": "structural"
+          },
+          "structuralHandlers": 3,
+          "syntax": false
+        }
+      },
+      {
+        "id": "introduced-syntax-error",
+        "edits": [
+          {
+            "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+            "from": "метод ВыполнитьПроверкуДоступности(Источник: Компонент, Событие: СобытиеКомпонента)",
+            "to": "метод ВыполнитьПроверкуДоступности(Источник: Компонент, Событие: СобытиеКомпонента]"
+          }
+        ],
+        "target": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент",
+        "rules": [
+          ".local-codex/rules/10-sync.md"
+        ],
+        "expected": {
+          "syntax": true,
+          "syntaxPath": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+        }
+      },
+      {
+        "id": "common-method-inbound-call",
+        "edits": [
+          {
+            "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+            "from": "метод РазделительЗапланированныхЗаданий()",
+            "to": "метод РазделительЗапланированныхЗаданийStage3()"
+          }
+        ],
+        "target": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс",
+        "rules": [
+          ".local-codex/rules/20-payroll-api.md"
+        ],
+        "expected": {
+          "syntax": false,
+          "impact": {
+            "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+            "line": 56,
+            "name": "РазделительЗапланированныхЗаданий",
+            "occurrenceKind": "call"
+          }
+        }
+      },
+      {
+        "id": "common-method-inbound-methodref",
+        "edits": [
+          {
+            "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+            "from": "метод ПолнаяЗагрузкаОрганизаций()",
+            "to": "метод ПолнаяЗагрузкаОрганизацийStage3()"
+          }
+        ],
+        "target": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс",
+        "rules": [
+          ".local-codex/rules/20-payroll-api.md"
+        ],
+        "expected": {
+          "syntax": false,
+          "impact": {
+            "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+            "line": 5,
+            "name": "ПолнаяЗагрузкаОрганизаций",
+            "occurrenceKind": "method-reference"
+          }
+        }
+      },
+      {
+        "id": "unchanged",
+        "edits": [],
+        "rules": [],
+        "expected": {
+          "unchanged": true,
+          "syntax": false
+        }
+      }
+    ],
+    "rules": {
+      "kind": "Synthetic selectors in temporary copies; bodies are verbatim applicable lines from real global rules",
+      "fixtures": [
+        {
+          "path": ".local-codex/rules/10-sync.md",
+          "paths": [
+            "DOMRF/Start/СинхронизацияДанных/**"
+          ],
+          "elementKinds": [
+            "КомпонентИнтерфейса"
+          ],
+          "sourceText": "Строковые форматтеры держим рядом с компонентом:"
+        },
+        {
+          "path": ".local-codex/rules/20-payroll-api.md",
+          "paths": [
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/**"
+          ],
+          "elementKinds": [
+            "ОбщийМодуль"
+          ],
+          "sourceText": "Если общий модуль предполагает методы с аннотацией"
+        },
+        {
+          "path": ".local-codex/rules/90-unrelated.md",
+          "paths": [
+            "DOMRF/Start/ФизическиеЛица/**"
+          ],
+          "elementKinds": [
+            "Справочник"
+          ],
+          "sourceText": "В прикладных данных ссылки на пользователя"
+        }
+      ]
+    },
+    "semantics": "Matched YAML handlers are structural observations, not errors. Missing local declarations are unresolved candidates, not proof of missing inherited handlers. AST occurrences are not resolved targets. Syntax expected only on the modified file; baseline native diagnostics are separately checked."
+  },
+  "limitations": [
+    "No live IDE, LSP, provider diagnostics, server index, semantic binding, compilation, application execution, model or model-quality evaluation.",
+    "Only the unavailable-LSP branch is exercised. Empty mocked provider data is never evidence of successful LSP validation.",
+    "Copies include tracked XBSL/YAML plus real global rules, not binaries, docs, user-data, untracked files or the complete deployable application.",
+    "Scoped selectors are synthetic evaluation fixtures; their bodies are selected verbatim from existing project rules. This measures selection, not developer/model compliance.",
+    "Fixed source-based expectations cover selected occurrences, not exhaustive impact precision/recall. Common-module name seeding may include unchanged methods and unrelated receivers.",
+    "A partial report may satisfy selected expectations. Report status, omitted work and limits remain visible and are not upgraded to checked.",
+    "One sequential pass with a shared warmed native worker and cache; no latency distribution or speedup claim. Node CPU excludes Java; machine load is uncontrolled.",
+    "Old stage2 did not produce post-change reports. Comparison is structural capability/output accounting only; old absence is not a measured failed detection.",
+    "Runtime source is frozen in memory via the existing stage2 snapshot loader (same TypeScript transpilation approach as service-test-utils.loadSource); hashes record concurrent source edits."
+  ],
+  "baseline": {
+    "stage": "old-stage2",
+    "reportPath": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/docs/project-context-stage2-evaluation.json",
+    "reportSha256": "768f6fb2f0d0af1815f1661d1308f6edcbcb8025d43c323e99ce651d48326956",
+    "lastRun": "2026-10-13T23:20:42.708Z",
+    "postChangeReports": 0,
+    "changeDetectionAccuracy": null,
+    "postChangeFindingCount": null,
+    "note": "Historical pre-edit retrieval only, different tasks. No apples-to-apples accuracy, runtime or model-quality delta.",
+    "retrievalStructure": {
+      "cases": 8,
+      "semanticChars": 63641,
+      "deliveredPromptChars": 102847,
+      "semanticDuplicateChars": 0
+    }
+  },
+  "run": {
+    "startedAt": "2026-10-14T14:43:26.201Z",
+    "command": [
+      "/opt/homebrew/Cellar/node/25.9.0_1/bin/node",
+      "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/scripts/evaluate-project-changes.cjs",
+      "--project",
+      "/tmp/codex-context-privet-dom-app",
+      "--jar",
+      "/Users/aleksandrvolkov/pet-project/element-ai/theia-plugin-qc/artifacts/server 9.1.9-17/ide/theia/plugins/@1c-appengine-plugin/bin/appengine-lsp/repo/com.e1c.g5rt.lsp.server.appengine-9.1.9-1.jar",
+      "--output",
+      "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/docs/project-changes-evaluation.json"
+    ],
+    "harnessSha256": "ce6d082739e3b02d26fbf264354b2bfd65478424e138e5eb19b1bf5be0c5bac4",
+    "project": "/private/tmp/codex-context-privet-dom-app",
+    "fixtureCommit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+    "fixture": {
+      "fileCount": 608,
+      "sourceFiles": 607,
+      "bytes": 1951115,
+      "sha256": "9524b3a6eac31c4d20078b8d9fedaff50781c3eb660975c7721832435bc55e4a",
+      "initialGitStatusSha256": "fad111ea2ad0a946a8651b9e7935bc2bdcba854c76dc0a8a78f4f181460de4e1"
+    },
+    "source": {
+      "sha256": "829b341c10c1cc39976fa6ee93c081f12893d2ee33efe105d885883d2547db91",
+      "files": [
+        {
+          "path": "nativeXbslAstService.ts",
+          "sha256": "6351008572c9f1572089a4655188417907f5a3ef7cd69e91c89d41820c1eb353"
+        },
+        {
+          "path": "projectAstReferences.ts",
+          "sha256": "0c2052df589b0b12f98f9d1e18185aaad7388528b96764acae6a4cee39cded78"
+        },
+        {
+          "path": "projectChangeAnalysis.ts",
+          "sha256": "236e384434c929bb269bd1153c873dd85f067c3615e0e1ec8c409018c9b9215f"
+        },
+        {
+          "path": "projectChangeReviewService.ts",
+          "sha256": "1e3860a80d19f6db398f2077780349b41918a774c483c70948365dd549314618"
+        },
+        {
+          "path": "projectContextService.ts",
+          "sha256": "808f255ff4c1a139a3d88a11167065167d816d382a5f38d8c8154006c4a2edde"
+        },
+        {
+          "path": "projectStructure.ts",
+          "sha256": "cfaf8a9c194b4e8ccb70eb587b61cdcfec0c738db46979a347ec6e33fbfebe82"
+        },
+        {
+          "path": "rulesContextService.ts",
+          "sha256": "d59d41e34f6a593b65fcc986998dd4b2d81eb6587efe1cb37e4781ec51f82673"
+        },
+        {
+          "path": "scopedProjectRules.ts",
+          "sha256": "d91c6c73fb9dae2fb24dd25cb1a5b069a12bde197691c11ad98036b7f5e662d4"
+        }
+      ]
+    },
+    "resources": [
+      {
+        "path": "/Users/aleksandrvolkov/pet-project/element-ai/theia-plugin-qc/artifacts/server 9.1.9-17/ide/theia/plugins/@1c-appengine-plugin/bin/appengine-lsp/repo/com.e1c.g5rt.lsp.server.appengine-9.1.9-1.jar",
+        "sha256": "51ff437a95ab1e0f7a0140c5a3962f78c891998066f821b9984bd126ff794b6e"
+      },
+      {
+        "path": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/resources/context/ast/native-xbsl-ast.jar",
+        "sha256": "f9461ddb4f4474c79a00c2f2bf7f52f8e24172b875018d3ca11cce314ecfcde9"
+      },
+      {
+        "path": "/Users/aleksandrvolkov/pet-project/element-ai/RnD/CODEX-ELEMENT-V1/local-codex-plugin/resources/context/yaml.cjs",
+        "sha256": "04e072e4af887ecb6a3fb0c50d772117773a94cbf89d40c0830d047000efe8e8"
+      }
+    ],
+    "limits": {
+      "files": 400,
+      "sourceBytes": 2097152,
+      "totalBytes": 4194304,
+      "fileBytes": 524288,
+      "parses": 40,
+      "deadlineMs": 10000,
+      "validationMs": 2000,
+      "callMs": 1200,
+      "parseMs": 4000,
+      "indexFiles": 20000,
+      "names": 2000,
+      "structureItems": 20000,
+      "findings": 400,
+      "limitations": 100,
+      "astNodes": 25000,
+      "totalAstNodes": 200000,
+      "astDepth": 256,
+      "inspections": 20,
+      "positions": 4
+    },
+    "environment": {
+      "node": "v25.9.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "logicalCpus": 11,
+      "loadAverageBefore": [
+        3,
+        3.2451171875,
+        3.49267578125
+      ],
+      "loadAverageAfter": [
+        9.6416015625,
+        4.7626953125,
+        4.03173828125
+      ]
+    },
+    "nativeBaseline": [
+      {
+        "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+        "elapsedMs": 586.1,
+        "status": "ready",
+        "sourceHash": "c0b6a75560d5b6cbbbe33a141cc2f0028cbd438d6553d579f569107a3a3cf208",
+        "partial": false,
+        "cacheHit": false,
+        "parserVersion": "9.1.9-1",
+        "parserFingerprint": "1ce66dbc064f1b4ee45d84feb916f2e4bc81506ff65cf50ec45bac7154a80562",
+        "semanticBound": false,
+        "nodeCount": 372,
+        "diagnostics": []
+      },
+      {
+        "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+        "elapsedMs": 51.06,
+        "status": "ready",
+        "sourceHash": "4b4de08c404857e12ebce5bafaf04066ba18aae6e1593c915b3a44bf1cdd77db",
+        "partial": false,
+        "cacheHit": false,
+        "parserVersion": "9.1.9-1",
+        "parserFingerprint": "1ce66dbc064f1b4ee45d84feb916f2e4bc81506ff65cf50ec45bac7154a80562",
+        "semanticBound": false,
+        "nodeCount": 1328,
+        "diagnostics": []
+      },
+      {
+        "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+        "elapsedMs": 15.56,
+        "status": "ready",
+        "sourceHash": "858e81ae3ce370742355fd6d086e4827a127f6a14c0c3c8e9ff1bc74e2f69335",
+        "partial": false,
+        "cacheHit": false,
+        "parserVersion": "9.1.9-1",
+        "parserFingerprint": "1ce66dbc064f1b4ee45d84feb916f2e4bc81506ff65cf50ec45bac7154a80562",
+        "semanticBound": false,
+        "nodeCount": 385,
+        "diagnostics": []
+      }
+    ],
+    "cases": [
+      {
+        "id": "handler-rename-without-yaml",
+        "passed": true,
+        "checks": [
+          {
+            "name": "target-indexed-with-element-kind",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-before-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-before",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-before",
+            "passed": true
+          },
+          {
+            "name": "analysis-and-rule-selection-read-only",
+            "passed": true
+          },
+          {
+            "name": "exact-changed-paths",
+            "passed": true,
+            "details": {
+              "expected": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+              ],
+              "actual": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+              ]
+            }
+          },
+          {
+            "name": "not-stale",
+            "passed": true
+          },
+          {
+            "name": "no-fabricated-lsp-targets",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-after-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-after",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-after",
+            "passed": true
+          },
+          {
+            "name": "within-count-and-byte-bounds",
+            "passed": true
+          },
+          {
+            "name": "within-wall-time-bound-with-scheduler-slack",
+            "passed": true
+          },
+          {
+            "name": "formatted-report-bounded",
+            "passed": true
+          },
+          {
+            "name": "native-calls-not-faked",
+            "passed": true
+          },
+          {
+            "name": "native-call-accounting",
+            "passed": true
+          },
+          {
+            "name": "syntax-expectation",
+            "passed": true
+          },
+          {
+            "name": "yaml-handler-evidence",
+            "passed": true
+          },
+          {
+            "name": "exact-three-yaml-handlers",
+            "passed": true
+          },
+          {
+            "name": "structurally-matched-handler-count",
+            "passed": true
+          },
+          {
+            "name": "changed-files-checked",
+            "passed": true
+          },
+          {
+            "name": "real-native-ast-used",
+            "passed": true
+          },
+          {
+            "name": "offline-lsp-fallback-exercised",
+            "passed": true
+          },
+          {
+            "name": "oracle-evidence-survives-report-formatting",
+            "passed": true
+          }
+        ],
+        "timing": {
+          "copyMs": 87.15,
+          "beforeSnapshotMs": 1560.21,
+          "rulesBeforeMs": 37.57,
+          "mutationMs": 0.7,
+          "afterSnapshotMs": 1419.62,
+          "analysisMs": 694.82,
+          "analysisNodeCpuMs": {
+            "user": 457.827,
+            "system": 134.381,
+            "excludesJava": true
+          },
+          "rulesAfterMs": 13.93,
+          "totalMs": 3971.17
+        },
+        "snapshot": {
+          "implementation": "ProjectContextService.captureChangeSnapshot(profile, true)",
+          "beforeFiles": 585,
+          "afterFiles": 585,
+          "coverage": "bounded-index",
+          "beforeSha256": "ddeed51d602bb2d91ea48458a684728ceff719c0d8b24bb69c3ee53fe1f7efee",
+          "afterSha256": "b824075e34670be4f59650238cf8787c20632cbef3877b3a6993c84b5c4622fd"
+        },
+        "rules": {
+          "before": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 1,
+            "scopedPaths": [
+              ".local-codex/rules/10-sync.md"
+            ],
+            "globalText": {
+              "chars": 3848,
+              "bytes": 6842,
+              "sha256": "9bcfe40b2eea7771fe00074d82d2cdd275d00a6098e0bac23e7d98cf9fdacbaf"
+            },
+            "scopedText": {
+              "chars": 714,
+              "bytes": 1229,
+              "sha256": "6d0fd0760344a9362e5b633f7dcbd785cdb890d543579e82afa17d68ad84d82c"
+            },
+            "warnings": []
+          },
+          "after": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 1,
+            "scopedPaths": [
+              ".local-codex/rules/10-sync.md"
+            ],
+            "globalText": {
+              "chars": 3848,
+              "bytes": 6842,
+              "sha256": "9bcfe40b2eea7771fe00074d82d2cdd275d00a6098e0bac23e7d98cf9fdacbaf"
+            },
+            "scopedText": {
+              "chars": 714,
+              "bytes": 1229,
+              "sha256": "6d0fd0760344a9362e5b633f7dcbd785cdb890d543579e82afa17d68ad84d82c"
+            },
+            "warnings": []
+          }
+        },
+        "report": {
+          "status": "partial",
+          "changedPaths": [
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+          ],
+          "changes": [
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+              "kind": "changed"
+            }
+          ],
+          "checkedPaths": [
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml"
+          ],
+          "elementTargets": [
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "elementKind": "КомпонентИнтерфейса",
+              "availability": "indexed"
+            }
+          ],
+          "counts": {
+            "filesRead": 238,
+            "readCalls": 476,
+            "sourceBytes": 1316248,
+            "verifiedBytes": 1316248,
+            "parses": 1,
+            "inspections": 2
+          },
+          "findingCount": 5,
+          "findingCounts": {
+            "syntax": 0,
+            "yaml-handler": 3,
+            "impact": 2
+          },
+          "findingPaths": [
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml"
+          ],
+          "oracleFindings": [
+            {
+              "kind": "yaml-handler",
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 40,
+              "name": "ВыполнитьПроверкуДоступности",
+              "evidence": "candidate",
+              "resolution": "unresolved",
+              "message": "Обработчик ВыполнитьПроверкуДоступности: локальное объявление не подтверждено. Возможны наследование, встроенный обработчик, нечитаемый парный файл или переименование; отсутствие обработчика не доказано.",
+              "candidatePaths": []
+            },
+            {
+              "kind": "yaml-handler",
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 56,
+              "name": "ВыполнитьПроверкуДоступностиПорта",
+              "evidence": "structural",
+              "resolution": "structural",
+              "message": "Обработчик ВыполнитьПроверкуДоступностиПорта совпадает с объявлением уровня модуля в DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl; это структурное соответствие, а не разрешённая связь.",
+              "candidatePaths": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+              ]
+            },
+            {
+              "kind": "yaml-handler",
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 66,
+              "name": "ИдентификаторыВнешнихСистемКнопкаПриНажатии",
+              "evidence": "structural",
+              "resolution": "structural",
+              "message": "Обработчик ИдентификаторыВнешнихСистемКнопкаПриНажатии совпадает с объявлением уровня модуля в DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl; это структурное соответствие, а не разрешённая связь.",
+              "candidatePaths": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+              ]
+            }
+          ],
+          "otherFindingCount": 2,
+          "limitations": [
+            "Ограниченная проверка только для чтения, не заключение о корректности и не автоматическое исправление. Пустая диагностика не доказывает корректность.",
+            "Синтаксическая диагностика относится только к текущему исходнику. В снимках нет прежней AST-диагностики, поэтому нельзя утверждать, что проблему внесло изменение.",
+            "AST подтверждает вхождения, но не их цели. Структурные совпадения имён не разрешают наследование, встроенные методы, объекты-получатели и пространства имён.",
+            "Сравниваются хеши файлов, не тела отдельных методов. Кандидаты могут ссылаться на неизменённые методы изменённого модуля.",
+            "Имена прежних объявлений берутся только из структурного индекса: он может пропускать объявления, в том числе с аннотацией на той же строке. Прежний AST по текущему исходнику не восстанавливается.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml:40: связь обработчика требует семантического подтверждения.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены."
+          ],
+          "omittedLimitations": 0,
+          "json": {
+            "chars": 4576,
+            "bytes": 7421,
+            "sha256": "430b8c18ccfe22400638b8e473dec44a2904ae835008161d8f1b02529d3f4afb"
+          },
+          "formatted": {
+            "chars": 3489,
+            "bytes": 6244,
+            "sha256": "442c57fc509d31b4830ea1c58907c2aa9000331f6677adf3e232e4ab9b1f74d2"
+          },
+          "formattedOracleEvidence": [
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 40,
+              "included": true
+            },
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 56,
+              "included": true
+            },
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 66,
+              "included": true
+            }
+          ]
+        },
+        "nativeAst": {
+          "calls": 1,
+          "ready": 1,
+          "cacheHits": 0,
+          "partial": 0,
+          "nodes": 372,
+          "diagnostics": 0,
+          "elapsedMs": 16.89,
+          "problems": []
+        },
+        "lsp": {
+          "live": false,
+          "fakeDefinitions": false,
+          "unavailableCalls": 2,
+          "requestedPositions": 5
+        },
+        "reads": {
+          "calls": 476,
+          "uniquePaths": 238,
+          "bytesIncludingRevalidation": 2632496,
+          "elapsedMs": 463.5900000000001
+        },
+        "readOnly": {
+          "beforeSha256": "19061c211ea2e5470eb00722e0123eecf1c5ef2d47d0375e6ececd87996b6615",
+          "afterSha256": "19061c211ea2e5470eb00722e0123eecf1c5ef2d47d0375e6ececd87996b6615",
+          "unchanged": true
+        }
+      },
+      {
+        "id": "handler-consistent-rename",
+        "passed": true,
+        "checks": [
+          {
+            "name": "target-indexed-with-element-kind",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-before-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-before",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-before",
+            "passed": true
+          },
+          {
+            "name": "analysis-and-rule-selection-read-only",
+            "passed": true
+          },
+          {
+            "name": "exact-changed-paths",
+            "passed": true,
+            "details": {
+              "expected": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml"
+              ],
+              "actual": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml"
+              ]
+            }
+          },
+          {
+            "name": "not-stale",
+            "passed": true
+          },
+          {
+            "name": "no-fabricated-lsp-targets",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-after-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-after",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-after",
+            "passed": true
+          },
+          {
+            "name": "within-count-and-byte-bounds",
+            "passed": true
+          },
+          {
+            "name": "within-wall-time-bound-with-scheduler-slack",
+            "passed": true
+          },
+          {
+            "name": "formatted-report-bounded",
+            "passed": true
+          },
+          {
+            "name": "native-calls-not-faked",
+            "passed": true
+          },
+          {
+            "name": "native-call-accounting",
+            "passed": true
+          },
+          {
+            "name": "syntax-expectation",
+            "passed": true
+          },
+          {
+            "name": "yaml-handler-evidence",
+            "passed": true
+          },
+          {
+            "name": "exact-three-yaml-handlers",
+            "passed": true
+          },
+          {
+            "name": "structurally-matched-handler-count",
+            "passed": true
+          },
+          {
+            "name": "changed-files-checked",
+            "passed": true
+          },
+          {
+            "name": "real-native-ast-used",
+            "passed": true
+          },
+          {
+            "name": "offline-lsp-fallback-exercised",
+            "passed": true
+          },
+          {
+            "name": "oracle-evidence-survives-report-formatting",
+            "passed": true
+          }
+        ],
+        "timing": {
+          "copyMs": 148.45,
+          "beforeSnapshotMs": 1777.76,
+          "rulesBeforeMs": 77.39,
+          "mutationMs": 1.09,
+          "afterSnapshotMs": 1600.88,
+          "analysisMs": 1203.59,
+          "analysisNodeCpuMs": {
+            "user": 452.664,
+            "system": 149.063,
+            "excludesJava": true
+          },
+          "rulesAfterMs": 12.08,
+          "totalMs": 5158.93
+        },
+        "snapshot": {
+          "implementation": "ProjectContextService.captureChangeSnapshot(profile, true)",
+          "beforeFiles": 585,
+          "afterFiles": 585,
+          "coverage": "bounded-index",
+          "beforeSha256": "ddeed51d602bb2d91ea48458a684728ceff719c0d8b24bb69c3ee53fe1f7efee",
+          "afterSha256": "bfd2151c71b4703474d29a854e1301b604ec154d78e0bafe4da63afceae65ae1"
+        },
+        "rules": {
+          "before": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 1,
+            "scopedPaths": [
+              ".local-codex/rules/10-sync.md"
+            ],
+            "globalText": {
+              "chars": 3846,
+              "bytes": 6840,
+              "sha256": "16dd876fa26426f66d018ef76acdc47e6194b5f03154a10389c4c0d8cb357d5c"
+            },
+            "scopedText": {
+              "chars": 714,
+              "bytes": 1229,
+              "sha256": "6d0fd0760344a9362e5b633f7dcbd785cdb890d543579e82afa17d68ad84d82c"
+            },
+            "warnings": []
+          },
+          "after": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 1,
+            "scopedPaths": [
+              ".local-codex/rules/10-sync.md"
+            ],
+            "globalText": {
+              "chars": 3846,
+              "bytes": 6840,
+              "sha256": "16dd876fa26426f66d018ef76acdc47e6194b5f03154a10389c4c0d8cb357d5c"
+            },
+            "scopedText": {
+              "chars": 714,
+              "bytes": 1229,
+              "sha256": "6d0fd0760344a9362e5b633f7dcbd785cdb890d543579e82afa17d68ad84d82c"
+            },
+            "warnings": []
+          }
+        },
+        "report": {
+          "status": "partial",
+          "changedPaths": [
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml"
+          ],
+          "changes": [
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+              "kind": "changed"
+            },
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "kind": "changed"
+            }
+          ],
+          "checkedPaths": [
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml"
+          ],
+          "elementTargets": [
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "elementKind": "КомпонентИнтерфейса",
+              "availability": "indexed"
+            }
+          ],
+          "counts": {
+            "filesRead": 238,
+            "readCalls": 476,
+            "sourceBytes": 1316254,
+            "verifiedBytes": 1316254,
+            "parses": 1,
+            "inspections": 2
+          },
+          "findingCount": 5,
+          "findingCounts": {
+            "syntax": 0,
+            "yaml-handler": 3,
+            "impact": 2
+          },
+          "findingPaths": [
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml"
+          ],
+          "oracleFindings": [
+            {
+              "kind": "yaml-handler",
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 40,
+              "name": "ВыполнитьПроверкуДоступностиStage3",
+              "evidence": "structural",
+              "resolution": "structural",
+              "message": "Обработчик ВыполнитьПроверкуДоступностиStage3 совпадает с объявлением уровня модуля в DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl; это структурное соответствие, а не разрешённая связь.",
+              "candidatePaths": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+              ]
+            },
+            {
+              "kind": "yaml-handler",
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 56,
+              "name": "ВыполнитьПроверкуДоступностиПорта",
+              "evidence": "structural",
+              "resolution": "structural",
+              "message": "Обработчик ВыполнитьПроверкуДоступностиПорта совпадает с объявлением уровня модуля в DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl; это структурное соответствие, а не разрешённая связь.",
+              "candidatePaths": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+              ]
+            },
+            {
+              "kind": "yaml-handler",
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 66,
+              "name": "ИдентификаторыВнешнихСистемКнопкаПриНажатии",
+              "evidence": "structural",
+              "resolution": "structural",
+              "message": "Обработчик ИдентификаторыВнешнихСистемКнопкаПриНажатии совпадает с объявлением уровня модуля в DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl; это структурное соответствие, а не разрешённая связь.",
+              "candidatePaths": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+              ]
+            }
+          ],
+          "otherFindingCount": 2,
+          "limitations": [
+            "Ограниченная проверка только для чтения, не заключение о корректности и не автоматическое исправление. Пустая диагностика не доказывает корректность.",
+            "Синтаксическая диагностика относится только к текущему исходнику. В снимках нет прежней AST-диагностики, поэтому нельзя утверждать, что проблему внесло изменение.",
+            "AST подтверждает вхождения, но не их цели. Структурные совпадения имён не разрешают наследование, встроенные методы, объекты-получатели и пространства имён.",
+            "Сравниваются хеши файлов, не тела отдельных методов. Кандидаты могут ссылаться на неизменённые методы изменённого модуля.",
+            "Имена прежних объявлений берутся только из структурного индекса: он может пропускать объявления, в том числе с аннотацией на той же строке. Прежний AST по текущему исходнику не восстанавливается.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены."
+          ],
+          "omittedLimitations": 0,
+          "json": {
+            "chars": 4738,
+            "bytes": 7663,
+            "sha256": "c83e0a886ac96b210ad63d6b0ea541441f60507583c87855cbbb663ab5602479"
+          },
+          "formatted": {
+            "chars": 3354,
+            "bytes": 5986,
+            "sha256": "41cf8afa06e1720c7331e051ef7e517f22ee69901a207bcfbe3e2af242f0bab4"
+          },
+          "formattedOracleEvidence": [
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 40,
+              "included": true
+            },
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 56,
+              "included": true
+            },
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 66,
+              "included": true
+            }
+          ]
+        },
+        "nativeAst": {
+          "calls": 1,
+          "ready": 1,
+          "cacheHits": 1,
+          "partial": 0,
+          "nodes": 372,
+          "diagnostics": 0,
+          "elapsedMs": 0.5,
+          "problems": []
+        },
+        "lsp": {
+          "live": false,
+          "fakeDefinitions": false,
+          "unavailableCalls": 2,
+          "requestedPositions": 5
+        },
+        "reads": {
+          "calls": 476,
+          "uniquePaths": 238,
+          "bytesIncludingRevalidation": 2632508,
+          "elapsedMs": 839.3199999999998
+        },
+        "readOnly": {
+          "beforeSha256": "9ca5e05486d8ba7abddf698a786a433cf3f8d71494ef4184046a16fc398c19f4",
+          "afterSha256": "9ca5e05486d8ba7abddf698a786a433cf3f8d71494ef4184046a16fc398c19f4",
+          "unchanged": true
+        }
+      },
+      {
+        "id": "introduced-syntax-error",
+        "passed": true,
+        "checks": [
+          {
+            "name": "target-indexed-with-element-kind",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-before-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-before",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-before",
+            "passed": true
+          },
+          {
+            "name": "analysis-and-rule-selection-read-only",
+            "passed": true
+          },
+          {
+            "name": "exact-changed-paths",
+            "passed": true,
+            "details": {
+              "expected": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+              ],
+              "actual": [
+                "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+              ]
+            }
+          },
+          {
+            "name": "not-stale",
+            "passed": true
+          },
+          {
+            "name": "no-fabricated-lsp-targets",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-after-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-after",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-after",
+            "passed": true
+          },
+          {
+            "name": "within-count-and-byte-bounds",
+            "passed": true
+          },
+          {
+            "name": "within-wall-time-bound-with-scheduler-slack",
+            "passed": true
+          },
+          {
+            "name": "formatted-report-bounded",
+            "passed": true
+          },
+          {
+            "name": "native-calls-not-faked",
+            "passed": true
+          },
+          {
+            "name": "native-call-accounting",
+            "passed": true
+          },
+          {
+            "name": "syntax-expectation",
+            "passed": true
+          },
+          {
+            "name": "changed-files-checked",
+            "passed": true
+          },
+          {
+            "name": "real-native-ast-used",
+            "passed": true
+          },
+          {
+            "name": "offline-lsp-fallback-exercised",
+            "passed": true
+          },
+          {
+            "name": "oracle-evidence-survives-report-formatting",
+            "passed": true
+          }
+        ],
+        "timing": {
+          "copyMs": 247.84,
+          "beforeSnapshotMs": 1975.86,
+          "rulesBeforeMs": 92.49,
+          "mutationMs": 0.68,
+          "afterSnapshotMs": 1793.25,
+          "analysisMs": 1198.68,
+          "analysisNodeCpuMs": {
+            "user": 518.194,
+            "system": 167.168,
+            "excludesJava": true
+          },
+          "rulesAfterMs": 129.13,
+          "totalMs": 5724.6
+        },
+        "snapshot": {
+          "implementation": "ProjectContextService.captureChangeSnapshot(profile, true)",
+          "beforeFiles": 585,
+          "afterFiles": 585,
+          "coverage": "bounded-index",
+          "beforeSha256": "ddeed51d602bb2d91ea48458a684728ceff719c0d8b24bb69c3ee53fe1f7efee",
+          "afterSha256": "44469d6b62eb2ad1b0c457ae1676ce08702ff488b483db086856365f9177c68e"
+        },
+        "rules": {
+          "before": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 1,
+            "scopedPaths": [
+              ".local-codex/rules/10-sync.md"
+            ],
+            "globalText": {
+              "chars": 3844,
+              "bytes": 6838,
+              "sha256": "ff8829d13ba2e7e404c44a2901bba93994a020224fecfeff554d088e1fbf0514"
+            },
+            "scopedText": {
+              "chars": 714,
+              "bytes": 1229,
+              "sha256": "6d0fd0760344a9362e5b633f7dcbd785cdb890d543579e82afa17d68ad84d82c"
+            },
+            "warnings": []
+          },
+          "after": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 1,
+            "scopedPaths": [
+              ".local-codex/rules/10-sync.md"
+            ],
+            "globalText": {
+              "chars": 3844,
+              "bytes": 6838,
+              "sha256": "ff8829d13ba2e7e404c44a2901bba93994a020224fecfeff554d088e1fbf0514"
+            },
+            "scopedText": {
+              "chars": 714,
+              "bytes": 1229,
+              "sha256": "6d0fd0760344a9362e5b633f7dcbd785cdb890d543579e82afa17d68ad84d82c"
+            },
+            "warnings": []
+          }
+        },
+        "report": {
+          "status": "partial",
+          "changedPaths": [
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl"
+          ],
+          "changes": [
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+              "kind": "changed"
+            }
+          ],
+          "checkedPaths": [
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml"
+          ],
+          "elementTargets": [
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "elementKind": "КомпонентИнтерфейса",
+              "availability": "indexed"
+            }
+          ],
+          "counts": {
+            "filesRead": 238,
+            "readCalls": 476,
+            "sourceBytes": 1316242,
+            "verifiedBytes": 1316242,
+            "parses": 1,
+            "inspections": 2
+          },
+          "findingCount": 5,
+          "findingCounts": {
+            "syntax": 1,
+            "yaml-handler": 3,
+            "impact": 1
+          },
+          "findingPaths": [
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml"
+          ],
+          "oracleFindings": [
+            {
+              "kind": "syntax",
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+              "line": 10,
+              "message": "Штатная диагностика текущего исходника: Неожиданный синтаксический элемент ']', ожидается ')'",
+              "evidence": "ast"
+            },
+            {
+              "kind": "yaml-handler",
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 40,
+              "name": "ВыполнитьПроверкуДоступности",
+              "evidence": "candidate",
+              "resolution": "unresolved",
+              "message": "Обработчик ВыполнитьПроверкуДоступности: локальное объявление не подтверждено. Возможны наследование, встроенный обработчик, нечитаемый парный файл или переименование; отсутствие обработчика не доказано.",
+              "candidatePaths": []
+            },
+            {
+              "kind": "yaml-handler",
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 56,
+              "name": "ВыполнитьПроверкуДоступностиПорта",
+              "evidence": "candidate",
+              "resolution": "unresolved",
+              "message": "Обработчик ВыполнитьПроверкуДоступностиПорта: локальное объявление не подтверждено. Возможны наследование, встроенный обработчик, нечитаемый парный файл или переименование; отсутствие обработчика не доказано.",
+              "candidatePaths": []
+            },
+            {
+              "kind": "yaml-handler",
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 66,
+              "name": "ИдентификаторыВнешнихСистемКнопкаПриНажатии",
+              "evidence": "candidate",
+              "resolution": "unresolved",
+              "message": "Обработчик ИдентификаторыВнешнихСистемКнопкаПриНажатии: локальное объявление не подтверждено. Возможны наследование, встроенный обработчик, нечитаемый парный файл или переименование; отсутствие обработчика не доказано.",
+              "candidatePaths": []
+            }
+          ],
+          "otherFindingCount": 1,
+          "limitations": [
+            "Ограниченная проверка только для чтения, не заключение о корректности и не автоматическое исправление. Пустая диагностика не доказывает корректность.",
+            "Синтаксическая диагностика относится только к текущему исходнику. В снимках нет прежней AST-диагностики, поэтому нельзя утверждать, что проблему внесло изменение.",
+            "AST подтверждает вхождения, но не их цели. Структурные совпадения имён не разрешают наследование, встроенные методы, объекты-получатели и пространства имён.",
+            "Сравниваются хеши файлов, не тела отдельных методов. Кандидаты могут ссылаться на неизменённые методы изменённого модуля.",
+            "Имена прежних объявлений берутся только из структурного индекса: он может пропускать объявления, в том числе с аннотацией на той же строке. Прежний AST по текущему исходнику не восстанавливается.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl: восстановление AST после ошибок или диагностика ограничивают полноту объявлений и вхождений.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml:40: связь обработчика требует семантического подтверждения.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml:56: связь обработчика требует семантического подтверждения.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml:66: связь обработчика требует семантического подтверждения.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены."
+          ],
+          "omittedLimitations": 0,
+          "json": {
+            "chars": 4627,
+            "bytes": 7610,
+            "sha256": "dff910b9550996f694a99997a50a6b6bf477f2f0c4f0fd1ba589d75f82484e8b"
+          },
+          "formatted": {
+            "chars": 3945,
+            "bytes": 7087,
+            "sha256": "2f8973f38d61f0bbed2129d1105e1b37b7e5e52228ed331d322e88240e80bf15"
+          },
+          "formattedOracleEvidence": [
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.xbsl",
+              "line": 10,
+              "included": true
+            },
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 40,
+              "included": true
+            },
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 56,
+              "included": true
+            },
+            {
+              "path": "DOMRF/Start/СинхронизацияДанных/ОсновныеНастройкиСинхронизацииДанныхКомпонент.yaml",
+              "line": 66,
+              "included": true
+            }
+          ]
+        },
+        "nativeAst": {
+          "calls": 1,
+          "ready": 1,
+          "cacheHits": 0,
+          "partial": 1,
+          "nodes": 339,
+          "diagnostics": 1,
+          "elapsedMs": 36.04,
+          "problems": [
+            {
+              "status": "ready",
+              "sourceHash": "548ee462ebd50196d7267687d1cd2a221abe464c6e51417d42372c89ca986607",
+              "partial": true,
+              "cacheHit": false,
+              "parserVersion": "9.1.9-1",
+              "parserFingerprint": "1ce66dbc064f1b4ee45d84feb916f2e4bc81506ff65cf50ec45bac7154a80562",
+              "semanticBound": false,
+              "nodeCount": 339,
+              "diagnostics": [
+                {
+                  "message": "Неожиданный синтаксический элемент ']', ожидается ')'",
+                  "code": "org.eclipse.xtext.diagnostics.Diagnostic.Syntax",
+                  "line": 10,
+                  "column": 83,
+                  "endLine": 10,
+                  "endColumn": 84,
+                  "startOffset": 408,
+                  "endOffset": 408
+                }
+              ],
+              "elapsedMs": 36.04
+            }
+          ]
+        },
+        "lsp": {
+          "live": false,
+          "fakeDefinitions": false,
+          "unavailableCalls": 2,
+          "requestedPositions": 4
+        },
+        "reads": {
+          "calls": 476,
+          "uniquePaths": 238,
+          "bytesIncludingRevalidation": 2632484,
+          "elapsedMs": 845.7200000000003
+        },
+        "readOnly": {
+          "beforeSha256": "a8a90cd70afd5f3aaed1ffd09f8d35b85a32d22654c2ec4cb114f41ecf0cd6d4",
+          "afterSha256": "a8a90cd70afd5f3aaed1ffd09f8d35b85a32d22654c2ec4cb114f41ecf0cd6d4",
+          "unchanged": true
+        }
+      },
+      {
+        "id": "common-method-inbound-call",
+        "passed": true,
+        "checks": [
+          {
+            "name": "target-indexed-with-element-kind",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-before-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-before",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-before",
+            "passed": true
+          },
+          {
+            "name": "analysis-and-rule-selection-read-only",
+            "passed": true
+          },
+          {
+            "name": "exact-changed-paths",
+            "passed": true,
+            "details": {
+              "expected": [
+                "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl"
+              ],
+              "actual": [
+                "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl"
+              ]
+            }
+          },
+          {
+            "name": "not-stale",
+            "passed": true
+          },
+          {
+            "name": "no-fabricated-lsp-targets",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-after-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-after",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-after",
+            "passed": true
+          },
+          {
+            "name": "within-count-and-byte-bounds",
+            "passed": true
+          },
+          {
+            "name": "within-wall-time-bound-with-scheduler-slack",
+            "passed": true
+          },
+          {
+            "name": "formatted-report-bounded",
+            "passed": true
+          },
+          {
+            "name": "native-calls-not-faked",
+            "passed": true
+          },
+          {
+            "name": "native-call-accounting",
+            "passed": true
+          },
+          {
+            "name": "syntax-expectation",
+            "passed": true
+          },
+          {
+            "name": "exact-inbound-ast-occurrence",
+            "passed": true
+          },
+          {
+            "name": "changed-files-checked",
+            "passed": true
+          },
+          {
+            "name": "real-native-ast-used",
+            "passed": true
+          },
+          {
+            "name": "offline-lsp-fallback-exercised",
+            "passed": true
+          },
+          {
+            "name": "oracle-evidence-survives-report-formatting",
+            "passed": true
+          }
+        ],
+        "timing": {
+          "copyMs": 192,
+          "beforeSnapshotMs": 985.95,
+          "rulesBeforeMs": 9.09,
+          "mutationMs": 0.45,
+          "afterSnapshotMs": 668.06,
+          "analysisMs": 625.77,
+          "analysisNodeCpuMs": {
+            "user": 448.321,
+            "system": 122.012,
+            "excludesJava": true
+          },
+          "rulesAfterMs": 13.81,
+          "totalMs": 2675.27
+        },
+        "snapshot": {
+          "implementation": "ProjectContextService.captureChangeSnapshot(profile, true)",
+          "beforeFiles": 585,
+          "afterFiles": 585,
+          "coverage": "bounded-index",
+          "beforeSha256": "ddeed51d602bb2d91ea48458a684728ceff719c0d8b24bb69c3ee53fe1f7efee",
+          "afterSha256": "b3f26020e6e4c472e7df0bc12520f078f88f2da4f411fbd54e8ef012b0dbe936"
+        },
+        "rules": {
+          "before": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 1,
+            "scopedPaths": [
+              ".local-codex/rules/20-payroll-api.md"
+            ],
+            "globalText": {
+              "chars": 3847,
+              "bytes": 6841,
+              "sha256": "3e8215c7054e899c7533a1c61878164da985061332742925733c7bd72d886b65"
+            },
+            "scopedText": {
+              "chars": 732,
+              "bytes": 1270,
+              "sha256": "8d60b025d7f575a3ccfc5422ad0499aaeca06a76787a9aa674b30a095fd40d99"
+            },
+            "warnings": []
+          },
+          "after": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 1,
+            "scopedPaths": [
+              ".local-codex/rules/20-payroll-api.md"
+            ],
+            "globalText": {
+              "chars": 3847,
+              "bytes": 6841,
+              "sha256": "3e8215c7054e899c7533a1c61878164da985061332742925733c7bd72d886b65"
+            },
+            "scopedText": {
+              "chars": 732,
+              "bytes": 1270,
+              "sha256": "8d60b025d7f575a3ccfc5422ad0499aaeca06a76787a9aa674b30a095fd40d99"
+            },
+            "warnings": []
+          }
+        },
+        "report": {
+          "status": "partial",
+          "changedPaths": [
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl"
+          ],
+          "changes": [
+            {
+              "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+              "kind": "changed"
+            }
+          ],
+          "checkedPaths": [
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.yaml",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ИнформационныеСистемыЗарплатаИУправлениеПерсоналом.Объект.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/КомандыПодсистемы/ЗарегистрироватьИнформационнуюБазуЗУП.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/НастройкиЗарплатаИУправлениеПерсоналомКомпонент.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомНастройкиИнтегрируемойСистемы.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/НастройкиСистемаПотокКомпонент.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокЗапланированныеЗаданияСервис.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокНастройкиИнтегрируемойСистемы.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/СистемаПотокПрограммныйИнтерфейс.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/РеализацияКонтрактов/КонтрактЗапланированныеЗаданияСервис.xbsl"
+          ],
+          "elementTargets": [
+            {
+              "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.yaml",
+              "elementKind": "ОбщийМодуль",
+              "availability": "indexed"
+            }
+          ],
+          "counts": {
+            "filesRead": 238,
+            "readCalls": 476,
+            "sourceBytes": 1311975,
+            "verifiedBytes": 1311975,
+            "parses": 11,
+            "inspections": 8
+          },
+          "findingCount": 36,
+          "findingCounts": {
+            "syntax": 0,
+            "yaml-handler": 0,
+            "impact": 36
+          },
+          "findingPaths": [
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/НастройкиЗарплатаИУправлениеПерсоналомКомпонент.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомНастройкиИнтегрируемойСистемы.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/НастройкиСистемаПотокКомпонент.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокЗапланированныеЗаданияСервис.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокНастройкиИнтегрируемойСистемы.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/РеализацияКонтрактов/КонтрактЗапланированныеЗаданияСервис.xbsl"
+          ],
+          "oracleFindings": [
+            {
+              "kind": "impact",
+              "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+              "line": 56,
+              "name": "РазделительЗапланированныхЗаданий",
+              "occurrence": "ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.РазделительЗапланированныхЗаданий",
+              "occurrenceKind": "call",
+              "evidence": "ast",
+              "resolution": "unresolved",
+              "candidatePaths": [
+                "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl"
+              ],
+              "message": "Потенциально затронут вызов: ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.РазделительЗапланированныхЗаданий. AST подтверждает только вхождение, но не цель и не наличие ошибки."
+            }
+          ],
+          "otherFindingCount": 35,
+          "limitations": [
+            "Ограниченная проверка только для чтения, не заключение о корректности и не автоматическое исправление. Пустая диагностика не доказывает корректность.",
+            "Синтаксическая диагностика относится только к текущему исходнику. В снимках нет прежней AST-диагностики, поэтому нельзя утверждать, что проблему внесло изменение.",
+            "AST подтверждает вхождения, но не их цели. Структурные совпадения имён не разрешают наследование, встроенные методы, объекты-получатели и пространства имён.",
+            "Сравниваются хеши файлов, не тела отдельных методов. Кандидаты могут ссылаться на неизменённые методы изменённого модуля.",
+            "Имена прежних объявлений берутся только из структурного индекса: он может пропускать объявления, в том числе с аннотацией на той же строке. Прежний AST по текущему исходнику не восстанавливается.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl: позиции LSP ограничены 4; остальные цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/НастройкиЗарплатаИУправлениеПерсоналомКомпонент.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl: позиции LSP ограничены 4; остальные цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомНастройкиИнтегрируемойСистемы.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/НастройкиСистемаПотокКомпонент.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокЗапланированныеЗаданияСервис.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокНастройкиИнтегрируемойСистемы.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/РеализацияКонтрактов/КонтрактЗапланированныеЗаданияСервис.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены."
+          ],
+          "omittedLimitations": 0,
+          "json": {
+            "chars": 29491,
+            "bytes": 49459,
+            "sha256": "4deca5b49137c8bb66b4a6ed9e308af480ed3aed52a0a82471679e796d154621"
+          },
+          "formatted": {
+            "chars": 15094,
+            "bytes": 27251,
+            "sha256": "45a87642571ffdbca68f29ee7f72382d563cbc53bc3da4041d07ee6c6e74d06d"
+          },
+          "formattedOracleEvidence": [
+            {
+              "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+              "line": 56,
+              "included": true
+            }
+          ]
+        },
+        "nativeAst": {
+          "calls": 11,
+          "ready": 11,
+          "cacheHits": 1,
+          "partial": 0,
+          "nodes": 2390,
+          "diagnostics": 0,
+          "elapsedMs": 88.25,
+          "problems": []
+        },
+        "lsp": {
+          "live": false,
+          "fakeDefinitions": false,
+          "unavailableCalls": 8,
+          "requestedPositions": 18
+        },
+        "reads": {
+          "calls": 476,
+          "uniquePaths": 238,
+          "bytesIncludingRevalidation": 2623950,
+          "elapsedMs": 314.53000000000014
+        },
+        "readOnly": {
+          "beforeSha256": "ddf981fd8ead777e4ff05fd7a351161e6e7075d9a396a8cdc1d0f57315c65d0a",
+          "afterSha256": "ddf981fd8ead777e4ff05fd7a351161e6e7075d9a396a8cdc1d0f57315c65d0a",
+          "unchanged": true
+        }
+      },
+      {
+        "id": "common-method-inbound-methodref",
+        "passed": true,
+        "checks": [
+          {
+            "name": "target-indexed-with-element-kind",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-before-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-before",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-before",
+            "passed": true
+          },
+          {
+            "name": "analysis-and-rule-selection-read-only",
+            "passed": true
+          },
+          {
+            "name": "exact-changed-paths",
+            "passed": true,
+            "details": {
+              "expected": [
+                "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl"
+              ],
+              "actual": [
+                "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl"
+              ]
+            }
+          },
+          {
+            "name": "not-stale",
+            "passed": true
+          },
+          {
+            "name": "no-fabricated-lsp-targets",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-after-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-after",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-after",
+            "passed": true
+          },
+          {
+            "name": "within-count-and-byte-bounds",
+            "passed": true
+          },
+          {
+            "name": "within-wall-time-bound-with-scheduler-slack",
+            "passed": true
+          },
+          {
+            "name": "formatted-report-bounded",
+            "passed": true
+          },
+          {
+            "name": "native-calls-not-faked",
+            "passed": true
+          },
+          {
+            "name": "native-call-accounting",
+            "passed": true
+          },
+          {
+            "name": "syntax-expectation",
+            "passed": true
+          },
+          {
+            "name": "exact-inbound-ast-occurrence",
+            "passed": true
+          },
+          {
+            "name": "changed-files-checked",
+            "passed": true
+          },
+          {
+            "name": "real-native-ast-used",
+            "passed": true
+          },
+          {
+            "name": "offline-lsp-fallback-exercised",
+            "passed": true
+          },
+          {
+            "name": "oracle-evidence-survives-report-formatting",
+            "passed": true
+          }
+        ],
+        "timing": {
+          "copyMs": 106.27,
+          "beforeSnapshotMs": 469.4,
+          "rulesBeforeMs": 13.37,
+          "mutationMs": 0.69,
+          "afterSnapshotMs": 463.41,
+          "analysisMs": 448.12,
+          "analysisNodeCpuMs": {
+            "user": 443.41,
+            "system": 88.819,
+            "excludesJava": true
+          },
+          "rulesAfterMs": 4.24,
+          "totalMs": 1628.62
+        },
+        "snapshot": {
+          "implementation": "ProjectContextService.captureChangeSnapshot(profile, true)",
+          "beforeFiles": 585,
+          "afterFiles": 585,
+          "coverage": "bounded-index",
+          "beforeSha256": "ddeed51d602bb2d91ea48458a684728ceff719c0d8b24bb69c3ee53fe1f7efee",
+          "afterSha256": "236e741dc5eff524ff4afd9e639d02c0fa3750e6b9ee8ba894c0508760c38d6c"
+        },
+        "rules": {
+          "before": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 1,
+            "scopedPaths": [
+              ".local-codex/rules/20-payroll-api.md"
+            ],
+            "globalText": {
+              "chars": 3852,
+              "bytes": 6846,
+              "sha256": "6db368a6dbd07ee53123a55b1464ce8832130a3b192179f4b92f9a8acf9cf5ae"
+            },
+            "scopedText": {
+              "chars": 732,
+              "bytes": 1270,
+              "sha256": "8d60b025d7f575a3ccfc5422ad0499aaeca06a76787a9aa674b30a095fd40d99"
+            },
+            "warnings": []
+          },
+          "after": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 1,
+            "scopedPaths": [
+              ".local-codex/rules/20-payroll-api.md"
+            ],
+            "globalText": {
+              "chars": 3852,
+              "bytes": 6846,
+              "sha256": "6db368a6dbd07ee53123a55b1464ce8832130a3b192179f4b92f9a8acf9cf5ae"
+            },
+            "scopedText": {
+              "chars": 732,
+              "bytes": 1270,
+              "sha256": "8d60b025d7f575a3ccfc5422ad0499aaeca06a76787a9aa674b30a095fd40d99"
+            },
+            "warnings": []
+          }
+        },
+        "report": {
+          "status": "partial",
+          "changedPaths": [
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl"
+          ],
+          "changes": [
+            {
+              "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+              "kind": "changed"
+            }
+          ],
+          "checkedPaths": [
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.yaml",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ИнформационныеСистемыЗарплатаИУправлениеПерсоналом.Объект.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/КомандыПодсистемы/ЗарегистрироватьИнформационнуюБазуЗУП.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/НастройкиЗарплатаИУправлениеПерсоналомКомпонент.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомНастройкиИнтегрируемойСистемы.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/НастройкиСистемаПотокКомпонент.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокЗапланированныеЗаданияСервис.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокНастройкиИнтегрируемойСистемы.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/СистемаПотокПрограммныйИнтерфейс.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/РеализацияКонтрактов/КонтрактЗапланированныеЗаданияСервис.xbsl"
+          ],
+          "elementTargets": [
+            {
+              "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.yaml",
+              "elementKind": "ОбщийМодуль",
+              "availability": "indexed"
+            }
+          ],
+          "counts": {
+            "filesRead": 238,
+            "readCalls": 476,
+            "sourceBytes": 1311975,
+            "verifiedBytes": 1311975,
+            "parses": 11,
+            "inspections": 8
+          },
+          "findingCount": 36,
+          "findingCounts": {
+            "syntax": 0,
+            "yaml-handler": 0,
+            "impact": 36
+          },
+          "findingPaths": [
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/НастройкиЗарплатаИУправлениеПерсоналомКомпонент.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомНастройкиИнтегрируемойСистемы.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/НастройкиСистемаПотокКомпонент.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокЗапланированныеЗаданияСервис.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокНастройкиИнтегрируемойСистемы.xbsl",
+            "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/РеализацияКонтрактов/КонтрактЗапланированныеЗаданияСервис.xbsl"
+          ],
+          "oracleFindings": [
+            {
+              "kind": "impact",
+              "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+              "line": 5,
+              "name": "ПолнаяЗагрузкаОрганизаций",
+              "occurrence": "&ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.ПолнаяЗагрузкаОрганизаций",
+              "occurrenceKind": "method-reference",
+              "evidence": "ast",
+              "resolution": "unresolved",
+              "candidatePaths": [
+                "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl"
+              ],
+              "message": "Потенциально затронута ссылка на метод: &ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.ПолнаяЗагрузкаОрганизаций. AST подтверждает только вхождение, но не цель и не наличие ошибки."
+            }
+          ],
+          "otherFindingCount": 35,
+          "limitations": [
+            "Ограниченная проверка только для чтения, не заключение о корректности и не автоматическое исправление. Пустая диагностика не доказывает корректность.",
+            "Синтаксическая диагностика относится только к текущему исходнику. В снимках нет прежней AST-диагностики, поэтому нельзя утверждать, что проблему внесло изменение.",
+            "AST подтверждает вхождения, но не их цели. Структурные совпадения имён не разрешают наследование, встроенные методы, объекты-получатели и пространства имён.",
+            "Сравниваются хеши файлов, не тела отдельных методов. Кандидаты могут ссылаться на неизменённые методы изменённого модуля.",
+            "Имена прежних объявлений берутся только из структурного индекса: он может пропускать объявления, в том числе с аннотацией на той же строке. Прежний AST по текущему исходнику не восстанавливается.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl: позиции LSP ограничены 4; остальные цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/ЗарплатаИУправлениеПерсоналомПрограммныйИнтерфейс.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/НастройкиЗарплатаИУправлениеПерсоналомКомпонент.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl: позиции LSP ограничены 4; остальные цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомНастройкиИнтегрируемойСистемы.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/НастройкиСистемаПотокКомпонент.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокЗапланированныеЗаданияСервис.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/СистемаПоток/РеализацияКонтрактов/СистемаПотокНастройкиИнтегрируемойСистемы.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены.",
+            "DOMRF/Start/КадровоеДелопроизводство/УправлениеПодборомПерсонала/РеализацияКонтрактов/КонтрактЗапланированныеЗаданияСервис.xbsl: ответ LSP не подтверждает текущий исходник или не содержит запросов; цели не разрешены."
+          ],
+          "omittedLimitations": 0,
+          "json": {
+            "chars": 29491,
+            "bytes": 49459,
+            "sha256": "4deca5b49137c8bb66b4a6ed9e308af480ed3aed52a0a82471679e796d154621"
+          },
+          "formatted": {
+            "chars": 15094,
+            "bytes": 27251,
+            "sha256": "45a87642571ffdbca68f29ee7f72382d563cbc53bc3da4041d07ee6c6e74d06d"
+          },
+          "formattedOracleEvidence": [
+            {
+              "path": "DOMRF/Start/КадровоеДелопроизводство/ЗарплатаИУправлениеПерсоналом/РеализацияКонтрактов/ЗарплатаИУправлениеПерсоналомкЗапланированныеЗаданияСервис.xbsl",
+              "line": 5,
+              "included": true
+            }
+          ]
+        },
+        "nativeAst": {
+          "calls": 11,
+          "ready": 11,
+          "cacheHits": 10,
+          "partial": 0,
+          "nodes": 2390,
+          "diagnostics": 0,
+          "elapsedMs": 26.390000000000004,
+          "problems": []
+        },
+        "lsp": {
+          "live": false,
+          "fakeDefinitions": false,
+          "unavailableCalls": 8,
+          "requestedPositions": 18
+        },
+        "reads": {
+          "calls": 476,
+          "uniquePaths": 238,
+          "bytesIncludingRevalidation": 2623950,
+          "elapsedMs": 217.55999999999992
+        },
+        "readOnly": {
+          "beforeSha256": "7a42c2c56218387357ebce6fab8c4990c059745f42a3017a753b000467881444",
+          "afterSha256": "7a42c2c56218387357ebce6fab8c4990c059745f42a3017a753b000467881444",
+          "unchanged": true
+        }
+      },
+      {
+        "id": "unchanged",
+        "passed": true,
+        "checks": [
+          {
+            "name": "target-indexed-with-element-kind",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-before-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-before",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-before",
+            "passed": true
+          },
+          {
+            "name": "analysis-and-rule-selection-read-only",
+            "passed": true
+          },
+          {
+            "name": "exact-changed-paths",
+            "passed": true,
+            "details": {
+              "expected": [],
+              "actual": []
+            }
+          },
+          {
+            "name": "not-stale",
+            "passed": true
+          },
+          {
+            "name": "no-fabricated-lsp-targets",
+            "passed": true
+          },
+          {
+            "name": "scoped-rules-after-exact",
+            "passed": true
+          },
+          {
+            "name": "global-rules-preserved-after",
+            "passed": true
+          },
+          {
+            "name": "no-rules-warnings-after",
+            "passed": true
+          },
+          {
+            "name": "within-count-and-byte-bounds",
+            "passed": true
+          },
+          {
+            "name": "within-wall-time-bound-with-scheduler-slack",
+            "passed": true
+          },
+          {
+            "name": "formatted-report-bounded",
+            "passed": true
+          },
+          {
+            "name": "native-calls-not-faked",
+            "passed": true
+          },
+          {
+            "name": "native-call-accounting",
+            "passed": true
+          },
+          {
+            "name": "syntax-expectation",
+            "passed": true
+          },
+          {
+            "name": "unchanged-no-findings-no-io",
+            "passed": true
+          },
+          {
+            "name": "oracle-evidence-survives-report-formatting",
+            "passed": true
+          }
+        ],
+        "timing": {
+          "copyMs": 92.97,
+          "beforeSnapshotMs": 404.84,
+          "rulesBeforeMs": 0.88,
+          "mutationMs": 0,
+          "afterSnapshotMs": 377.92,
+          "analysisMs": 5.56,
+          "analysisNodeCpuMs": {
+            "user": 7.161,
+            "system": 0.114,
+            "excludesJava": true
+          },
+          "rulesAfterMs": 1.41,
+          "totalMs": 997.1
+        },
+        "snapshot": {
+          "implementation": "ProjectContextService.captureChangeSnapshot(profile, true)",
+          "beforeFiles": 585,
+          "afterFiles": 585,
+          "coverage": "bounded-index",
+          "beforeSha256": "ddeed51d602bb2d91ea48458a684728ceff719c0d8b24bb69c3ee53fe1f7efee",
+          "afterSha256": "ddeed51d602bb2d91ea48458a684728ceff719c0d8b24bb69c3ee53fe1f7efee"
+        },
+        "rules": {
+          "before": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 0,
+            "scopedPaths": [],
+            "globalText": {
+              "chars": 3830,
+              "bytes": 6824,
+              "sha256": "9bdbbc1558fd1d2e754026a9ff0b6b5041210533b83d5e46e3bb42365ea68e8e"
+            },
+            "scopedText": {
+              "chars": 0,
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "warnings": []
+          },
+          "after": {
+            "status": "active",
+            "globalMatches": 1,
+            "scopedMatches": 0,
+            "scopedPaths": [],
+            "globalText": {
+              "chars": 3830,
+              "bytes": 6824,
+              "sha256": "9bdbbc1558fd1d2e754026a9ff0b6b5041210533b83d5e46e3bb42365ea68e8e"
+            },
+            "scopedText": {
+              "chars": 0,
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "warnings": []
+          }
+        },
+        "report": {
+          "status": "unchanged",
+          "changedPaths": [],
+          "changes": [],
+          "checkedPaths": [],
+          "elementTargets": [],
+          "counts": {
+            "filesRead": 0,
+            "readCalls": 0,
+            "sourceBytes": 0,
+            "verifiedBytes": 0,
+            "parses": 0,
+            "inspections": 0
+          },
+          "findingCount": 0,
+          "findingCounts": {
+            "syntax": 0,
+            "yaml-handler": 0,
+            "impact": 0
+          },
+          "findingPaths": [],
+          "oracleFindings": [],
+          "otherFindingCount": 0,
+          "limitations": [
+            "Ограниченная проверка только для чтения, не заключение о корректности и не автоматическое исправление. Пустая диагностика не доказывает корректность.",
+            "Синтаксическая диагностика относится только к текущему исходнику. В снимках нет прежней AST-диагностики, поэтому нельзя утверждать, что проблему внесло изменение.",
+            "AST подтверждает вхождения, но не их цели. Структурные совпадения имён не разрешают наследование, встроенные методы, объекты-получатели и пространства имён.",
+            "Сравниваются хеши файлов, не тела отдельных методов. Кандидаты могут ссылаться на неизменённые методы изменённого модуля.",
+            "Имена прежних объявлений берутся только из структурного индекса: он может пропускать объявления, в том числе с аннотацией на той же строке. Прежний AST по текущему исходнику не восстанавливается."
+          ],
+          "omittedLimitations": 0,
+          "json": {
+            "chars": 1042,
+            "bytes": 1701,
+            "sha256": "b5811d9fe2aad86433efa9fda430bd9265ea035960a699091378889a9b0da5b6"
+          },
+          "formatted": {
+            "chars": 1535,
+            "bytes": 2818,
+            "sha256": "63ce03b08813c7591d25a7ade50453e2d1f9734784f87731612a0ba1e63462e8"
+          },
+          "formattedOracleEvidence": []
+        },
+        "nativeAst": {
+          "calls": 0,
+          "ready": 0,
+          "cacheHits": 0,
+          "partial": 0,
+          "nodes": 0,
+          "diagnostics": 0,
+          "elapsedMs": 0,
+          "problems": []
+        },
+        "lsp": {
+          "live": false,
+          "fakeDefinitions": false,
+          "unavailableCalls": 0,
+          "requestedPositions": 0
+        },
+        "reads": {
+          "calls": 0,
+          "uniquePaths": 0,
+          "bytesIncludingRevalidation": 0,
+          "elapsedMs": 0
+        },
+        "readOnly": {
+          "beforeSha256": "ceacd27829fa13d4237bcbe3a67bfcefcf1e29b5f6989f268dcc66405596644f",
+          "afterSha256": "ceacd27829fa13d4237bcbe3a67bfcefcf1e29b5f6989f268dcc66405596644f",
+          "unchanged": true
+        }
+      }
+    ],
+    "temporaryCopiesRemoved": true,
+    "integrity": {
+      "fixtureUnchanged": true,
+      "gitStatusUnchanged": true,
+      "fixtureAfterSha256": "9524b3a6eac31c4d20078b8d9fedaff50781c3eb660975c7721832435bc55e4a",
+      "sourceAfterSha256": "829b341c10c1cc39976fa6ee93c081f12893d2ee33efe105d885883d2547db91",
+      "resourcesUnchanged": true,
+      "sourceChangedDuringRun": false
+    },
+    "durationMs": 21567.47,
+    "completedAt": "2026-10-14T14:43:47.488Z",
+    "summary": {
+      "passedCases": 6,
+      "totalCases": 6,
+      "failedCases": [],
+      "postChangeReports": 5,
+      "partialReports": 5,
+      "nativeParseCalls": 25,
+      "unavailableLspCalls": 22,
+      "formattedReportChars": 42511,
+      "formattedReportBytes": 76637
+    },
+    "passed": true
+  },
+  "artifactBytes": 118008
+}

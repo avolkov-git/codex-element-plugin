@@ -132,6 +132,34 @@ export interface ProjectToolSearchResult {
   readonly totalChunks: number;
   readonly chunks: readonly ProjectToolChunkRef[];
   readonly semantic?: SemanticContextResult;
+  readonly ruleTargets?: readonly { path: string; elementKind?: string }[];
+}
+
+export interface ProjectChangeSnapshot {
+  readonly workspaceRoot: string;
+  readonly files: readonly { path: string; hash: string; structure?: ProjectStructure }[];
+  /** The index is bounded; absence is not proof that a file does not exist. */
+  readonly coverage: "bounded-index";
+  /** Root epoch only: a baseline must survive edits made by its turn. */
+  isCurrent(): boolean;
+  /** Strict revision/buffer guard for a result, including results with no file reads. */
+  isContentCurrent(): boolean;
+  readFile(filePath: string): Promise<{ text: string; hash: string }>;
+}
+
+export function projectRuleTargets(
+  files: readonly { path: string; structure?: ProjectStructure }[], paths: readonly string[]
+): Array<{ path: string; elementKind?: string }> {
+  const indexed = new Map(files.map(file => [file.path, file]));
+  const candidates = paths.flatMap(filePath => /\.ya?ml$/u.test(filePath)
+    ? [filePath, ...[".xbsl", ".Объект.xbsl", ".Object.xbsl"].map(extension => filePath.replace(/\.ya?ml$/u, extension))] : [filePath]);
+  return [...new Set(candidates)].filter(filePath => indexed.has(filePath)).slice(0, 64).map(filePath => {
+    if (/\.ya?ml$/u.test(filePath)) return { path: filePath, elementKind: indexed.get(filePath)?.structure?.element?.kind };
+    const stem = filePath.replace(/(?:\.Объект|\.Object)?\.xbsl$/u, "").replace(/\.ya?ml$/u, "");
+    const kinds = new Set([`${stem}.yaml`, `${stem}.yml`]
+      .map(name => indexed.get(name)?.structure?.element?.kind).filter((kind): kind is string => Boolean(kind)));
+    return { path: filePath, elementKind: kinds.size === 1 ? [...kinds][0] : undefined };
+  });
 }
 
 export interface ProjectToolReadFileResult {
@@ -617,7 +645,8 @@ export class ProjectContextService implements vscode.Disposable {
       totalFiles: index.files.length,
       totalChunks: index.chunks.length,
       chunks,
-      semantic
+      semantic,
+      ruleTargets: projectRuleTargets(index.files, [...chunks.map(chunk => chunk.path), ...(semantic?.snippets.map(snippet => snippet.path) ?? [])])
     };
   }
 
@@ -628,6 +657,40 @@ export class ProjectContextService implements vscode.Disposable {
     const read = await this.readFileInScope(scope, options);
     this.assertScope(scope);
     return read;
+  }
+
+  async captureChangeSnapshot(profileId: string | undefined, refresh = false): Promise<ProjectChangeSnapshot> {
+    const scope = this.captureScope();
+    if (refresh) {
+      this.dirty = true;
+      this.forceReindexRevision += 1;
+      this.clearSemanticCache();
+    }
+    const { index: diskIndex, fileRevision } = await this.ensureToolIndex(profileId, scope);
+    const snapshot = this.captureSnapshot(scope, fileRevision);
+    const index = await this.withOpenDocuments(diskIndex, snapshot);
+    this.assertSnapshot(snapshot, index);
+    const files = index.files.filter(file => /\.(?:xbsl|ya?ml)$/i.test(file.path))
+      .map(file => ({ path: file.path, hash: file.hash, structure: file.structure
+        ? JSON.parse(JSON.stringify(file.structure)) as ProjectStructure : undefined }));
+    const hashes = new Map(files.map(file => [file.path, file.hash]));
+    return {
+      workspaceRoot: scope.workspaceRoot,
+      files,
+      coverage: "bounded-index",
+      // Baselines survive edits, but never a workspace transition (including away/back).
+      isCurrent: () => { try { this.assertScope(scope); return true; } catch { return false; } },
+      isContentCurrent: () => { try { this.assertSnapshot(snapshot, index); return true; } catch { return false; } },
+      readFile: async filePath => {
+        this.assertSnapshot(snapshot, index);
+        const hash = hashes.get(filePath);
+        if (!hash) throw new ProjectToolError("notFound", "Файл не входит в снимок проверки.");
+        const read = await this.readFileInScope(scope, { filePath, maxChars: MAX_FILE_BYTES, maxBytes: MAX_FILE_BYTES }, hash);
+        this.assertSnapshot(snapshot, index);
+        if (read.truncated) throw new ProjectToolError("tooLarge", "Файл не помещается в лимит проверки.");
+        return { text: read.text, hash: crypto.createHash("sha256").update(read.text).digest("hex") };
+      }
+    };
   }
 
   private async readFileInScope(scope: ProjectRequestScope, options: ProjectReadFileOptions, expectedHash?: string): Promise<ProjectToolReadFileResult> {

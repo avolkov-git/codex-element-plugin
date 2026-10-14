@@ -33,6 +33,7 @@ import { UserProfileService } from "./userProfileService";
 import { ChatMessageQuestion, ChatQuestionResult, ChatSummary, NativeUserInputQuestion, NativeUserInputRequest, NativeUserInputResponse } from "./types";
 import { WorklogOperationNormalizer } from "./worklogNormalizer";
 import { DiffPatchStore, patchFromChanges, summarizePatch } from "./diffPatchStore";
+import { ChangeReviewBaseline, ProjectChangeReviewService } from "./projectChangeReviewService";
 
 interface CodexRuntimeControllerOptions {
   context: vscode.ExtensionContext;
@@ -52,6 +53,18 @@ interface CodexRuntimeControllerOptions {
   beforeQueuedDispatch?: (chatId: string) => Promise<void>;
   getManagedBrowserLaunch?: () => { args: string[]; managedServerName?: string } | Promise<{ args: string[]; managedServerName?: string }>;
   diffPatches?: DiffPatchStore;
+  changeReview?: ProjectChangeReviewService;
+}
+
+interface ChangeReviewRun {
+  baseline?: ChangeReviewBaseline;
+  threadId: string;
+  turnId?: string;
+  epoch: number;
+  cancelEpoch: number;
+  historyGeneration: number;
+  workspace: string;
+  profileId?: string;
 }
 
 interface NormalizedAccount {
@@ -92,7 +105,6 @@ interface HiddenPlannerRun {
 
 interface SendPromptCoreOptions {
   readonly addUserMessage: boolean;
-  readonly isDiagnosticsRetry?: boolean;
   readonly selectedSkills?: readonly SkillSelection[];
   readonly attachments?: readonly ChatAttachment[];
   readonly queuedMessageId?: string;
@@ -187,9 +199,8 @@ export class CodexRuntimeController implements vscode.Disposable {
   private cancellingChatIds = new Set<string>();
   private cancelledTurnIds = new Set<string>();
   private completedTurnIds = new Set<string>();
-  private diagnosticsRetryAttemptedTurnIds = new Set<string>();
-  private diagnosticsRetryTurnIds = new Set<string>();
-  private fileChangingTurnIds = new Set<string>();
+  private readonly changeReviewRuns = new Map<string, ChangeReviewRun>();
+  private readonly postTurnReviews = new Map<string, Promise<void>>();
   private thinkingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private activeThinkingByChat = new Map<string, { id: string; turnId: string }>();
   private thinkingSequenceByTurn = new Map<string, number>();
@@ -317,7 +328,6 @@ export class CodexRuntimeController implements vscode.Disposable {
     if (!diff) return;
     try {
       const files = this.options.diffPatches?.capture(diff, `${chatId}:${turnId ?? "current"}`) ?? summarizePatch(diff);
-      if (turnId) this.fileChangingTurnIds.add(turnId);
       this.options.state.addOrUpdateDiffItem(chatId, turnId ?? "", "Изменения", files);
       this.notifyChatChange(chatId);
     } catch {
@@ -620,6 +630,9 @@ export class CodexRuntimeController implements vscode.Disposable {
         throw new Error("В этом диалоге уже выполняется запрос.");
       }
 
+      if (this.postTurnReviews.has(chatId)) this.cancelChangeReview(chatId);
+      else this.changeReviewRuns.delete(chatId);
+
       this.latestChatId = chatId;
       if (options.addUserMessage) {
         const queued = chat.queuedMessages.find((message) => message.id === options.queuedMessageId);
@@ -650,7 +663,6 @@ export class CodexRuntimeController implements vscode.Disposable {
         let turnResult: unknown;
         try {
           turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
-            skipAutoDiagnostics: options.isDiagnosticsRetry,
             selectedSkills: options.selectedSkills,
             attachments
           });
@@ -660,7 +672,6 @@ export class CodexRuntimeController implements vscode.Disposable {
             await this.compactBackendThread(chatId);
             this.throwIfCancelled(chatId, cancelEpoch, runtimeEpoch);
             turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
-              skipAutoDiagnostics: options.isDiagnosticsRetry,
               selectedSkills: options.selectedSkills,
               attachments
             });
@@ -671,7 +682,6 @@ export class CodexRuntimeController implements vscode.Disposable {
             this.throwIfCancelled(chatId, cancelEpoch, runtimeEpoch);
             if (resumed) {
               turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
-                skipAutoDiagnostics: options.isDiagnosticsRetry,
                 selectedSkills: options.selectedSkills,
                 attachments
               });
@@ -689,7 +699,6 @@ export class CodexRuntimeController implements vscode.Disposable {
               await this.startBackendThreadWithFallback(chatId, requestedAccessMode);
               this.throwIfCancelled(chatId, cancelEpoch, runtimeEpoch);
               turnResult = await this.startTurnWithFallback(chatId, runtimePrompt, mode, explicitContextBlocks, {
-                skipAutoDiagnostics: options.isDiagnosticsRetry,
                 selectedSkills: options.selectedSkills,
                 attachments
               });
@@ -711,9 +720,6 @@ export class CodexRuntimeController implements vscode.Disposable {
         }
         if (turnId) {
           this.activeTurnChatId.set(turnId, chatId);
-          if (options.isDiagnosticsRetry) {
-            this.diagnosticsRetryTurnIds.add(turnId);
-          }
         }
         this.options.state.updateChat(chatId, {
           activeTurnId: turnId || null,
@@ -735,16 +741,6 @@ export class CodexRuntimeController implements vscode.Disposable {
           return;
         }
         const message = normalizeErrorMessage(error);
-        if (options.isDiagnosticsRetry) {
-          this.options.state.updateChat(chatId, {
-            status: "idle",
-            activeTurnId: null,
-            activeRunMode: null
-          });
-          this.notifyChatChange(chatId);
-          this.options.logger.warn(`Diagnostics auto-fix retry failed without transcript error: ${message}`);
-          return;
-        }
         this.options.state.updateChat(chatId, {
           status: "error",
           activeTurnId: null,
@@ -757,6 +753,8 @@ export class CodexRuntimeController implements vscode.Disposable {
     } finally {
       if (this.promptStarts.get(chatId) === dispatchToken) {
         this.promptStarts.delete(chatId);
+        if (runtimeEpoch === this.runtimeEpoch && cancelEpoch === this.cancelEpoch(chatId)
+          && this.options.state.getChat(chatId)?.status === "idle") this.startNextQueuedPrompt(chatId);
         this.notifyExperimentalContextAvailability();
       }
     }
@@ -1186,6 +1184,10 @@ export class CodexRuntimeController implements vscode.Disposable {
   async cancelTurn(chatId: string): Promise<void> {
     const epoch = this.runtimeEpoch;
     const chat = this.options.state.getChat(chatId);
+    if (this.postTurnReviews.has(chatId)) {
+      this.bumpCancelEpoch(chatId);
+      this.cancelChangeReview(chatId);
+    }
     if (!chat || !["running", "waitingApproval", "cancelling"].includes(chat.status)) {
       return;
     }
@@ -1195,6 +1197,7 @@ export class CodexRuntimeController implements vscode.Disposable {
 
     this.cancellingChatIds.add(chatId);
     this.bumpCancelEpoch(chatId);
+    this.cancelChangeReview(chatId);
     this.latestChatId = chatId;
     const threadId = chat.backendThreadId;
     const turnId = chat.activeTurnId;
@@ -1654,15 +1657,28 @@ export class CodexRuntimeController implements vscode.Disposable {
       throw new Error("Серверный диалог ещё не готов.");
     }
 
+    // Inline question answers can start a turn without going through sendPromptCore.
+    if (this.postTurnReviews.has(chatId)) this.cancelChangeReview(chatId);
     const cwd = resolveWorkspaceCwd(this.options.context);
-    const turnContext = await this.options.contextOrchestrator.buildTurnContext({
+    const historyGeneration = this.options.state.getHistoryGeneration();
+    const profileId = this.options.changeReview ? this.options.profiles.getCurrentProfileId() : undefined;
+    const assertReviewOwner = () => {
+      this.throwIfCancelled(chatId, cancelEpoch, epoch);
+      if (historyGeneration !== this.options.state.getHistoryGeneration() || (this.options.changeReview && profileId !== this.options.profiles.getCurrentProfileId())
+        || !sameWorkspacePath(cwd, resolveWorkspaceCwd(this.options.context))
+        || this.options.state.getChat(chatId)?.backendThreadId !== chat.backendThreadId) throw new UserCancelledTurnError();
+    };
+    const previousReview = chat.kind === "project" && this.options.changeReview
+      ? await this.options.changeReview.context(chatId) : undefined;
+    assertReviewOwner();
+    let turnContext = await this.options.contextOrchestrator.buildTurnContext({
       chatId,
       chatKind: chat.kind,
       prompt,
       runMode: mode,
       cwd,
       rulesEnabled: chat.rulesEnabled,
-      explicitContextBlocks,
+      explicitContextBlocks: previousReview ? [...explicitContextBlocks, previousReview] : explicitContextBlocks,
       skipAutoDiagnostics: options.skipAutoDiagnostics,
       forceDiagnosticsContext: options.forceDiagnosticsContext,
       diagnosticsPriority: options.diagnosticsPriority,
@@ -1670,6 +1686,25 @@ export class CodexRuntimeController implements vscode.Disposable {
       attachments: options.attachments
     });
     this.throwIfCancelled(chatId, cancelEpoch, epoch);
+    assertReviewOwner();
+    const review: ChangeReviewRun | undefined = chat.kind === "project" && mode !== "planning"
+      && getRunAccessMode(chat.accessMode, mode) !== "read-only" && this.options.changeReview
+      ? { baseline: await this.options.changeReview.begin(), threadId: chat.backendThreadId, epoch, cancelEpoch,
+        historyGeneration, workspace: cwd, profileId }
+      : undefined;
+    assertReviewOwner();
+    options.assertOwner?.();
+    if (previousReview && !(await this.options.changeReview?.context(chatId))) {
+      turnContext = await this.options.contextOrchestrator.buildTurnContext({
+        chatId, chatKind: chat.kind, prompt, runMode: mode, cwd, rulesEnabled: chat.rulesEnabled,
+        explicitContextBlocks, skipAutoDiagnostics: options.skipAutoDiagnostics,
+        forceDiagnosticsContext: options.forceDiagnosticsContext, diagnosticsPriority: options.diagnosticsPriority,
+        selectedSkills: options.selectedSkills, attachments: options.attachments
+      });
+      assertReviewOwner();
+    }
+    assertReviewOwner();
+    options.assertOwner?.();
     options.beforeRequest?.();
     const historySeed = chat.backendContextRestored === false ? this.options.state.getConversationHistorySeed(chatId) : "";
     const input: ContextTurnInput[] = historySeed ? [{
@@ -1680,7 +1715,10 @@ export class CodexRuntimeController implements vscode.Disposable {
     const turnAccessMode = getRunAccessMode(chat.accessMode, mode);
     const serviceTier = this.resolveServiceTier(chatId);
     this.options.logger.info(`turn/start requested for thread ${chat.backendThreadId}; mode=${mode}; model=${chat.modelId || "<default>"}; effort=${chat.effort}; serviceTier=${options.omitServiceTier ? "<omitted>" : serviceTier ?? "<standard>"}.`);
-    const result = await this.requireRpcClient().request("turn/start", {
+    // Install before the RPC: turn/completed can arrive before its acknowledgement.
+    if (review) this.changeReviewRuns.set(chatId, review);
+    let result: unknown;
+    try { result = await this.requireRpcClient().request("turn/start", {
       threadId: chat.backendThreadId,
       input,
       cwd,
@@ -1690,7 +1728,15 @@ export class CodexRuntimeController implements vscode.Disposable {
       model: chat.modelId ?? null,
       effort: chat.effort,
       ...(!options.omitServiceTier ? { serviceTier } : {})
-    }, 30_000);
+    }, 30_000); } catch (error) {
+      if (review && this.changeReviewRuns.get(chatId) === review) this.cancelChangeReview(chatId);
+      throw error;
+    }
+    if (review && this.changeReviewRuns.get(chatId) === review) {
+      const acceptedId = extractTurnId(result);
+      if (acceptedId) review.turnId = acceptedId;
+      else this.cancelChangeReview(chatId);
+    }
     this.assertRuntimeEpoch(epoch);
     options.assertOwner?.();
     if (extractTurnId(result) && chat.backendContextRestored === false) {
@@ -1790,91 +1836,69 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
   }
 
-  private async maybeStartDiagnosticsAutoFix(
-    chatId: string,
-    originalTurnId: string,
-    accessMode: ChatAccessMode,
-    runMode: ChatRunMode,
-    mayHaveChangedFiles: boolean
-  ): Promise<void> {
-    if (this.diagnosticsRetryTurnIds.has(originalTurnId)) {
-      return;
-    }
-    if (this.diagnosticsRetryAttemptedTurnIds.has(originalTurnId)) {
-      return;
-    }
-    if (accessMode === "read-only" || runMode === "planning" || !mayHaveChangedFiles) {
-      this.options.logger.info(
-        `Diagnostics auto-fix skipped: chat=${chatId}; turn=${originalTurnId}; access=${accessMode}; mode=${runMode}; fileChanges=${mayHaveChangedFiles}.`
-      );
-      return;
-    }
 
-    this.diagnosticsRetryAttemptedTurnIds.add(originalTurnId);
-    await sleep(1500);
-    let diagnostics = await this.options.diagnosticsContext.collectErrorContext(120);
-    if (!diagnostics.block) {
-      this.options.logger.info(
-        `Diagnostics auto-fix skipped: chat=${chatId}; turn=${originalTurnId}; reason=${diagnostics.reason}; errors=${diagnostics.totalErrorsCount}.`
-      );
-      return;
-    }
-
-    await sleep(800);
-    const refreshedDiagnostics = await this.options.diagnosticsContext.collectErrorContext(120);
-    if (refreshedDiagnostics.block || refreshedDiagnostics.reason === "no-errors") {
-      diagnostics = refreshedDiagnostics;
-    }
-    if (!diagnostics.block) {
-      this.options.logger.info(
-        `Diagnostics auto-fix skipped after refresh: chat=${chatId}; turn=${originalTurnId}; reason=${diagnostics.reason}; errors=${diagnostics.totalErrorsCount}.`
-      );
-      return;
-    }
-
+  private changeReviewCurrent(chatId: string, run: ChangeReviewRun): boolean {
     const chat = this.options.state.getChat(chatId);
-    if (!chat || chat.kind !== "project" || chat.archivedAt || chat.status !== "idle" || chat.pendingApproval) {
-      this.options.logger.info(
-        `Diagnostics auto-fix skipped: chat unavailable or busy; chat=${chatId}; turn=${originalTurnId}; status=${chat?.status ?? "missing"}.`
-      );
-      return;
-    }
-
-    this.options.logger.info(
-      `Diagnostics auto-fix retry started: chat=${chatId}; sourceTurn=${originalTurnId}; ` +
-      `files=${diagnostics.filesCount}; errors=${diagnostics.errorsCount}; totalErrors=${diagnostics.totalErrorsCount}; fingerprint=${diagnostics.fingerprint}.`
-    );
-    await this.sendPromptCore(
-      chatId,
-      [
-        "Исправь оставшиеся ошибки IDE после предыдущего изменения.",
-        "Используй скрытый блок IDE diagnostics и текущий проектный контекст.",
-        "Исправляй минимально необходимые ошибки. Предупреждения не трогай.",
-        "Не перечисляй diagnostics пользователю, если это не нужно для результата."
-      ].join("\n"),
-      "normal",
-      undefined,
-      [diagnostics.block],
-      {
-        addUserMessage: false,
-        isDiagnosticsRetry: true
-      }
-    );
+    return this.changeReviewRuns.get(chatId) === run && !this.disposed && !this.backendStopPromise
+      && run.epoch === this.runtimeEpoch && run.cancelEpoch === this.cancelEpoch(chatId)
+      && run.historyGeneration === this.options.state.getHistoryGeneration()
+      && run.profileId === this.options.profiles.getCurrentProfileId()
+      && sameWorkspacePath(run.workspace, resolveWorkspaceCwd(this.options.context))
+      && Boolean(chat && !chat.archivedAt && chat.backendThreadId === run.threadId);
   }
 
-  private async logDiagnosticsRetryResult(chatId: string, retryTurnId: string): Promise<void> {
-    await sleep(1500);
-    const diagnostics = await this.options.diagnosticsContext.collectErrorContext(120);
-    if (diagnostics.block) {
-      this.options.logger.info(
-        `Diagnostics auto-fix retry completed with remaining errors: chat=${chatId}; turn=${retryTurnId}; ` +
-        `files=${diagnostics.filesCount}; errors=${diagnostics.errorsCount}; totalErrors=${diagnostics.totalErrorsCount}; fingerprint=${diagnostics.fingerprint}.`
-      );
-      return;
+  private cancelChangeReview(chatId: string): void {
+    const run = this.changeReviewRuns.get(chatId);
+    if (run?.turnId && this.postTurnReviews.has(chatId)) {
+      this.options.state.addOrUpdateActivityItem(chatId, { id: `change-review-${run.turnId}`, activityKind: "tool",
+        turnId: run.turnId, label: "Проверка изменений отменена", status: "completed" }, "immediate");
+      this.notifyChatChange(chatId);
     }
-    this.options.logger.info(
-      `Diagnostics auto-fix retry completed: chat=${chatId}; turn=${retryTurnId}; remainingErrors=${diagnostics.totalErrorsCount}; reason=${diagnostics.reason}.`
-    );
+    this.changeReviewRuns.delete(chatId);
+    this.postTurnReviews.delete(chatId);
+    this.options.changeReview?.forget(chatId);
+  }
+
+  private finishChangeReview(chatId: string, turnId: string): boolean {
+    const run = this.changeReviewRuns.get(chatId);
+    if (!run || !this.options.changeReview || (run.turnId && run.turnId !== turnId) || this.postTurnReviews.has(chatId)) return false;
+    run.turnId = turnId;
+    if (!this.changeReviewCurrent(chatId, run)) { this.cancelChangeReview(chatId); return false; }
+    const id = `change-review-${turnId}`;
+    this.options.state.addOrUpdateActivityItem(chatId, { id, activityKind: "tool", turnId,
+      label: "Проверка последствий изменений", status: "running" }, "immediate");
+    this.notifyChatChange(chatId);
+    const operation = Promise.resolve().then(async () => {
+      if (!run.baseline) throw new Error("Исходный снимок проекта недоступен. Проверка последствий изменений не выполнена.");
+      const result = await this.options.changeReview!.complete(chatId, run.baseline, () => this.changeReviewCurrent(chatId, run));
+      if (!this.changeReviewCurrent(chatId, run)) return;
+      const report = result?.report;
+      this.options.state.addOrUpdateActivityItem(chatId, {
+        id, activityKind: "tool", turnId,
+        label: !report ? "Актуальность проверки изменений не подтверждена"
+          : report.status === "unchanged" ? "Изменений YAML/XBSL в доступном индексе не найдено"
+          : report.status === "partial" ? "Последствия изменений проверены частично" : "Последствия изменений проверены",
+        status: result ? "completed" : "error",
+        outputPreview: result?.text ?? "Проверка отменена из-за изменения проекта или недоступности данных.",
+        details: result ? [{ activityKind: "tool", label: "Результаты проверки", outputPreview: result.text }] : undefined
+      }, "immediate");
+      this.notifyChatChange(chatId);
+    }).catch((error: unknown) => {
+      if (!this.changeReviewCurrent(chatId, run)) return;
+      this.options.logger.warn(`Change review failed: ${normalizeErrorMessage(error)}`);
+      this.options.state.addOrUpdateActivityItem(chatId, { id, activityKind: "tool", turnId,
+        label: "Проверка изменений недоступна", status: "error",
+        outputPreview: "Не удалось завершить проверку изменений. Это не означает, что код проверен или содержит ошибки." }, "immediate");
+      this.notifyChatChange(chatId);
+    }).finally(() => {
+      if (this.postTurnReviews.get(chatId) !== operation) return;
+      const current = this.changeReviewCurrent(chatId, run);
+      this.postTurnReviews.delete(chatId);
+      if (this.changeReviewRuns.get(chatId) === run) this.changeReviewRuns.delete(chatId);
+      if (current && this.options.state.getChat(chatId)?.status === "idle") this.startNextQueuedPrompt(chatId);
+    });
+    this.postTurnReviews.set(chatId, operation);
+    return true;
   }
 
   private async compactBackendThread(chatId: string): Promise<void> {
@@ -2100,6 +2124,10 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
     this.runtimeEpoch += 1;
     this.lifecycleEpoch += 1;
+    for (const chatId of this.postTurnReviews.keys()) this.cancelChangeReview(chatId);
+    this.changeReviewRuns.clear();
+    this.postTurnReviews.clear();
+    this.options.changeReview?.clear();
     this.experimentalContextScope = randomUUID();
     this.experimentalContextView = emptyExperimentalContext();
     this.experimentalContextRead = undefined;
@@ -2156,9 +2184,6 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.completedTurnIds.clear();
     this.cancellingChatIds.clear();
     this.mcpStartupStatuses.clear();
-    this.diagnosticsRetryAttemptedTurnIds.clear();
-    this.diagnosticsRetryTurnIds.clear();
-    this.fileChangingTurnIds.clear();
     this.activeTurnChatId.clear();
     this.activeThreadChatId.clear();
     this.activeItemChatId.clear();
@@ -2188,6 +2213,7 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 
   private cleanupCancelledChat(chatId: string, turnId?: string | null): void {
+    this.cancelChangeReview(chatId);
     if (turnId) {
       this.cancelledTurnIds.add(turnId);
       this.activeTurnChatId.delete(turnId);
@@ -2272,9 +2298,6 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.contextCompactionItemThreads.clear();
     this.contextCompactionActivityIds.clear();
     this.contextCompactionItemTurnIds.clear();
-    this.diagnosticsRetryAttemptedTurnIds.clear();
-    this.diagnosticsRetryTurnIds.clear();
-    this.fileChangingTurnIds.clear();
     this.resolveAllCompactionWaiters();
 
     const profileId = await this.options.profiles.requireProfileId(this.options.settings.listExistingProfileIds());
@@ -2739,9 +2762,6 @@ export class CodexRuntimeController implements vscode.Disposable {
       if (itemId) {
         this.itemPayloads.set(itemId, notification.params);
       }
-      if (notificationTurnId && extractItemType(notification.params) === "fileChange") {
-        this.fileChangingTurnIds.add(notificationTurnId);
-      }
       const chatId = this.findChatIdForNotification(notification.params, { allowLatestFallback: false });
       if (itemId && chatId) {
         this.activeItemChatId.set(itemId, chatId);
@@ -2932,12 +2952,6 @@ export class CodexRuntimeController implements vscode.Disposable {
       this.clearChatItems(chatId);
       this.rejectUserInputsForChat(chatId, "Native user input ended with its turn.", turnId || undefined);
       this.declinePendingApprovalsForChat(chatId);
-      const completedRunMode = chatBeforeComplete?.activeRunMode ?? "normal";
-      const completedAccessMode = chatBeforeComplete
-        ? getRunAccessMode(chatBeforeComplete.accessMode, completedRunMode)
-        : "read-only";
-      const isDiagnosticsRetryTurn = Boolean(turnId && this.diagnosticsRetryTurnIds.has(turnId));
-      const mayHaveChangedFiles = Boolean(turnId && this.fileChangingTurnIds.has(turnId));
       if (turnId) {
         this.activeTurnChatId.delete(turnId);
       }
@@ -2965,16 +2979,10 @@ export class CodexRuntimeController implements vscode.Disposable {
         }
         this.notifyChatChange(chatId);
       }
-      if (turnId) {
-        this.fileChangingTurnIds.delete(turnId);
-      }
-      const queuedStarted = Boolean(chatId && (status === "completed" || !errorMessage) && this.startNextQueuedPrompt(chatId));
-      if (chatId && turnId && isDiagnosticsRetryTurn) {
-        this.diagnosticsRetryTurnIds.delete(turnId);
-        void this.logDiagnosticsRetryResult(chatId, turnId);
-      } else if (!queuedStarted && chatId && turnId && (status === "completed" || !errorMessage)) {
-        void this.maybeStartDiagnosticsAutoFix(chatId, turnId, completedAccessMode, completedRunMode, mayHaveChangedFiles);
-      }
+      const completedNormally = status === "completed" || (!status && !errorMessage);
+      if (completedNormally) {
+        if (!turnId || !this.finishChangeReview(chatId, turnId)) this.startNextQueuedPrompt(chatId);
+      } else { this.cancelChangeReview(chatId); }
       this.notifyExperimentalContextAvailability();
       return;
     }
@@ -3038,7 +3046,7 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 
   private dispatchQueuedPrompt(chatId: string, messageId?: string): boolean {
-    if (this.experimentalContextSaving || this.queuedDispatches.has(chatId) || this.promptStarts.has(chatId) || this.backendStopPromise || this.disposed) {
+    if (this.experimentalContextSaving || this.postTurnReviews.has(chatId) || this.queuedDispatches.has(chatId) || this.promptStarts.has(chatId) || this.backendStopPromise || this.disposed) {
       return false;
     }
     const queued = this.options.state.claimQueuedChatMessage(chatId, messageId);
@@ -3208,6 +3216,10 @@ export class CodexRuntimeController implements vscode.Disposable {
 
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
     this.runtimeEpoch += 1;
+    for (const chatId of this.postTurnReviews.keys()) this.cancelChangeReview(chatId);
+    this.changeReviewRuns.clear();
+    this.postTurnReviews.clear();
+    this.options.changeReview?.clear();
     this.experimentalContextScope = randomUUID();
     this.experimentalContextView = emptyExperimentalContext();
     this.experimentalContextRead = undefined;
@@ -3238,9 +3250,6 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.contextCompactionItemThreads.clear();
     this.contextCompactionActivityIds.clear();
     this.contextCompactionItemTurnIds.clear();
-    this.diagnosticsRetryAttemptedTurnIds.clear();
-    this.diagnosticsRetryTurnIds.clear();
-    this.fileChangingTurnIds.clear();
     this.resolveAllCompactionWaiters();
     this.rpcClient?.dispose();
     this.rpcClient = undefined;

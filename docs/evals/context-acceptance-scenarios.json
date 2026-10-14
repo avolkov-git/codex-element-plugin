@@ -227,7 +227,7 @@
         "context": [
           "diagnostics=list only Error severity",
           "warnings/info/hints skipped",
-          "auto-fix retry runs at most once when enabled"
+          "no hidden auto-fix retry; post-turn review is read-only and limited to changed or related files"
         ],
         "transcript": [
           "нет сырого списка diagnostics",
