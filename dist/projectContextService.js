@@ -170,6 +170,9 @@ class ProjectContextService {
         this.changeRevision = 0;
         this.forceReindexRevision = 0;
         this.indexedRevision = 0;
+        this.cacheFileRevision = 0;
+        this.changeHistoryFloor = 0;
+        this.changedFiles = new Map();
         this.refreshTail = Promise.resolve();
         this.lastUsedChunks = [];
         this.semanticCache = new Map();
@@ -351,9 +354,9 @@ class ProjectContextService {
             throw new ProjectToolError("invalidRequest", "project.search requires a non-empty query.");
         }
         const scope = this.captureScope();
-        const { index: diskIndex, indexPath, workspaceRoot } = await this.ensureToolIndex(profileId, scope);
+        const { index: diskIndex, indexPath, workspaceRoot, fileRevision } = await this.ensureToolIndex(profileId, scope);
         this.assertScope(scope);
-        const snapshot = this.captureSnapshot(scope);
+        const snapshot = this.captureSnapshot(scope, fileRevision);
         const index = await this.withOpenDocuments(diskIndex, snapshot);
         this.assertSnapshot(snapshot, index);
         const fileHashes = new Map(index.files.map((file) => [file.path, file.hash]));
@@ -535,6 +538,7 @@ class ProjectContextService {
             // A same-size rewrite can preserve mtime. Do not reuse that stale entry
             // on the next request solely because its stat metadata still matches.
             this.forceReindexRevision += 1;
+            this.changeRevision += 1;
             this.clearSemanticCache();
             throw new ProjectToolError("unavailable", "Файл изменился во время сборки проектного контекста. Повторите запрос.");
         }
@@ -564,9 +568,9 @@ class ProjectContextService {
     }
     async listSymbolsTool(profileId, options = {}) {
         const scope = this.captureScope();
-        const { index: diskIndex, indexPath, workspaceRoot } = await this.ensureToolIndex(profileId, scope);
+        const { index: diskIndex, indexPath, workspaceRoot, fileRevision } = await this.ensureToolIndex(profileId, scope);
         this.assertScope(scope);
-        const snapshot = this.captureSnapshot(scope);
+        const snapshot = this.captureSnapshot(scope, fileRevision);
         const index = await this.withOpenDocuments(diskIndex, snapshot);
         this.assertSnapshot(snapshot, index);
         const maxItems = clampInteger(options.maxItems, 1, 120, 60);
@@ -643,14 +647,18 @@ class ProjectContextService {
         if (!workspaceRoot)
             throw new ProjectToolError("unavailable", "Workspace folder is not available.");
         if (!this.bufferObservers.length) {
-            const invalidate = (document) => {
+            const invalidate = (document, diskChanged = false) => {
                 if (document.uri.scheme !== "file")
                     return;
                 const root = getWorkspaceRoot();
                 const relative = root && normalizeWorkspaceRelative(root, document.uri.fsPath);
                 if (relative && !shouldSkipPath(path.basename(relative), relative)
-                    && !BINARY_EXTENSIONS.has(path.extname(relative).toLowerCase()))
-                    this.clearSemanticCache();
+                    && !BINARY_EXTENSIONS.has(path.extname(relative).toLowerCase())) {
+                    if (diskChanged)
+                        this.markIndexDirty(root, document.uri);
+                    else
+                        this.clearSemanticCache();
+                }
             };
             if (typeof vscode.workspace.onDidChangeTextDocument === "function") {
                 this.bufferObservers.push(vscode.workspace.onDidChangeTextDocument((event) => invalidate(event.document)));
@@ -659,7 +667,10 @@ class ProjectContextService {
                 this.bufferObservers.push(vscode.workspace.onDidOpenTextDocument(invalidate));
             }
             if (typeof vscode.workspace.onDidCloseTextDocument === "function") {
-                this.bufferObservers.push(vscode.workspace.onDidCloseTextDocument(invalidate));
+                this.bufferObservers.push(vscode.workspace.onDidCloseTextDocument(document => invalidate(document, true)));
+            }
+            if (typeof vscode.workspace.onDidSaveTextDocument === "function") {
+                this.bufferObservers.push(vscode.workspace.onDidSaveTextDocument(document => invalidate(document, true)));
             }
         }
         return { workspaceRoot, workspaceRevision: this.workspaceRevision };
@@ -721,9 +732,16 @@ class ProjectContextService {
         }
         return buffers;
     }
-    captureSnapshot(scope) {
+    captureSnapshot(scope, fileRevision) {
         this.assertScope(scope);
-        return { scope, fileRevision: this.changeRevision, buffers: this.openBuffers(scope.workspaceRoot) };
+        this.assertIndexRevision(fileRevision);
+        return { scope, fileRevision, buffers: this.openBuffers(scope.workspaceRoot) };
+    }
+    assertIndexRevision(revision) {
+        if (revision !== this.changeRevision) {
+            this.dirty = true;
+            throw new ProjectToolError("unavailable", "Файлы проекта изменились во время сборки индекса. Повторите запрос.");
+        }
     }
     assertSnapshot(snapshot, index) {
         this.assertScope(snapshot.scope);
@@ -788,9 +806,10 @@ class ProjectContextService {
         }
         this.assertScope(scope);
         const { workspaceRoot } = scope;
-        const { index, indexPath } = await this.ensureIndex(profileId, workspaceRoot, scope);
+        const { index, indexPath, fileRevision } = await this.ensureIndex(profileId, workspaceRoot, scope);
         this.assertScope(scope);
-        return { index, indexPath, workspaceRoot };
+        this.assertIndexRevision(fileRevision);
+        return { index, indexPath, workspaceRoot, fileRevision };
     }
     async ensureIndex(profileId, workspaceRoot, scope = this.captureScope()) {
         this.assertScope(scope);
@@ -798,6 +817,7 @@ class ProjectContextService {
         this.refreshTail = operation.catch(() => undefined);
         const result = await operation;
         this.assertScope(scope);
+        this.assertIndexRevision(result.fileRevision);
         return result;
     }
     async ensureIndexSerial(profileId, workspaceRoot, scope) {
@@ -806,15 +826,21 @@ class ProjectContextService {
         const indexPath = this.indexPath(profileId, workspaceRoot);
         if (this.cachePath !== indexPath) {
             this.clearSemanticCache();
-            this.cache = await this.loadIndex(indexPath, workspaceRoot);
+            const loaded = await this.loadIndex(indexPath, workspaceRoot);
             this.assertScope(scope);
+            this.cache = loaded;
             this.cachePath = indexPath;
+            // Persisted indexes predate this process's observed changes, including
+            // changes already handled by another profile's in-memory index.
+            this.cacheFileRevision = 0;
+            this.indexedRevision = 0;
             this.dirty = true;
         }
         if (this.cache && !this.dirty) {
             return {
                 index: this.cache,
                 indexPath,
+                fileRevision: this.cacheFileRevision,
                 stats: {
                     totalFiles: this.cache.files.length,
                     totalChunks: this.cache.chunks.length,
@@ -827,18 +853,24 @@ class ProjectContextService {
         }
         const revision = this.changeRevision;
         const reindexRevision = this.forceReindexRevision;
-        const existing = reindexRevision === this.indexedRevision ? this.cache : undefined;
-        const refreshed = await this.refreshIndex(existing, workspaceRoot, () => this.assertScope(scope));
-        this.assertScope(scope);
+        const existing = reindexRevision === this.indexedRevision && this.cacheFileRevision >= this.changeHistoryFloor ? this.cache : undefined;
+        const assertCurrent = () => {
+            this.assertScope(scope);
+            this.assertIndexRevision(revision);
+        };
+        const refreshed = await this.refreshIndex(existing, workspaceRoot, this.cacheFileRevision, assertCurrent);
+        assertCurrent();
+        await this.writeIndex(indexPath, refreshed.index, assertCurrent);
+        assertCurrent();
         this.cache = refreshed.index;
         this.cachePath = indexPath;
+        this.cacheFileRevision = revision;
         this.indexedRevision = reindexRevision;
-        this.dirty = revision !== this.changeRevision || reindexRevision !== this.forceReindexRevision;
-        await this.writeIndex(indexPath, refreshed.index, () => this.assertScope(scope));
-        this.assertScope(scope);
+        this.dirty = false;
         return {
             index: refreshed.index,
             indexPath,
+            fileRevision: revision,
             stats: refreshed.stats
         };
     }
@@ -860,7 +892,7 @@ class ProjectContextService {
             return undefined;
         }
     }
-    async refreshIndex(existing, workspaceRoot, assertScope) {
+    async refreshIndex(existing, workspaceRoot, fileRevision, assertScope) {
         const startedAt = Date.now();
         const scanned = await scanWorkspace(workspaceRoot, assertScope);
         assertScope();
@@ -873,7 +905,8 @@ class ProjectContextService {
         let skippedFiles = scanned.skippedFiles;
         for (const file of scanned.files) {
             const old = previousFiles.get(file.relativePath);
-            if (old && old.mtimeMs === file.mtimeMs && old.size === file.size && old.chunkIds.every((id) => previousChunks.has(id))) {
+            const changed = (this.changedFiles.get(filePathKey(file.absolutePath)) ?? 0) > fileRevision;
+            if (old && !changed && old.mtimeMs === file.mtimeMs && old.size === file.size && old.chunkIds.every((id) => previousChunks.has(id))) {
                 files.push(old);
                 for (const chunkId of old.chunkIds) {
                     const chunk = previousChunks.get(chunkId);
@@ -939,6 +972,27 @@ class ProjectContextService {
     indexPath(profileId, workspaceRoot) {
         return path.join(this.configRoot, "users", profileId, "workspaces", workspaceId(workspaceRoot), "project-index-v3.json");
     }
+    markIndexDirty(workspaceRoot, uri) {
+        if (uri) {
+            if (uri.scheme !== "file")
+                return;
+            const relative = normalizeWorkspaceRelative(workspaceRoot, uri.fsPath);
+            if (!relative || shouldSkipPath(path.basename(relative), relative)
+                || BINARY_EXTENSIONS.has(path.extname(relative).toLowerCase()))
+                return;
+        }
+        this.dirty = true;
+        this.changeRevision += 1;
+        if (uri)
+            this.changedFiles.set(filePathKey(uri.fsPath), this.changeRevision);
+        // Keep history for lazily loaded profile indexes without retaining an
+        // unbounded path log. Older indexes must fully refresh after compaction.
+        if (!uri || this.changedFiles.size > MAX_INDEX_FILES) {
+            this.changedFiles.clear();
+            this.changeHistoryFloor = this.changeRevision;
+        }
+        this.clearSemanticCache();
+    }
     ensureWatcher() {
         const root = getWorkspaceRoot();
         if (this.watcher && this.watcherRoot === root) {
@@ -952,19 +1006,7 @@ class ProjectContextService {
         }
         this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, "**/*"));
         this.watcherRoot = root;
-        const markDirty = (uri) => {
-            if (uri) {
-                if (uri.scheme !== "file")
-                    return;
-                const relative = normalizeWorkspaceRelative(folder.uri.fsPath, uri.fsPath);
-                if (!relative || shouldSkipPath(path.basename(relative), relative)
-                    || BINARY_EXTENSIONS.has(path.extname(relative).toLowerCase()))
-                    return;
-            }
-            this.dirty = true;
-            this.changeRevision += 1;
-            this.clearSemanticCache();
-        };
+        const markDirty = (uri) => this.markIndexDirty(folder.uri.fsPath, uri);
         this.watcher.onDidCreate(markDirty);
         this.watcher.onDidChange(markDirty);
         this.watcher.onDidDelete(markDirty);
@@ -1122,9 +1164,13 @@ function selectRelevantChunks(index, prompt) {
     }
     const explicitProjectBoost = isExplicitProjectPrompt(prompt) ? 16 : 0;
     const scored = index.chunks
-        .map((chunk) => ({ chunk, score: scoreChunk(chunk, terms, prompt) + explicitProjectBoost }))
+        .map((chunk) => {
+        const exactMatches = exactSymbolMatches(chunk, terms);
+        return { chunk, exactMatches, score: scoreChunk(chunk, terms, prompt) + explicitProjectBoost + exactMatches * 80 };
+    })
         .filter((item) => item.score >= MIN_RELEVANCE_SCORE)
-        .sort((left, right) => right.score - left.score || left.chunk.path.localeCompare(right.chunk.path) || left.chunk.startLine - right.chunk.startLine);
+        .sort((left, right) => right.exactMatches - left.exactMatches
+        || right.score - left.score || left.chunk.path.localeCompare(right.chunk.path) || left.chunk.startLine - right.chunk.startLine);
     if (scored.length) {
         return { chunks: dedupeChunks(scored), mode: "matched" };
     }
@@ -1133,10 +1179,14 @@ function selectRelevantChunks(index, prompt) {
         : { chunks: [], mode: "matched" };
 }
 function selectOverviewChunks(index) {
-    return index.chunks
+    return dedupeChunks(index.chunks
         .map((chunk) => ({ chunk, score: overviewScore(chunk) }))
         .filter((item) => item.score > 0)
-        .sort((left, right) => right.score - left.score || left.chunk.path.localeCompare(right.chunk.path) || left.chunk.startLine - right.chunk.startLine);
+        .sort((left, right) => right.score - left.score || left.chunk.path.localeCompare(right.chunk.path) || left.chunk.startLine - right.chunk.startLine));
+}
+function exactSymbolMatches(chunk, terms) {
+    const names = new Set(chunk.symbols.map(symbol => symbol.toLowerCase().normalize("NFKC")));
+    return terms.filter(term => names.has(term)).length;
 }
 function overviewScore(chunk) {
     const filePath = chunk.path.toLowerCase();
@@ -1300,14 +1350,25 @@ function buildScoreHints(filePath, language, symbols, keywords) {
     ]).slice(0, 80);
 }
 function dedupeChunks(items) {
-    const seen = new Set();
+    const ranges = new Map();
     const result = [];
     for (const item of items) {
-        if (seen.has(item.chunk.chunkId)) {
+        const key = JSON.stringify([item.chunk.path, item.chunk.startLine, item.chunk.endLine]);
+        const existing = ranges.get(key);
+        if (existing) {
+            // A structural declaration and lexical chunk can cover the same range.
+            // Merge metadata on request-local copies, not on the persisted index.
+            existing.chunk = { ...existing.chunk,
+                symbols: [...new Set([...existing.chunk.symbols, ...item.chunk.symbols])],
+                keywords: uniqueStrings([...existing.chunk.keywords, ...item.chunk.keywords]),
+                scoreHints: uniqueStrings([...existing.chunk.scoreHints, ...item.chunk.scoreHints])
+            };
+            existing.score = Math.max(existing.score, item.score);
             continue;
         }
-        seen.add(item.chunk.chunkId);
-        result.push(item);
+        const copy = { ...item };
+        ranges.set(key, copy);
+        result.push(copy);
     }
     return result;
 }
@@ -1443,8 +1504,9 @@ function normalizeStructure(value) {
     return structure;
 }
 function tokenize(value) {
-    const matches = value.toLowerCase().normalize("NFKC").match(/[\p{L}\p{N}_./:-]{3,}/gu) ?? [];
-    return [...new Set(matches.filter((term) => !STOP_WORDS.has(term)))].slice(0, 64);
+    const matches = value.toLowerCase().normalize("NFKC").replace(/\\/g, "/").match(/[\p{L}\p{N}\p{M}_./:-]+/gu) ?? [];
+    const terms = matches.map(term => term.replace(/[.:]+$/u, ""));
+    return [...new Set(terms.filter(term => term.length >= 3 && !STOP_WORDS.has(term)))].slice(0, 64);
 }
 function trimText(value, maxLength) {
     const normalized = value.replace(/\s+/g, " ").trim();
@@ -1521,9 +1583,11 @@ function toPosix(value) {
     return value.split(path.sep).join("/");
 }
 function sameFilePath(left, right) {
-    const a = path.resolve(left);
-    const b = path.resolve(right);
-    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return filePathKey(left) === filePathKey(right);
+}
+function filePathKey(filePath) {
+    const resolved = path.resolve(filePath);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 function clampInteger(value, min, max, fallback) {
     const numeric = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : fallback;

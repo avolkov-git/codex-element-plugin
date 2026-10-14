@@ -111,6 +111,7 @@ const REASONS: Record<string, string> = {
   source_limit: "Файл слишком большой для дополнительного разбора AST.",
   queue_limit: "Очередь разбора штатного AST заполнена.",
   parser_not_found: "Штатный XBSL-парсер не найден в установленном плагине 1С:Элемент.",
+  parser_ambiguous: "Найдено несколько штатных XBSL-парсеров; активная установка не определена однозначно.",
   helper_not_found: "В поставке Codex отсутствует адаптер штатного AST.",
   java_not_found: "Java для штатного AST не найдена. Проверьте E1C_IDE_JAVA_HOME или JAVA_HOME.",
   parser_api_unavailable: "API установленного штатного парсера несовместим с адаптером AST.",
@@ -351,30 +352,40 @@ export class NativeXbslAstService {
     else {
       const roots: string[] = [];
       if (env.LSP_SERVER_PATH) roots.push(path.join(env.LSP_SERVER_PATH, "repo"));
-      let extensionPaths = this.options.nativeExtensionPaths;
-      if (!extensionPaths) {
-        try {
-          const vscode = require("vscode") as typeof import("vscode");
-          extensionPaths = vscode.extensions.all.filter(extension =>
-            /(?:^|[.@-])appengine-plugin(?:$|[.@-])/i.test(extension.id)
-            || /(?:^|[\\/])@?1c-appengine-plugin$/i.test(extension.extensionPath)
-          ).map(extension => extension.extensionPath);
-        } catch { extensionPaths = []; }
-      }
-      if (!env.LSP_SERVER_PATH) {
-        for (const extension of extensionPaths) roots.push(path.join(extension, "bin", "appengine-lsp", "repo"));
-        for (const parent of [path.dirname(this.extensionPath), path.dirname(path.dirname(this.extensionPath))]) {
-          for (const name of ["@1c-appengine-plugin", "1c-appengine-plugin"]) roots.push(path.join(parent, name, "bin", "appengine-lsp", "repo"));
+      else {
+        let extensionPaths = this.options.nativeExtensionPaths;
+        if (!extensionPaths) {
+          try {
+            const vscode = require("vscode") as typeof import("vscode");
+            const registered = vscode.extensions.all.filter(extension =>
+              /(?:^|[.@-])appengine-plugin(?:$|[.@-])/i.test(extension.id)
+              || /(?:^|[\\/])@?1c-appengine-plugin$/i.test(extension.extensionPath)
+            );
+            const active = registered.filter(extension => extension.isActive);
+            extensionPaths = (active.length ? active : registered).map(extension => extension.extensionPath);
+          } catch { extensionPaths = []; }
+        }
+        const extensions = [...new Set(extensionPaths.map(extension => path.resolve(extension)))];
+        if (extensions.length > 1) return "parser_ambiguous";
+        // Registered/configured roots are authoritative, even when missing or ambiguous.
+        if (extensions.length) roots.push(path.join(extensions[0], "bin", "appengine-lsp", "repo"));
+        else {
+          for (const parent of [path.dirname(this.extensionPath), path.dirname(path.dirname(this.extensionPath))]) {
+            for (const name of ["@1c-appengine-plugin", "1c-appengine-plugin"]) roots.push(path.join(parent, name, "bin", "appengine-lsp", "repo"));
+          }
         }
       }
       for (const root of new Set(roots)) {
         try {
           const jars = (await fs.promises.readdir(root)).filter(name => /^com\.e1c\.g5rt\.lsp\.server\.appengine-[\w.-]+\.jar$/i.test(name));
           // Do not guess which of several native installations is active.
+          if (jars.length > 1) return "parser_ambiguous";
           if (jars.length === 1) candidates.push(path.join(root, jars[0]));
-          if (candidates.length) break;
-        } catch { /* The native extension is optional. */ }
+        } catch (error) {
+          if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return "discovery_failed";
+        }
       }
+      if (candidates.length > 1) return "parser_ambiguous";
     }
     const jar = candidates[0];
     const jarStat = jar && await fileStat(jar);

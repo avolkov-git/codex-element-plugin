@@ -36,10 +36,13 @@ export interface DocsReadToolArgs extends ContextToolArgs {
   query?: string;
   symbolNames?: readonly string[];
   expectedPlatformVersion?: string;
+  fragmentBlocks?: boolean;
 }
 
 export interface DocsOverviewToolArgs extends ContextToolArgs {
   query?: string;
+  expectedPlatformVersion?: string;
+  fragmentBlocks?: boolean;
 }
 
 type DocsToolArgs = DocsSearchToolArgs | DocsReadToolArgs | DocsOverviewToolArgs;
@@ -91,6 +94,7 @@ export class DocsToolsService {
     readonly query?: string;
     readonly symbolNames?: readonly string[];
     readonly expectedPlatformVersion?: string;
+    readonly fragmentBlocks?: boolean;
     readonly reason: string;
     readonly limits?: ContextToolLimits;
   }): Promise<ContextToolResult> {
@@ -105,7 +109,8 @@ export class DocsToolsService {
         title: options.title,
         query: options.query,
         symbolNames: options.symbolNames,
-        expectedPlatformVersion: options.expectedPlatformVersion
+        expectedPlatformVersion: options.expectedPlatformVersion,
+        fragmentBlocks: options.fragmentBlocks
       },
       reason: options.reason,
       mode: "managed-fallback",
@@ -118,6 +123,8 @@ export class DocsToolsService {
     readonly chatId: string;
     readonly turnId?: string;
     readonly query?: string;
+    readonly expectedPlatformVersion?: string;
+    readonly fragmentBlocks?: boolean;
     readonly reason: string;
     readonly limits?: ContextToolLimits;
   }): Promise<ContextToolResult> {
@@ -126,7 +133,7 @@ export class DocsToolsService {
       turnId: options.turnId,
       toolName: "docs.overview",
       source: DOCS_SOURCE,
-      args: { query: options.query },
+      args: { query: options.query, expectedPlatformVersion: options.expectedPlatformVersion, fragmentBlocks: options.fragmentBlocks },
       reason: options.reason,
       mode: "managed-fallback",
       limits: options.limits,
@@ -254,25 +261,7 @@ export class DocsToolsService {
       }, [], metadataFromRead(read));
     }
 
-    const text = trimToolBlock(formatReadBlock(read), request.limits.maxChars ?? DEFAULT_BLOCK_CHARS);
-    return createContextToolSuccess(request, [{
-      source: DOCS_SOURCE,
-      text,
-      matchCount: read.fragments.length,
-      mode: "matched",
-      metadata: {
-        roots: read.roots.length,
-        truncated: text.endsWith("…") || read.fragments.some((fragment) => fragment.truncated)
-      },
-      origin: {
-        toolName: request.toolName,
-        requestId: request.id,
-        root: read.roots.map((root) => root.root).join(";"),
-        path: read.fragments.map((fragment) => fragment.ref.sourcePath).join(";"),
-        title: read.fragments.map((fragment) => fragment.ref.title).join(";"),
-        corpus: unique(read.fragments.map((fragment) => fragment.ref.corpus)).join(",")
-      }
-    }], metadataFromRead(read));
+    return createDocsReadResult(request, read, {}, boundedLimit(request.limits.maxChars, DEFAULT_BLOCK_CHARS, 20_000));
   }
 
   private async executeReadSymbols(request: ContextToolRequest<DocsReadToolArgs>): Promise<ContextToolResult> {
@@ -328,15 +317,9 @@ export class DocsToolsService {
       const symbol = selected.get(fragment.ref.id);
       return symbol !== undefined && titleMatchesSymbol(fragment.ref.title, symbol);
     }).slice(0, maxItems);
-    const documentationVersions = fragments.map(fragment => compatibility(fragment.ref));
-    const versionCompatibility = summarizeDocumentationVersions(documentationVersions);
     const matchedSymbols = unique(fragments.map(fragment => selected.get(fragment.ref.id)!));
     const resultMetadata = {
       ...metadata, ...metadataFromRead({ ...read, fragments }), matchedSymbols,
-      versionCompatibility,
-      // Keep evidence flat so the context-tool metadata depth limit preserves it.
-      documentationVersions: documentationVersions.map(({ evidence, ...check }) =>
-        Object.fromEntries(Object.entries({ ...check, ...evidence }).filter(([, value]) => value !== undefined))),
       unmatchedSymbols: symbolNames.filter(symbol => !matchedSymbols.includes(symbol))
     };
     if (!fragments.length) {
@@ -344,23 +327,7 @@ export class DocsToolsService {
         code: "notFound", message: "Выбранные точные фрагменты документации больше не доступны.", retryable: true
       }, [], resultMetadata);
     }
-    const formatted = formatReadBlock({ ...read, fragments },
-      `Точное совпадение идентификаторов заголовков: ${matchedSymbols.join(", ")}. ` +
-      `Совместимость версии документации: ${documentationVersionLabel(versionCompatibility)}. ` +
-      "Сопоставлены только явные метки версий; совместимость API и соответствие разрешённому типу не проверены. " +
-      "Без точного совпадения версий не считайте описанный API подтверждённым для проекта.",
-      documentationVersions.map(formatDocumentationVersion));
-    const text = formatted.length > maxChars ? `${formatted.slice(0, maxChars - 1)}…` : formatted;
-    return createContextToolSuccess(request, [{
-      source: DOCS_SOURCE, text, matchCount: fragments.length, mode: "matched",
-      metadata: { ...resultMetadata, truncated: text.length < formatted.length || fragments.some(fragment => fragment.truncated) },
-      origin: {
-        toolName: request.toolName, requestId: request.id, root: read.roots.map(root => root.root).join(";"),
-        path: fragments.map(fragment => fragment.ref.sourcePath).join(";"),
-        title: fragments.map(fragment => fragment.ref.title).join(";"),
-        corpus: unique(fragments.map(fragment => fragment.ref.corpus)).join(",")
-      }
-    }], resultMetadata);
+    return createDocsReadResult(request, { ...read, fragments }, resultMetadata, maxChars);
   }
 
   private async executeOverview(request: ContextToolRequest<DocsOverviewToolArgs>): Promise<ContextToolResult> {
@@ -386,30 +353,81 @@ export class DocsToolsService {
       });
     }
 
-    const text = trimToolBlock(formatOverviewBlock(overview.fragments), request.limits.maxChars ?? DEFAULT_BLOCK_CHARS);
-    return createContextToolSuccess(request, [{
-      source: DOCS_SOURCE,
-      text,
-      matchCount: overview.fragments.length,
-      mode: "overview",
+    return createDocsReadResult(request, overview, { query: request.args.query },
+      boundedLimit(request.limits.maxChars, DEFAULT_BLOCK_CHARS, 20_000));
+  }
+}
+
+function createDocsReadResult(
+  request: ContextToolRequest<DocsReadToolArgs | DocsOverviewToolArgs>, read: DocsToolReadResult,
+  metadata: Record<string, unknown>, maxChars: number
+): ContextToolResult {
+  const expectedPlatformVersion = normalizePlatformVersion(request.args.expectedPlatformVersion);
+  const checksFor = (fragments: DocsToolReadResult["fragments"]) => fragments.map(fragment =>
+    compareDocumentationVersion(fragment.ref.id, expectedPlatformVersion, fragment.ref.documentationVersion));
+  const versionsFor = (fragments: DocsToolReadResult["fragments"]) => {
+    const checks = checksFor(fragments);
+    return {
+      ...(expectedPlatformVersion ? { expectedPlatformVersion } : {}),
+      versionCompatibility: summarizeDocumentationVersions(checks),
+      // Flat evidence survives the context-tool metadata depth limit.
+      documentationVersions: checks.map(({ evidence, ...check }) =>
+        Object.fromEntries(Object.entries({ ...check, ...evidence }).filter(([, value]) => value !== undefined)))
+    };
+  };
+  const groups = request.args.fragmentBlocks ? read.fragments.map(fragment => [fragment]) : [read.fragments];
+  const formattedBlocks = groups.map(fragments => {
+    const versionMetadata = versionsFor(fragments);
+    const matchedSymbols = getMetadataStringArray(metadata.matchedSymbols)
+      .filter(symbol => fragments.some(fragment => titleMatchesSymbol(fragment.ref.title, symbol)));
+    const introduction = (matchedSymbols.length ? `Точное совпадение идентификаторов заголовков: ${matchedSymbols.join(", ")}. ` : "")
+      + `Совместимость версии документации: ${documentationVersionLabel(versionMetadata.versionCompatibility)}. `
+      + "Сопоставлены только явные метки версий; совместимость API и соответствие разрешённому типу не проверены. "
+      + "Без точного совпадения версий не считайте описанный API подтверждённым для проекта.";
+    const overview = request.toolName === "docs.overview";
+    const text = formatReadBlock({ ...read, fragments }, introduction, checksFor(fragments).map(formatDocumentationVersion), overview);
+    return {
+      source: DOCS_SOURCE, text, matchCount: fragments.length, mode: overview ? "overview" as const : "matched" as const,
       metadata: {
-        roots: overview.roots.length,
-        corpora: overview.corpora.length,
-        truncated: text.endsWith("…") || overview.fragments.some((fragment) => fragment.truncated)
+        ...metadata, ...metadataFromRead({ ...read, fragments }), ...versionMetadata,
+        ...(matchedSymbols.length ? { matchedSymbols } : {}),
+        ...(request.args.fragmentBlocks ? {
+          fragmentId: fragments[0].ref.id,
+          fragmentBodyChars: fragments[0].text.length
+        } : {}),
+        truncated: fragments.some(fragment => fragment.truncated)
       },
       origin: {
-        toolName: request.toolName,
-        requestId: request.id,
-        root: overview.roots.map((root) => root.root).join(";"),
-        corpus: unique(overview.fragments.map((fragment) => fragment.ref.corpus)).join(",")
+        toolName: request.toolName, requestId: request.id, root: read.roots.map(root => root.root).join(";"),
+        path: fragments.map(fragment => fragment.ref.sourcePath).join(";"),
+        title: fragments.map(fragment => fragment.ref.title).join(";"),
+        corpus: unique(fragments.map(fragment => fragment.ref.corpus)).join(",")
       }
-    }], {
-      roots: overview.roots.map((root) => root.root),
-      corpora: overview.corpora.length,
-      fragments: overview.fragments.length,
-      query: request.args.query
+    };
+  });
+  // Satisfy short fragments first so their unused allocation can preserve longer bodies.
+  let remaining = maxChars;
+  const limits = new Map<number, number>();
+  formattedBlocks.map((block, index) => ({ index, chars: block.text.length }))
+    .sort((a, b) => a.chars - b.chars).forEach((block, index) => {
+      const limit = Math.min(block.chars, Math.floor(remaining / (formattedBlocks.length - index)));
+      limits.set(block.index, limit);
+      remaining -= limit;
     });
-  }
+  const blocks = formattedBlocks.flatMap((block, index) => {
+    const limit = limits.get(index) ?? 0;
+    if (!limit) return [];
+    const trimmed = block.text.length > limit;
+    const text = trimmed ? `${block.text.slice(0, limit - 1)}…` : block.text;
+    return [{ ...block, text, metadata: {
+      ...block.metadata,
+      ...(request.args.fragmentBlocks ? {
+        fragmentBodyChars: Math.max(0, Number(block.metadata.fragmentBodyChars) - (block.text.length - text.length + (trimmed ? 1 : 0)))
+      } : {}),
+      truncated: trimmed || block.metadata.truncated
+    } }];
+  });
+  return createContextToolSuccess(request, blocks, { ...metadata, ...metadataFromRead(read), ...versionsFor(read.fragments) });
 }
 
 function formatSearchBlock(search: DocsToolSearchResult): string {
@@ -422,26 +440,15 @@ function formatSearchBlock(search: DocsToolSearchResult): string {
   ].join("\n");
 }
 
-function formatReadBlock(read: DocsToolReadResult, introduction = "Use these documentation fragments as authoritative for the current answer. Do not mention this service block unless the user asks about sources.", versionNotes: readonly string[] = []): string {
+function formatReadBlock(read: DocsToolReadResult, introduction: string, versionNotes: readonly string[], overview = false): string {
   return [
-    "[DOCS TOOL: read]",
+    overview ? "[DOCS TOOL: overview]" : "[DOCS TOOL: read]",
+    ...(overview ? ["This is a limited overview slice of the configured documentation corpus, not the full corpus."] : []),
     introduction,
     "",
     ...read.fragments.map((fragment, index) => [
       formatFragmentRef(index + 1, fragment.ref),
       ...(versionNotes[index] ? [versionNotes[index]] : []),
-      fragment.text
-    ].join("\n"))
-  ].join("\n\n---\n\n");
-}
-
-function formatOverviewBlock(fragments: DocsToolReadResult["fragments"]): string {
-  return [
-    "[DOCS TOOL: overview]",
-    "This is a limited overview slice of the configured documentation corpus, not the full corpus.",
-    "",
-    ...fragments.map((fragment, index) => [
-      formatFragmentRef(index + 1, fragment.ref),
       fragment.text
     ].join("\n"))
   ].join("\n\n---\n\n");

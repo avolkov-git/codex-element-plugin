@@ -308,6 +308,9 @@ export class ProjectContextService implements vscode.Disposable {
   private changeRevision = 0;
   private forceReindexRevision = 0;
   private indexedRevision = 0;
+  private cacheFileRevision = 0;
+  private changeHistoryFloor = 0;
+  private readonly changedFiles = new Map<string, number>();
   private refreshTail: Promise<unknown> = Promise.resolve();
   private lastUsedChunks: ProjectContextDetails["lastUsedChunks"] = [];
   private readonly semanticCache = new Map<string, SemanticCacheEntry>();
@@ -512,9 +515,9 @@ export class ProjectContextService implements vscode.Disposable {
     }
 
     const scope = this.captureScope();
-    const { index: diskIndex, indexPath, workspaceRoot } = await this.ensureToolIndex(profileId, scope);
+    const { index: diskIndex, indexPath, workspaceRoot, fileRevision } = await this.ensureToolIndex(profileId, scope);
     this.assertScope(scope);
-    const snapshot = this.captureSnapshot(scope);
+    const snapshot = this.captureSnapshot(scope, fileRevision);
     const index = await this.withOpenDocuments(diskIndex, snapshot);
     this.assertSnapshot(snapshot, index);
     const fileHashes = new Map(index.files.map((file) => [file.path, file.hash]));
@@ -692,6 +695,7 @@ export class ProjectContextService implements vscode.Disposable {
       // A same-size rewrite can preserve mtime. Do not reuse that stale entry
       // on the next request solely because its stat metadata still matches.
       this.forceReindexRevision += 1;
+      this.changeRevision += 1;
       this.clearSemanticCache();
       throw new ProjectToolError("unavailable", "Файл изменился во время сборки проектного контекста. Повторите запрос.");
     }
@@ -727,9 +731,9 @@ export class ProjectContextService implements vscode.Disposable {
     readonly maxItems?: number;
   } = {}): Promise<ProjectToolSymbolsResult> {
     const scope = this.captureScope();
-    const { index: diskIndex, indexPath, workspaceRoot } = await this.ensureToolIndex(profileId, scope);
+    const { index: diskIndex, indexPath, workspaceRoot, fileRevision } = await this.ensureToolIndex(profileId, scope);
     this.assertScope(scope);
-    const snapshot = this.captureSnapshot(scope);
+    const snapshot = this.captureSnapshot(scope, fileRevision);
     const index = await this.withOpenDocuments(diskIndex, snapshot);
     this.assertSnapshot(snapshot, index);
     const maxItems = clampInteger(options.maxItems, 1, 120, 60);
@@ -808,12 +812,15 @@ export class ProjectContextService implements vscode.Disposable {
     const workspaceRoot = getWorkspaceRoot();
     if (!workspaceRoot) throw new ProjectToolError("unavailable", "Workspace folder is not available.");
     if (!this.bufferObservers.length) {
-      const invalidate = (document: vscode.TextDocument) => {
+      const invalidate = (document: vscode.TextDocument, diskChanged = false) => {
         if (document.uri.scheme !== "file") return;
         const root = getWorkspaceRoot();
         const relative = root && normalizeWorkspaceRelative(root, document.uri.fsPath);
         if (relative && !shouldSkipPath(path.basename(relative), relative)
-          && !BINARY_EXTENSIONS.has(path.extname(relative).toLowerCase())) this.clearSemanticCache();
+          && !BINARY_EXTENSIONS.has(path.extname(relative).toLowerCase())) {
+          if (diskChanged) this.markIndexDirty(root!, document.uri);
+          else this.clearSemanticCache();
+        }
       };
       if (typeof vscode.workspace.onDidChangeTextDocument === "function") {
         this.bufferObservers.push(vscode.workspace.onDidChangeTextDocument((event) => invalidate(event.document)));
@@ -822,7 +829,10 @@ export class ProjectContextService implements vscode.Disposable {
         this.bufferObservers.push(vscode.workspace.onDidOpenTextDocument(invalidate));
       }
       if (typeof vscode.workspace.onDidCloseTextDocument === "function") {
-        this.bufferObservers.push(vscode.workspace.onDidCloseTextDocument(invalidate));
+        this.bufferObservers.push(vscode.workspace.onDidCloseTextDocument(document => invalidate(document, true)));
+      }
+      if (typeof vscode.workspace.onDidSaveTextDocument === "function") {
+        this.bufferObservers.push(vscode.workspace.onDidSaveTextDocument(document => invalidate(document, true)));
       }
     }
     return { workspaceRoot, workspaceRevision: this.workspaceRevision };
@@ -886,9 +896,17 @@ export class ProjectContextService implements vscode.Disposable {
     return buffers;
   }
 
-  private captureSnapshot(scope: ProjectRequestScope): ProjectRequestSnapshot {
+  private captureSnapshot(scope: ProjectRequestScope, fileRevision: number): ProjectRequestSnapshot {
     this.assertScope(scope);
-    return { scope, fileRevision: this.changeRevision, buffers: this.openBuffers(scope.workspaceRoot) };
+    this.assertIndexRevision(fileRevision);
+    return { scope, fileRevision, buffers: this.openBuffers(scope.workspaceRoot) };
+  }
+
+  private assertIndexRevision(revision: number): void {
+    if (revision !== this.changeRevision) {
+      this.dirty = true;
+      throw new ProjectToolError("unavailable", "Файлы проекта изменились во время сборки индекса. Повторите запрос.");
+    }
   }
 
   private assertSnapshot(snapshot: ProjectRequestSnapshot, index?: ProjectIndex): void {
@@ -948,32 +966,36 @@ export class ProjectContextService implements vscode.Disposable {
     index: ProjectIndex;
     indexPath: string;
     workspaceRoot: string;
+    fileRevision: number;
   }> {
     if (!profileId) {
       throw new ProjectToolError("unavailable", "Codex profile is not selected.");
     }
     this.assertScope(scope);
     const { workspaceRoot } = scope;
-    const { index, indexPath } = await this.ensureIndex(profileId, workspaceRoot, scope);
+    const { index, indexPath, fileRevision } = await this.ensureIndex(profileId, workspaceRoot, scope);
     this.assertScope(scope);
-    return { index, indexPath, workspaceRoot };
+    this.assertIndexRevision(fileRevision);
+    return { index, indexPath, workspaceRoot, fileRevision };
   }
 
   private async ensureIndex(profileId: string, workspaceRoot: string, scope = this.captureScope()): Promise<{
     index: ProjectIndex;
     indexPath: string;
     stats: ProjectContextBuildStats;
+    fileRevision: number;
   }> {
     this.assertScope(scope);
     const operation = this.refreshTail.then(() => this.ensureIndexSerial(profileId, workspaceRoot, scope));
     this.refreshTail = operation.catch(() => undefined);
     const result = await operation;
     this.assertScope(scope);
+    this.assertIndexRevision(result.fileRevision);
     return result;
   }
 
   private async ensureIndexSerial(profileId: string, workspaceRoot: string, scope: ProjectRequestScope): Promise<{
-    index: ProjectIndex; indexPath: string; stats: ProjectContextBuildStats;
+    index: ProjectIndex; indexPath: string; stats: ProjectContextBuildStats; fileRevision: number;
   }> {
     this.assertScope(scope);
     this.ensureWatcher();
@@ -981,9 +1003,14 @@ export class ProjectContextService implements vscode.Disposable {
     const indexPath = this.indexPath(profileId, workspaceRoot);
     if (this.cachePath !== indexPath) {
       this.clearSemanticCache();
-      this.cache = await this.loadIndex(indexPath, workspaceRoot);
+      const loaded = await this.loadIndex(indexPath, workspaceRoot);
       this.assertScope(scope);
+      this.cache = loaded;
       this.cachePath = indexPath;
+      // Persisted indexes predate this process's observed changes, including
+      // changes already handled by another profile's in-memory index.
+      this.cacheFileRevision = 0;
+      this.indexedRevision = 0;
       this.dirty = true;
     }
 
@@ -991,6 +1018,7 @@ export class ProjectContextService implements vscode.Disposable {
       return {
         index: this.cache,
         indexPath,
+        fileRevision: this.cacheFileRevision,
         stats: {
           totalFiles: this.cache.files.length,
           totalChunks: this.cache.chunks.length,
@@ -1004,18 +1032,24 @@ export class ProjectContextService implements vscode.Disposable {
 
     const revision = this.changeRevision;
     const reindexRevision = this.forceReindexRevision;
-    const existing = reindexRevision === this.indexedRevision ? this.cache : undefined;
-    const refreshed = await this.refreshIndex(existing, workspaceRoot, () => this.assertScope(scope));
-    this.assertScope(scope);
+    const existing = reindexRevision === this.indexedRevision && this.cacheFileRevision >= this.changeHistoryFloor ? this.cache : undefined;
+    const assertCurrent = () => {
+      this.assertScope(scope);
+      this.assertIndexRevision(revision);
+    };
+    const refreshed = await this.refreshIndex(existing, workspaceRoot, this.cacheFileRevision, assertCurrent);
+    assertCurrent();
+    await this.writeIndex(indexPath, refreshed.index, assertCurrent);
+    assertCurrent();
     this.cache = refreshed.index;
     this.cachePath = indexPath;
+    this.cacheFileRevision = revision;
     this.indexedRevision = reindexRevision;
-    this.dirty = revision !== this.changeRevision || reindexRevision !== this.forceReindexRevision;
-    await this.writeIndex(indexPath, refreshed.index, () => this.assertScope(scope));
-    this.assertScope(scope);
+    this.dirty = false;
     return {
       index: refreshed.index,
       indexPath,
+      fileRevision: revision,
       stats: refreshed.stats
     };
   }
@@ -1038,7 +1072,7 @@ export class ProjectContextService implements vscode.Disposable {
     }
   }
 
-  private async refreshIndex(existing: ProjectIndex | undefined, workspaceRoot: string, assertScope: () => void): Promise<{
+  private async refreshIndex(existing: ProjectIndex | undefined, workspaceRoot: string, fileRevision: number, assertScope: () => void): Promise<{
     index: ProjectIndex;
     stats: ProjectContextBuildStats;
   }> {
@@ -1055,7 +1089,8 @@ export class ProjectContextService implements vscode.Disposable {
 
     for (const file of scanned.files) {
       const old = previousFiles.get(file.relativePath);
-      if (old && old.mtimeMs === file.mtimeMs && old.size === file.size && old.chunkIds.every((id) => previousChunks.has(id))) {
+      const changed = (this.changedFiles.get(filePathKey(file.absolutePath)) ?? 0) > fileRevision;
+      if (old && !changed && old.mtimeMs === file.mtimeMs && old.size === file.size && old.chunkIds.every((id) => previousChunks.has(id))) {
         files.push(old);
         for (const chunkId of old.chunkIds) {
           const chunk = previousChunks.get(chunkId);
@@ -1128,6 +1163,25 @@ export class ProjectContextService implements vscode.Disposable {
     return path.join(this.configRoot, "users", profileId, "workspaces", workspaceId(workspaceRoot), "project-index-v3.json");
   }
 
+  private markIndexDirty(workspaceRoot: string, uri?: vscode.Uri): void {
+    if (uri) {
+      if (uri.scheme !== "file") return;
+      const relative = normalizeWorkspaceRelative(workspaceRoot, uri.fsPath);
+      if (!relative || shouldSkipPath(path.basename(relative), relative)
+        || BINARY_EXTENSIONS.has(path.extname(relative).toLowerCase())) return;
+    }
+    this.dirty = true;
+    this.changeRevision += 1;
+    if (uri) this.changedFiles.set(filePathKey(uri.fsPath), this.changeRevision);
+    // Keep history for lazily loaded profile indexes without retaining an
+    // unbounded path log. Older indexes must fully refresh after compaction.
+    if (!uri || this.changedFiles.size > MAX_INDEX_FILES) {
+      this.changedFiles.clear();
+      this.changeHistoryFloor = this.changeRevision;
+    }
+    this.clearSemanticCache();
+  }
+
   private ensureWatcher(): void {
     const root = getWorkspaceRoot();
     if (this.watcher && this.watcherRoot === root) {
@@ -1143,17 +1197,7 @@ export class ProjectContextService implements vscode.Disposable {
 
     this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, "**/*"));
     this.watcherRoot = root;
-    const markDirty = (uri?: vscode.Uri) => {
-      if (uri) {
-        if (uri.scheme !== "file") return;
-        const relative = normalizeWorkspaceRelative(folder.uri.fsPath, uri.fsPath);
-        if (!relative || shouldSkipPath(path.basename(relative), relative)
-          || BINARY_EXTENSIONS.has(path.extname(relative).toLowerCase())) return;
-      }
-      this.dirty = true;
-      this.changeRevision += 1;
-      this.clearSemanticCache();
-    };
+    const markDirty = (uri?: vscode.Uri) => this.markIndexDirty(folder.uri.fsPath, uri);
     this.watcher.onDidCreate(markDirty);
     this.watcher.onDidChange(markDirty);
     this.watcher.onDidDelete(markDirty);
@@ -1330,9 +1374,13 @@ function selectRelevantChunks(index: ProjectIndex, prompt: string): { chunks: Sc
 
   const explicitProjectBoost = isExplicitProjectPrompt(prompt) ? 16 : 0;
   const scored = index.chunks
-    .map((chunk) => ({ chunk, score: scoreChunk(chunk, terms, prompt) + explicitProjectBoost }))
+    .map((chunk) => {
+      const exactMatches = exactSymbolMatches(chunk, terms);
+      return { chunk, exactMatches, score: scoreChunk(chunk, terms, prompt) + explicitProjectBoost + exactMatches * 80 };
+    })
     .filter((item) => item.score >= MIN_RELEVANCE_SCORE)
-    .sort((left, right) => right.score - left.score || left.chunk.path.localeCompare(right.chunk.path) || left.chunk.startLine - right.chunk.startLine);
+    .sort((left, right) => right.exactMatches - left.exactMatches
+      || right.score - left.score || left.chunk.path.localeCompare(right.chunk.path) || left.chunk.startLine - right.chunk.startLine);
 
   if (scored.length) {
     return { chunks: dedupeChunks(scored), mode: "matched" };
@@ -1344,10 +1392,15 @@ function selectRelevantChunks(index: ProjectIndex, prompt: string): { chunks: Sc
 }
 
 function selectOverviewChunks(index: ProjectIndex): ScoredChunk[] {
-  return index.chunks
+  return dedupeChunks(index.chunks
     .map((chunk) => ({ chunk, score: overviewScore(chunk) }))
     .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score || left.chunk.path.localeCompare(right.chunk.path) || left.chunk.startLine - right.chunk.startLine);
+    .sort((left, right) => right.score - left.score || left.chunk.path.localeCompare(right.chunk.path) || left.chunk.startLine - right.chunk.startLine));
+}
+
+function exactSymbolMatches(chunk: ProjectIndexChunk, terms: string[]): number {
+  const names = new Set(chunk.symbols.map(symbol => symbol.toLowerCase().normalize("NFKC")));
+  return terms.filter(term => names.has(term)).length;
 }
 
 function overviewScore(chunk: ProjectIndexChunk): number {
@@ -1532,14 +1585,25 @@ function buildScoreHints(filePath: string, language: string, symbols: string[], 
 }
 
 function dedupeChunks(items: ScoredChunk[]): ScoredChunk[] {
-  const seen = new Set<string>();
+  const ranges = new Map<string, ScoredChunk>();
   const result: ScoredChunk[] = [];
   for (const item of items) {
-    if (seen.has(item.chunk.chunkId)) {
+    const key = JSON.stringify([item.chunk.path, item.chunk.startLine, item.chunk.endLine]);
+    const existing = ranges.get(key);
+    if (existing) {
+      // A structural declaration and lexical chunk can cover the same range.
+      // Merge metadata on request-local copies, not on the persisted index.
+      existing.chunk = { ...existing.chunk,
+        symbols: [...new Set([...existing.chunk.symbols, ...item.chunk.symbols])],
+        keywords: uniqueStrings([...existing.chunk.keywords, ...item.chunk.keywords]),
+        scoreHints: uniqueStrings([...existing.chunk.scoreHints, ...item.chunk.scoreHints])
+      };
+      existing.score = Math.max(existing.score, item.score);
       continue;
     }
-    seen.add(item.chunk.chunkId);
-    result.push(item);
+    const copy = { ...item };
+    ranges.set(key, copy);
+    result.push(copy);
   }
   return result;
 }
@@ -1689,8 +1753,9 @@ function normalizeStructure(value: unknown): ProjectStructure | undefined {
 }
 
 function tokenize(value: string): string[] {
-  const matches = value.toLowerCase().normalize("NFKC").match(/[\p{L}\p{N}_./:-]{3,}/gu) ?? [];
-  return [...new Set(matches.filter((term) => !STOP_WORDS.has(term)))].slice(0, 64);
+  const matches = value.toLowerCase().normalize("NFKC").replace(/\\/g, "/").match(/[\p{L}\p{N}\p{M}_./:-]+/gu) ?? [];
+  const terms = matches.map(term => term.replace(/[.:]+$/u, ""));
+  return [...new Set(terms.filter(term => term.length >= 3 && !STOP_WORDS.has(term)))].slice(0, 64);
 }
 
 function trimText(value: string, maxLength: number): string {
@@ -1776,9 +1841,12 @@ function toPosix(value: string): string {
 }
 
 function sameFilePath(left: string, right: string): boolean {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return filePathKey(left) === filePathKey(right);
+}
+
+function filePathKey(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 function clampInteger(value: unknown, min: number, max: number, fallback: number): number {

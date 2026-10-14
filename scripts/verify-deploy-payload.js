@@ -20,6 +20,7 @@ const strict = args.strict;
 const allowLfsPointer = args.allowLfsPointer && !strict;
 const errors = [];
 const warnings = [];
+const declaredBrowserPlatforms = new Set();
 
 checkRoot(root);
 checkRequiredFiles(root);
@@ -175,6 +176,18 @@ function checkPackageMetadata(value) {
       warnings.push(`package.json ${field} is missing or empty; XBSL.IO will warn about it.`);
     }
   }
+  if (strict && Array.isArray(manifest.xbsl?.package?.requiredFiles)) {
+    for (const file of manifest.xbsl.package.requiredFiles) {
+      if (typeof file !== "string" || !/^browser[\\/]/.test(file)) continue;
+      const platform = file.split("/")[1];
+      if (!targets.some(target => target.platformId === platform)) {
+        errors.push(`unknown browser platform in requiredFiles: ${file}`);
+        continue;
+      }
+      declaredBrowserPlatforms.add(platform);
+      validateBrowserRuntimeFile(value, file, `required browser file ${file}`, false, false);
+    }
+  }
   if (!Array.isArray(manifest.categories) || !manifest.categories.length
     || manifest.categories.some((category) => typeof category !== "string" || !category.trim())) {
     warnings.push("package.json categories should be a non-empty array of strings for XBSL.IO.");
@@ -232,39 +245,69 @@ function checkRuntimeBinaries(value) {
 }
 
 function checkBrowserRuntime(value) {
-  if (!args.requireBrowser) {
-    return;
+  const platforms = new Set(declaredBrowserPlatforms);
+  if (args.requireBrowser) {
+    for (const target of requestedRuntimeTargets()) platforms.add(target.platformId);
   }
-  for (const target of requestedRuntimeTargets()) {
-    const runtimeRoot = path.join(value, "browser", target.platformId);
+  const browserRoot = path.join(value, "browser");
+  if (strict && fs.existsSync(browserRoot)) {
+    if (!fs.lstatSync(browserRoot).isDirectory()) {
+      errors.push(`browser root must be a directory, not a link or file: ${browserRoot}`);
+      return;
+    }
+    for (const entry of fs.readdirSync(browserRoot)) {
+      if (!targets.some(target => target.platformId === entry)) errors.push(`unknown browser runtime platform: ${entry}`);
+      else platforms.add(entry);
+    }
+  }
+  const requested = new Set(requestedRuntimeTargets().map(target => target.platformId));
+  for (const platform of platforms) {
+    if (args.platformOnly && !requested.has(platform)) errors.push(`unexpected browser runtime in platform-only payload: ${platform}`);
+    const runtimeRoot = path.join(value, "browser", platform);
     const manifestPath = path.join(runtimeRoot, "runtime.json");
     if (!fs.existsSync(manifestPath)) {
-      errors.push(`missing browser runtime for ${target.platformId}: ${manifestPath}`);
+      errors.push(`missing browser runtime for ${platform}: ${manifestPath}`);
+      continue;
+    }
+    if (!fs.lstatSync(runtimeRoot).isDirectory()) {
+      errors.push(`browser runtime must be a directory, not a link: ${runtimeRoot}`);
       continue;
     }
     let manifest;
     try {
-      manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      const text = readPrefix(manifestPath, 1024 * 1024 + 1);
+      if (text.length > 1024 * 1024) throw new Error("runtime.json exceeds 1 MiB");
+      manifest = JSON.parse(text.toString("utf8"));
     } catch (error) {
-      errors.push(`browser runtime manifest is invalid for ${target.platformId}: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`browser runtime manifest is invalid for ${platform}: ${error instanceof Error ? error.message : String(error)}`);
       continue;
     }
-    if (manifest.schemaVersion !== 1 || manifest.platformId !== target.platformId) {
-      errors.push(`browser runtime manifest does not match ${target.platformId}.`);
+    if (!manifest || manifest.schemaVersion !== 1 || manifest.platformId !== platform) {
+      errors.push(`browser runtime manifest does not match ${platform}.`);
       continue;
     }
+    walk(runtimeRoot, (filename, entry) => {
+      if (!entry.isSymbolicLink()) return;
+      try {
+        const real = fs.realpathSync(filename);
+        if (!real.startsWith(fs.realpathSync(runtimeRoot) + path.sep)) throw new Error("link escapes runtime");
+      } catch {
+        errors.push(`broken or escaping browser runtime link: ${filename}`);
+      }
+    });
     for (const [field, executable] of [
       ["nodePath", true],
       ["launcherPath", false],
       ["browserExecutablePath", true]
     ]) {
-      validateBrowserRuntimeFile(runtimeRoot, manifest[field], `${target.platformId} ${field}`, executable && !target.platformId.startsWith("win32-"));
+      validateBrowserRuntimeFile(runtimeRoot, manifest[field], `${platform} ${field}`, executable && !platform.startsWith("win32-"));
     }
   }
 }
 
-function validateBrowserRuntimeFile(runtimeRoot, relativePath, label, requireExecutable) {
-  if (typeof relativePath !== "string" || !relativePath || path.isAbsolute(relativePath)) {
+function validateBrowserRuntimeFile(runtimeRoot, relativePath, label, requireExecutable, requireNonempty = true) {
+  if (typeof relativePath !== "string" || !relativePath || path.isAbsolute(relativePath) || path.win32.isAbsolute(relativePath)
+    || relativePath.includes("\\") || relativePath.split("/").some(part => !part || part === "." || part === "..")) {
     errors.push(`${label} has an unsafe manifest path.`);
     return;
   }
@@ -275,17 +318,35 @@ function validateBrowserRuntimeFile(runtimeRoot, relativePath, label, requireExe
     errors.push(`${label} escapes the browser runtime root.`);
     return;
   }
-  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
-    errors.push(`${label} is missing: ${candidate}`);
-    return;
+  try {
+    const stat = fs.statSync(candidate);
+    if (!stat.isFile()) throw new Error("expected a file");
+    if (requireNonempty && !stat.size) throw new Error("expected a nonempty file");
+    if (!fs.realpathSync(candidate).startsWith(fs.realpathSync(runtimeRoot) + path.sep)) throw new Error("file escapes runtime");
+    const head = readPrefix(candidate, 128).toString("utf8");
+    if (head.startsWith("version https://git-lfs.github.com/spec/v1")) {
+      errors.push(`${label} is a Git LFS pointer instead of a real file.`);
+    }
+    if (requireExecutable && (stat.mode & 0o111) === 0) errors.push(`${label} has no executable bit.`);
+  } catch (error) {
+    errors.push(`${label} is missing or invalid: ${candidate}: ${error.message}`);
   }
-  const stat = fs.statSync(candidate);
-  const head = fs.readFileSync(candidate).subarray(0, 128).toString("utf8");
-  if (head.startsWith("version https://git-lfs.github.com/spec/v1")) {
-    errors.push(`${label} is a Git LFS pointer instead of a real file.`);
-  }
-  if (requireExecutable && (stat.mode & 0o111) === 0) {
-    errors.push(`${label} has no executable bit.`);
+}
+
+function readPrefix(filename, limit) {
+  const descriptor = fs.openSync(filename, "r");
+  try {
+    if (!fs.fstatSync(descriptor).isFile()) throw new Error("expected a file");
+    const buffer = Buffer.alloc(limit);
+    let length = 0;
+    while (length < limit) {
+      const count = fs.readSync(descriptor, buffer, length, limit - length, length);
+      if (!count) break;
+      length += count;
+    }
+    return buffer.subarray(0, length);
+  } finally {
+    fs.closeSync(descriptor);
   }
 }
 

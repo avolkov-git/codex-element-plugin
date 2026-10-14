@@ -142,7 +142,7 @@ class ContextTurnOrchestrator {
             this.options.logger.info(`Rules context skipped by router: route=${routing.route}; reason=${routing.reason}.`);
         }
         const budget = (0, contextBudgetPlanner_1.applyContextBudget)(contextBlocks, { route: routing.route });
-        const worklog = buildContextTurnWorklog(toolWorklog, explicitContextBlocks, budget.blocks);
+        const worklog = buildContextTurnWorklog(toolWorklog, explicitContextBlocks, budget);
         if (contextBlocks.length) {
             this.options.logger.info(`context budget: mode=${budget.mode}, route=${budget.route}, limit=${budget.totalCharsLimit}, ` +
                 `beforeChars=${budget.beforeChars}, afterChars=${budget.afterChars}, ` +
@@ -259,7 +259,8 @@ function normalizeDiagnosticsRoute(route) {
 function normalizeProjectRoute(route) {
     return route === "added" ? "added" : "skip";
 }
-function buildContextTurnWorklog(toolEntries, explicitBlocks, selectedBlocks) {
+function buildContextTurnWorklog(toolEntries, explicitBlocks, budget) {
+    const selectedBlocks = budget.blocks;
     const selectedSources = new Set(selectedBlocks.map((block) => block.source));
     const entries = [];
     const docs = aggregateToolEntries(toolEntries, "docs");
@@ -310,10 +311,10 @@ function buildContextTurnWorklog(toolEntries, explicitBlocks, selectedBlocks) {
         });
     }
     const editorFileBlocks = selectedBlocks.filter((block) => block.source === "editorFile");
-    if (editorFileBlocks.length) {
+    if (editorFileBlocks.length || budget.sourceReports.some((report) => report.source === "editorFile" && report.droppedBlocks > 0)) {
         entries.push({
             source: "editorFile",
-            label: "Изучен текущий файл",
+            label: editorFileBlocks.length ? "Изучен текущий файл" : "Текущий файл не включён: лимит контекста",
             status: "completed",
             itemCount: editorFileBlocks.reduce((total, block) => total + block.matchCount, 0),
             blockCount: editorFileBlocks.length,
@@ -322,10 +323,10 @@ function buildContextTurnWorklog(toolEntries, explicitBlocks, selectedBlocks) {
         });
     }
     const editorSelectionBlocks = selectedBlocks.filter((block) => block.source === "editorSelection");
-    if (editorSelectionBlocks.length) {
+    if (editorSelectionBlocks.length || budget.sourceReports.some((report) => report.source === "editorSelection" && report.droppedBlocks > 0)) {
         entries.push({
             source: "editorSelection",
-            label: "Изучен выделенный фрагмент",
+            label: editorSelectionBlocks.length ? "Изучен выделенный фрагмент" : "Выделенный фрагмент не включён: лимит контекста",
             status: "completed",
             itemCount: editorSelectionBlocks.reduce((total, block) => total + block.matchCount, 0),
             blockCount: editorSelectionBlocks.length,
@@ -333,7 +334,19 @@ function buildContextTurnWorklog(toolEntries, explicitBlocks, selectedBlocks) {
             truncated: false
         });
     }
-    const visibleEntries = entries.filter((entry) => entry.label.trim().length > 0);
+    const visibleEntries = entries.filter((entry) => entry.label.trim().length > 0).map((entry) => {
+        const blocks = selectedBlocks.filter((block) => block.source === entry.source);
+        const report = budget.sourceReports.find((item) => item.source === entry.source);
+        const truncated = entry.truncated || Boolean(report && (report.trimmedBlocks || report.droppedBlocks))
+            || blocks.some((block) => typeof block.metadata?.budgetTrimmedFromChars === "number");
+        return {
+            ...entry,
+            label: truncated && blocks.length && entry.status === "completed" ? `${entry.label} (контекст сокращён)` : entry.label,
+            blockCount: blocks.length,
+            chars: blocks.reduce((total, block) => total + block.text.length, 0),
+            truncated
+        };
+    });
     return {
         entries: visibleEntries,
         label: visibleEntries.map((entry) => entry.label).join(", "),

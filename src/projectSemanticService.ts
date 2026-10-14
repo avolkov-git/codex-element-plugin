@@ -4,7 +4,7 @@ import * as vscode from "vscode";
 import { Logger } from "./logger";
 import { analyzeProjectStructure, ProjectStructure, StructureSymbol } from "./projectStructure";
 import { NativeXbslAstService } from "./nativeXbslAstService";
-import { ElementLanguageService, ElementLanguageResult, ElementLanguageSymbol } from "./elementLanguageService";
+import { ElementLanguageService, ElementLanguageResult, ElementLanguageSymbol, ElementLanguageRange } from "./elementLanguageService";
 
 interface SourceFile { path: string; hash: string; structure?: ProjectStructure }
 interface SourceText { text: string; truncated: boolean; fromOpenDocument: boolean; startLine: number; endLine: number }
@@ -23,7 +23,11 @@ interface SemanticRequest {
   readFile: (filePath: string, startLine?: number, endLine?: number) => Promise<SourceText>;
 }
 export interface SemanticLink {
-  from: { path: string; startLine: number; endLine: number };
+  from: {
+    path: string; startLine: number; endLine: number;
+    /** Zero-based UTF-16 columns, end exclusive; omitted for line-only structural evidence. */
+    startCharacter?: number; endCharacter?: number;
+  };
   name: string;
   kind: string;
   confidence: "lsp" | "structural" | "candidate" | "ambiguous" | "unresolved";
@@ -313,7 +317,14 @@ export class ProjectSemanticService {
         const nameNode = invocationName(call);
         const name = nameNode?.attributes.name;
         if (typeof name !== "string") continue;
-        if (definitions.some(link => link.name === name && link.from.startLine >= call.startLine && link.from.startLine <= call.endLine)) continue;
+        const offset = identifierOffset(nameNode, source.text);
+        const position = offset === undefined ? undefined : positionAtOffset(source.text, offset);
+        const from: SemanticLink["from"] = position
+          ? { path: selection.path, startLine: position.line + 1, endLine: position.line + 1,
+            startCharacter: position.character, endCharacter: position.character + name.length }
+          : { path: selection.path, startLine: call.startLine, endLine: call.endLine };
+        if (position && definitions.some(link => link.name === name && link.from.startLine === from.startLine
+          && link.from.startCharacter === from.startCharacter)) continue;
         let candidateFiles = [selection.path];
         let kind = "native-call";
         if (call.kind !== "StaticMethodInvocation" || hasNamespace(nameNode)) {
@@ -321,7 +332,7 @@ export class ProjectSemanticService {
           const receiver = call.children.find(node => node.role === "prefix")?.children.find(node => node.role === "source");
           const moduleName = receiver?.kind === "StaticVariableAccess" ? receiver.attributes.name : undefined;
           if (typeof moduleName !== "string" || hasNamespace(receiver) || shadowsName(method, moduleName)) {
-            result.links.push({ from: { path: selection.path, startLine: call.startLine, endLine: call.endLine },
+            result.links.push({ from,
               kind: "dynamic-call", name, confidence: "unresolved", targets: [] });
             continue;
           }
@@ -340,7 +351,7 @@ export class ProjectSemanticService {
             .map(file => file.path);
           kind = "module-call";
           if (!candidateFiles.length) {
-            result.links.push({ from: { path: selection.path, startLine: call.startLine, endLine: call.endLine },
+            result.links.push({ from,
               kind: "dynamic-call", name, confidence: "unresolved", targets: [] });
             continue;
           }
@@ -356,7 +367,7 @@ export class ProjectSemanticService {
           }
         }
         const unique = uniqueTargets(targets);
-        const link: SemanticLink = { from: { path: selection.path, startLine: call.startLine, endLine: call.endLine }, kind, name,
+        const link: SemanticLink = { from, kind, name,
           confidence: unique.length > 1 || candidateFiles.length > 1 ? "ambiguous" : unique.length ? "candidate" : "unresolved", targets: unique };
         if (!result.links.some(existing => linkKey(existing) === linkKey(link))) result.links.push(link);
         for (const target of unique.slice(0, 2)) enqueue({ ...target, source: "native-ast", purpose: "implementation",
@@ -417,7 +428,8 @@ export class ProjectSemanticService {
     const lines = text.split(/\r?\n/);
     for (const query of language.queries) {
       const line = lines[query.position.line] ?? "";
-      const name = line.slice(query.position.character).match(/^[\p{L}_][\p{L}\p{N}_]*/u)?.[0] ?? "символ";
+      const identifier = line.slice(query.position.character).match(/^[\p{L}_][\p{L}\p{N}_]*/u)?.[0];
+      const name = identifier ?? "символ";
       if (query.hover) {
         result.hovers.push({ path: filePath, line: query.position.line + 1, text: query.hover.slice(0, 1200) });
         if (name !== "символ") docs.add(name);
@@ -427,18 +439,31 @@ export class ProjectSemanticService {
         let uri: vscode.Uri;
         try { uri = vscode.Uri.parse(definition.uri); } catch { continue; }
         if (uri.scheme !== "file") continue;
-        const relative = path.relative(request.workspaceRoot, uri.fsPath).split(path.sep).join("/");
-        if (path.isAbsolute(relative) || relative === ".." || relative.startsWith("../")) continue;
-        // Keep the same workspace allowlist as the disk index. readFile rechecks realpath.
-        if (!request.files.some((file) => file.path === relative)) continue;
+        const indexedPath = indexedDefinitionPath(request, uri.fsPath);
+        if (!indexedPath) continue;
         const range = definition.selectionRange ?? definition;
-        targets.push({ path: relative, startLine: range.startLine, endLine: range.endLine });
+        targets.push({ path: indexedPath, startLine: range.startLine, endLine: inclusiveEndLine(range) });
       }
       const unique = uniqueTargets(targets);
-      if (unique.length) result.links.push({ from: { path: filePath, startLine: query.position.line + 1, endLine: query.position.line + 1 },
+      if (unique.length) result.links.push({ from: { path: filePath, startLine: query.position.line + 1, endLine: query.position.line + 1,
+        startCharacter: query.position.character, endCharacter: query.position.character + (identifier?.length ?? 0) },
         name, kind: "definition", confidence: unique.length > 1 ? "ambiguous" : "lsp", targets: unique });
     }
   }
+}
+
+function indexedDefinitionPath(request: SemanticRequest, fsPath: string): string | undefined {
+  const relative = path.relative(request.workspaceRoot, fsPath).split(path.sep).join("/");
+  if (path.isAbsolute(relative) || relative === ".." || relative.startsWith("../")) return undefined;
+  // Only Windows paths admit casing differences; retain the indexed spelling for reads and hashes.
+  // Ambiguous identities fail closed, and readFile still rechecks realpath against the workspace.
+  const matches = request.files.filter(file => path.sep === "\\"
+    ? file.path.toLowerCase() === relative.toLowerCase() : file.path === relative);
+  return matches.length === 1 ? matches[0].path : undefined;
+}
+
+function inclusiveEndLine(range: ElementLanguageRange): number {
+  return range.endCharacter === 0 && range.endLine > range.startLine ? range.endLine - 1 : range.endLine;
 }
 
 export function isCompanion(left: string, right: string): boolean {
@@ -535,7 +560,7 @@ function mergeLanguageSymbols(current: SemanticSymbolEntry[], incoming: readonly
     if (match?.source === "native-ast") continue;
     const scope = lspScope(symbol, incoming);
     const entry: SemanticSymbolEntry = { symbol: {
-      name: symbol.name, kind: String(symbol.kind), startLine: symbol.startLine, endLine: symbol.endLine,
+      name: symbol.name, kind: String(symbol.kind), startLine: symbol.startLine, endLine: inclusiveEndLine(symbol),
       selectionLine: location.startLine, selectionCharacter: location.startCharacter ?? 0
     }, source: "lsp", scope: hasAst ? "unknown" : scope === "nested" || match?.scope === "nested" ? "nested" : scope };
     if (match) merged[merged.indexOf(match)] = entry; else merged.push(entry);
@@ -544,8 +569,9 @@ function mergeLanguageSymbols(current: SemanticSymbolEntry[], incoming: readonly
 }
 
 function lspScope(symbol: ElementLanguageSymbol, symbols: readonly ElementLanguageSymbol[]): SemanticSymbolEntry["scope"] {
-  const containers = symbols.filter((candidate) => candidate !== symbol && candidate.startLine <= symbol.startLine && candidate.endLine >= symbol.endLine
-    && (candidate.startLine < symbol.startLine || candidate.endLine > symbol.endLine));
+  const endLine = inclusiveEndLine(symbol);
+  const containers = symbols.filter((candidate) => candidate !== symbol && candidate.startLine <= symbol.startLine && inclusiveEndLine(candidate) >= endLine
+    && (candidate.startLine < symbol.startLine || inclusiveEndLine(candidate) > endLine));
   // File/Module wrappers do not introduce a class/method scope; all other containers do.
   if (containers.some((container) => container.kind !== 0 && container.kind !== 1)) return "nested";
   if (symbol.containerName) {
@@ -572,26 +598,42 @@ function positionsFromAst(root: TreeNode, text: string, query: string, focus: re
     const invocation = /MethodInvocation$/.test(node.kind);
     const prefix = invocation ? node.children.find((child) => child.role === "prefix") : undefined;
     const named = invocation ? prefix?.children.find((child) => child.role === "name") ?? prefix : node.kind === "TypeName" ? node : undefined;
-    if (!named || typeof named.attributes.name !== "string" || named.startOffset < 0 || named.endOffset <= named.startOffset) return;
-    // Use the native name node, not the start of a chained receiver or a whole generic type.
-    const identifiers = [...text.slice(named.startOffset, named.endOffset).matchAll(/[\p{L}_][\p{L}\p{N}_]*/gu)];
-    const identifier = identifiers.reverse().find((match) => match[0] === named.attributes.name);
-    if (!identifier) return;
-    if (focus.length && !focus.some(range => overlaps(node, range)) && !containsIdentifier(query, identifier[0])) return;
-    candidates.push({ offset: named.startOffset + identifier.index!, score: containsIdentifier(query, identifier[0]) ? 2 : invocation ? 1 : 0 });
+    const offset = identifierOffset(named, text);
+    if (offset === undefined || typeof named?.attributes.name !== "string") return;
+    if (focus.length && !focus.some(range => overlaps(node, range)) && !containsIdentifier(query, named.attributes.name)) return;
+    candidates.push({ offset, score: containsIdentifier(query, named.attributes.name) ? 2 : invocation ? 1 : 0 });
   });
   const offsets = [...new Set(candidates.sort((a, b) => b.score - a.score || a.offset - b.offset).map((item) => item.offset))].slice(0, limit);
-  return offsets.map((offset) => {
-    const prefix = text.slice(0, offset);
-    return { line: (prefix.match(/\n/g) ?? []).length, character: offset - prefix.lastIndexOf("\n") - 1 };
-  });
+  return offsets.map(offset => positionAtOffset(text, offset));
+}
+
+function identifierOffset(node: TreeNode | undefined, text: string): number | undefined {
+  if (!node || typeof node.attributes.name !== "string" || node.startOffset < 0 || node.endOffset <= node.startOffset) return undefined;
+  // Use the native name node, not the start of a receiver or a whole generic type.
+  const identifiers = [...text.slice(node.startOffset, node.endOffset).matchAll(/[\p{L}_][\p{L}\p{N}_]*/gu)];
+  const identifier = identifiers.reverse().find(match => match[0] === node.attributes.name);
+  return identifier ? node.startOffset + identifier.index! : undefined;
+}
+
+function positionAtOffset(text: string, offset: number): { line: number; character: number } {
+  const prefix = text.slice(0, offset);
+  return { line: (prefix.match(/\n/g) ?? []).length, character: offset - prefix.lastIndexOf("\n") - 1 };
 }
 
 function contextIntent(query: string): "implementation" | "declaration" {
-  // Only explicit declaration questions omit bodies. Unknown and behavioural questions keep code.
-  const request = query.replace(/(?:тело\s+(?:метода\s+)?не\s+(?:нужно|нужен|требуется|показывай)|без\s+тела(?:\s+метода)?|(?:do\s+not|don['’]t)\s+(?:show|include)\s+(?:the\s+)?(?:method\s+)?body|without\s+(?:the\s+)?(?:method\s+)?body)/giu, "");
-  return /(?:сигнатур|signature)/iu.test(request) && !/(?:почему|как\s+работает|исправ|измен|ошиб|провер|реализац|тело|логик|why|fix|implement)/iu.test(request)
-    ? "declaration" : "implementation";
+  // Omitting implementation requires an explicit opt-in; mixed or unclear requests keep bodies.
+  if (!/(?:сигнатур|\bsignatures?\b)/iu.test(query)) return "implementation";
+  const withoutBody = /(?:тело\s+(?:метода\s+)?не\s+(?:нужно|нужен|требуется|показывай)|без\s+тела(?:\s+метода)?|(?:do\s+not|don['’]t)\s+(?:show|include)\s+(?:the\s+)?(?:method\s+)?body|without\s+(?:the\s+)?(?:method\s+)?body)/giu;
+  const request = query.replace(withoutBody, "");
+  if (/(?<![\p{L}\p{N}_])(?:не|not|never|don['’]t)(?![\p{L}\p{N}_])/iu.test(request)) return "implementation";
+  if (/(?:почему|как\s+работает|исправ|измен|ошиб|провер|реализац|тело|логик|алгоритм|поведени|\b(?:why|fix|implement\w*|algorithm\w*|behavio\w*|body|explain)\b)/iu.test(request)) return "implementation";
+  // Signature facets can be listed together; other additional requests need implementation.
+  const signatureFacet = /^(?:(?:его|е[её]|их|the|its|their)\s+)?(?:параметр[\p{L}]*|аргумент[\p{L}]*|значени[\p{L}]*\s+по\s+умолчанию|возвращаем[\p{L}]*\s+тип[\p{L}]*|тип[\p{L}]*|return\s+types?|parameters?|arguments?|default\s+values?)(?![\p{L}\p{N}_])/iu;
+  for (const conjunction of request.matchAll(/(?<![\p{L}\p{N}_])(?:и|также|плюс|and|also)(?![\p{L}\p{N}_])\s*/giu)) {
+    if (!signatureFacet.test(request.slice(conjunction.index! + conjunction[0].length))) return "implementation";
+  }
+  const onlySignature = /(?:(?:только|лишь|исключительно)\s+сигнатур|\b(?:only|just)\s+(?:[\p{L}\p{N}_'’]+\s+){0,3}signatures?\b|\bsignatures?\s+only\b)/iu.test(request);
+  return onlySignature || request !== query ? "declaration" : "implementation";
 }
 
 function overlaps(left: { startLine: number; endLine: number }, right: { startLine: number; endLine: number }): boolean {
@@ -687,7 +729,7 @@ export function formatSemanticContext(context: SemanticContextResult, maxChars =
   }
   for (const text of [
     ...context.providers.map((provider) => `${provider.path}: AST=${provider.ast}, LSP=${provider.lsp}, parser=${provider.parserVersion ?? "недоступен"}`),
-    ...context.links.slice(0, 48).map((link) => `${link.from.path}:${link.from.startLine} ${link.kind} ${link.name} [${link.confidence}] -> ${link.targets.map((target) => `${target.path}:${target.startLine}-${target.endLine}`).join(", ") || "не разрешено"}`),
+    ...context.links.slice(0, 48).map((link) => `${link.from.path}:${link.from.startLine}${link.from.startCharacter === undefined ? "" : `:${link.from.startCharacter + 1}`} ${link.kind} ${link.name} [${link.confidence}] -> ${link.targets.map((target) => `${target.path}:${target.startLine}-${target.endLine}`).join(", ") || "не разрешено"}`),
     ...context.hovers.slice(0, 3).map((hover) => `LSP hover ${hover.path}:${hover.line}: ${hover.text.slice(0, 800)}`),
     ...context.diagnostics.slice(3, 8).map((diagnostic) => `Замечание: ${diagnostic}`)
   ]) append(text);

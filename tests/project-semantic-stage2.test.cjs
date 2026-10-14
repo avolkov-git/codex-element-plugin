@@ -47,7 +47,7 @@ function positionAt(text, line, token) {
 function languageFor(sources, facts = [], transform = (file, reply) => reply) {
   const calls = [];
   const served = new Set();
-  const prepared = facts.map((fact) => ({ ...fact, position: positionAt(sources[fact.path], fact.line, fact.token) }));
+  const prepared = facts.map((fact) => ({ ...fact, position: fact.position ?? positionAt(sources[fact.path], fact.line, fact.token) }));
   return {
     calls, served,
     async inspect(document, positions) {
@@ -287,11 +287,196 @@ function signatureFixture() {
 }
 
 for (const real of [false, true]) {
+  test(`${real ? "real" : "fixture"} AST: declaration-only requires an explicit, unmixed opt-in`, { skip: real && !realJar }, async (t) => {
+    const { sources, specs, facts } = signatureFixture();
+    const ast = parserFor(t, sources, specs, real);
+    const queries = [
+      ["Покажи только сигнатуру Compute", true],
+      ["Покажи сигнатуру Compute без тела", true],
+      ["Покажи сигнатуру Compute, тело не нужно", true],
+      ["Покажи только сигнатуру Compute: параметры, значение по умолчанию и возвращаемый тип. Тело метода не нужно.", true],
+      ["Покажи только сигнатуру Compute и тип результата", true],
+      ["Show only Compute signature", true],
+      ["Show Compute signature only", true],
+      ["Show Compute signature without the body", true],
+      ["Show Compute signature; don't include the body", true],
+      ["Show only Compute signature: parameters and return type", true],
+      ["Покажи сигнатуру и алгоритм Compute", false],
+      ["Не ограничивайся сигнатурой Compute", false],
+      ["Покажи не только сигнатуру Compute", false],
+      ["Покажи только сигнатуру и алгоритм Compute", false],
+      ["Покажи только сигнатуру и примеры Compute", false],
+      ["Show only Compute signature and examples", false],
+      ["Show only Compute signature, parameters and return type and examples", false],
+      ["Покажи только сигнатуру Compute и параметры, также алгоритм", false],
+      ["Do not limit the explanation to only Compute signature", false],
+      ["Not just the signature of Compute", false],
+      ["Don't show just Compute signature", false],
+      ["Why does Compute fail with this signature?", false],
+      ["Show Compute signature", false],
+      ["Compute signature", false],
+    ];
+    for (const [query, declarationOnly] of queries) {
+      const { input } = inputFor(sources, query);
+      const result = await new ProjectSemanticService(ast, languageFor(sources, facts), logger).buildContext(input);
+      assert.equal(result.selection.intent, declarationOnly ? "declaration" : "implementation", query);
+      const snippet = result.snippets.find(item => item.path === "Entry.xbsl");
+      assert.equal(snippet.startLine, 1, query);
+      assert.equal(snippet.endLine, declarationOnly ? 5 : 9, query);
+      assert.equal(snippet.text.includes("возврат 42"), !declarationOnly, query);
+      assert.equal(result.snippets.some(item => item.path === "Worker.xbsl"), !declarationOnly, query);
+    }
+  });
+}
+
+for (const real of [false, true]) {
+  test(`${real ? "real" : "fixture"} AST: identical call names retain UTF-16 occurrences through LSP matching and dedup`, { skip: real && !realJar }, async (t) => {
+    const code = lines("метод Mix(Left: Объект, Right: Объект): Число",
+      '    возврат Sum("\u{1F9ED}", Left.Convert(), Right.Convert())', ";").replaceAll("\n", "\r\n");
+    const sources = { "Mix.xbsl": code, "Target.xbsl": lines("метод Convert(): Число", "    возврат 17", ";") };
+    const ast = parserFor(t, sources, { "Mix.xbsl": [{ name: "Mix", start: 1, end: 3,
+      calls: [[2, "Convert", "Left"], [2, "Convert", "Right"]] }],
+    "Target.xbsl": [{ name: "Convert", start: 1, end: 3 }] }, real);
+    const columns = ["Left.", "Right."].map(receiver => code.split("\n")[1].indexOf(receiver) + receiver.length);
+    for (const count of [0, 1, 2]) {
+      const facts = columns.slice(0, count).map(character => ({ path: "Mix.xbsl", position: { line: 1, character },
+        definitions: [definition(sources, "Target.xbsl", 1, "Convert")] }));
+      const language = languageFor(sources, facts, (_file, reply) => ({ ...reply, queries: [...reply.queries, ...reply.queries] }));
+      const { input } = inputFor(sources, "How does Mix work?");
+      const result = await new ProjectSemanticService(ast, language, logger).buildContext(input);
+      const links = result.links.filter(link => link.from.path === "Mix.xbsl" && link.name === "Convert")
+        .sort((a, b) => a.from.startCharacter - b.from.startCharacter);
+      assert.equal(links.length, 2, `${count} definitions must not merge two occurrences`);
+      for (let i = 0; i < 2; i++) {
+        assert.equal(links[i].from.startLine, 2);
+        assert.equal(links[i].from.endLine, 2);
+        assert.equal(links[i].from.startCharacter, columns[i]);
+        assert.equal(links[i].from.endCharacter, columns[i] + "Convert".length);
+        assert.equal(code.split("\n")[1].slice(links[i].from.startCharacter, links[i].from.endCharacter), "Convert");
+        assert.equal(links[i].confidence, i < count ? "lsp" : "unresolved");
+        assert.equal(links[i].kind, i < count ? "definition" : "dynamic-call");
+        assert.ok(formatSemanticContext(result).includes(`Mix.xbsl:2:${columns[i] + 1} ${links[i].kind} Convert`));
+      }
+      assert.equal(result.snippets.filter(item => item.path === "Target.xbsl").length, count ? 1 : 0);
+    }
+  });
+}
+
+for (const real of [false, true]) {
+  test(`${real ? "real" : "fixture"} AST: exclusive end at next-line zero does not include a sibling declaration`, { skip: real && !realJar }, async (t) => {
+    const target = lines("структура Sensor", "    @НаКлиенте", "    метод Read(): Число", "        возврат 3", "    ;",
+      "    метод Calibrate()", "        возврат", "    ;", ";");
+    const sources = { "Entry.xbsl": lines("метод Poll(Source: Объект)", "    Source.Read()", ";"), "Sensor.xbsl": target };
+    const roots = new Map([
+      [sources["Entry.xbsl"], moduleTree(sources["Entry.xbsl"], [{ name: "Poll", start: 1, end: 3, calls: [[2, "Read", "Source"]] }])],
+      [target, node(target, "Module", 1, 9, {}, [node(target, "BslStructure", 1, 9, { name: "Sensor" }, [
+        node(target, "Method", 2, 5, { name: "Read" }, [], "methods"),
+        node(target, "Method", 6, 8, { name: "Calibrate" }, [], "methods"),
+      ])])],
+    ]);
+    const ast = real ? parserFor(t, sources, {}, true)
+      : { parse: async text => ({ status: "ready", root: roots.get(text), diagnostics: [] }) };
+    for (const variant of ["location", "selection", "same-line-end", "zero-width", "next-declaration-point"]) {
+      const range = { startLine: 3, startCharacter: 4, endLine: 6, endCharacter: 0 };
+      if (variant === "same-line-end") Object.assign(range, { endLine: 5, endCharacter: 5 });
+      if (variant === "zero-width") Object.assign(range, { endLine: 3, endCharacter: 4 });
+      if (variant === "next-declaration-point") Object.assign(range, { startLine: 6, startCharacter: 10, endLine: 6, endCharacter: 10 });
+      const def = { uri: pathToFileURL(path.join(workspaceRoot, "Sensor.xbsl")).href, ...range,
+        ...(variant === "selection" ? { startLine: 1, endLine: 9, endCharacter: 1, selectionRange: range } : {}) };
+      const language = languageFor(sources, [{ path: "Entry.xbsl", line: 2, token: "Read", definitions: [def] }]);
+      const { input } = inputFor(sources, "How does Poll work?");
+      const result = await new ProjectSemanticService(ast, language, logger).buildContext(input);
+      const snippets = result.snippets.filter(item => item.path === "Sensor.xbsl");
+      const expected = variant === "next-declaration-point" ? [6, 8] : [2, 5];
+      assert.equal(snippets.length, 1, variant);
+      assert.deepEqual([snippets[0].startLine, snippets[0].endLine], expected, variant);
+      assert.equal(snippets[0].text, target.split("\n").slice(expected[0] - 1, expected[1]).join("\n"), variant);
+      const resolved = result.links.find(link => link.kind === "definition").targets[0];
+      assert.deepEqual([resolved.startLine, resolved.endLine], expected, variant);
+    }
+  });
+}
+
+test("LSP-only symbol ranges retain exclusive-end semantics when replacing lexical ranges", async () => {
+  const code = lines("метод Extract()", "    возврат", ";", "метод Neighbor()", "    возврат", ";");
+  const sources = { "Range.xbsl": code };
+  const language = languageFor(sources, [], (_file, reply) => ({ ...reply, symbols: [
+    { name: "Extract", kind: 5, startLine: 1, startCharacter: 0, endLine: 4, endCharacter: 0,
+      selectionRange: { startLine: 1, endLine: 1, startCharacter: 6, endCharacter: 13 } },
+    { name: "Neighbor", kind: 5, startLine: 4, startCharacter: 0, endLine: 6, endCharacter: 1,
+      selectionRange: { startLine: 4, endLine: 4, startCharacter: 6, endCharacter: 14 } },
+  ] }));
+  const { input } = inputFor(sources, "How does Extract work?");
+  const result = await new ProjectSemanticService(unavailableAst, language, logger).buildContext(input);
+  assert.equal(result.snippets.length, 1);
+  assert.equal(result.snippets[0].source, "lsp");
+  assert.equal(result.snippets[0].text, code.split("\n").slice(0, 3).join("\n"));
+  assert.equal(result.snippets[0].endLine, 3);
+});
+
+for (const windows of [false, true]) {
+  test(`${windows ? "Windows model" : "POSIX"}: definition allowlist returns canonical paths and rejects ambiguous or outside identities`, async () => {
+    const paths = windows ? path.win32 : path.posix;
+    const root = windows ? "D:\\Work\\Pulse Lab" : "/work/Pulse Lab";
+    const source = lines("метод Dispatch()", "    Encode()", ";");
+    const destination = lines("метод Encode()", "    возврат", ";");
+    const file = "Core/Канал \u{1F6F0}.xbsl";
+    const makeUri = fsPath => {
+      const url = new URL("file:///");
+      url.pathname = windows ? "/" + fsPath.replaceAll("\\", "/") : fsPath;
+      return { scheme: "file", path: decodeURIComponent(url.pathname), fsPath, toString: () => url.href };
+    };
+    const mock = { Uri: { file: makeUri, parse(value) {
+      const url = new URL(value);
+      const decoded = decodeURIComponent(url.pathname);
+      const fsPath = windows ? decoded.replace(/^\/([a-z]:)/i, "$1").replaceAll("/", "\\") : decoded;
+      return { scheme: url.protocol.slice(0, -1), fsPath };
+    } } };
+    const { ProjectSemanticService: Service } = loadSource("src/projectSemanticService.ts", {
+      vscode: mock, path: paths, "./projectStructure": { analyzeProjectStructure },
+    });
+    const cases = [
+      { name: "exact", target: paths.join(root, file), expected: true },
+      { name: "directory case", target: paths.join(root, file.replace("Core/", "core/")), expected: windows },
+      { name: "sibling prefix", target: paths.join(root + "-other", file), expected: false },
+      { name: "traversal outside", target: paths.join(root, "..", file), expected: false },
+      { name: "unindexed", target: paths.join(root, "Unknown.xbsl"), expected: false },
+      { name: "case collision", target: paths.join(root, file), collision: true, expected: !windows },
+      { name: "stale canonical target", target: paths.join(root, file.replace("Core/", "core/")), stale: true, expected: false },
+    ];
+    if (windows) cases.push({ name: "drive casing", target: paths.join(root, file).replace("D:", "d:"), expected: true });
+    for (const item of cases) {
+      const sources = { "Entry.xbsl": source, [file]: destination, ...(item.collision ? { [file.toLowerCase()]: destination } : {}) };
+      const { input, reads } = inputFor(sources, "How does Dispatch work?");
+      input.workspaceRoot = root;
+      const rootNode = moduleTree(source, [{ name: "Dispatch", start: 1, end: 3, calls: [[2, "Encode"]] }]);
+      const ast = { parse: async text => ({ status: "ready", diagnostics: [], root: text === source ? rootNode
+        : moduleTree(destination, [{ name: "Encode", start: 1, end: 3 }]) }) };
+      const language = { async inspect(document, positions) {
+        const relative = paths.relative(root, document.fsPath).split(paths.sep).join("/");
+        assert.ok(Object.hasOwn(sources, relative), "Only canonical indexed paths may be inspected");
+        return { status: "ready", symbols: [], sourceHash: item.stale && relative === file ? hash("changed buffer") : hash(sources[relative]),
+          queries: Array.from(positions, position => ({ position, hover: "", definitions: relative === "Entry.xbsl" && position.line === 1
+            ? [{ uri: makeUri(item.target).toString(), startLine: 1, endLine: 1, startCharacter: 6, endCharacter: 12 }] : [] })) };
+      } };
+      const result = await new Service(ast, language, logger).buildContext(input);
+      const definitions = result.links.filter(link => link.kind === "definition");
+      assert.equal(definitions.length, item.expected ? 1 : 0, item.name);
+      assert.equal(result.snippets.some(snippet => snippet.path === file), item.expected, item.name);
+      if (item.expected) assert.equal(definitions[0].targets[0].path, file, item.name);
+      if (!item.expected && !item.stale) assert.deepEqual([...new Set(reads)], ["Entry.xbsl"], item.name);
+      assert.ok(reads.every(read => Object.hasOwn(sources, read)), item.name);
+      if (item.stale && windows) assert.ok(result.diagnostics.some(message => message.includes("документ изменился")));
+    }
+  });
+}
+
+for (const real of [false, true]) {
   test(`${real ? "real" : "fixture"} AST: signature retains multiline parameters and return types; behavior retains the full body`, { skip: real && !realJar }, async (t) => {
     const { sources, specs, facts } = signatureFixture();
     const ast = parserFor(t, sources, specs, real);
-    for (const query of ["Show Compute signature", "Why does Compute fail with this signature?", "Как работает Compute?"]) {
-      const declarationOnly = query === "Show Compute signature";
+    for (const query of ["Show only Compute signature", "Why does Compute fail with this signature?", "Как работает Compute?"]) {
+      const declarationOnly = query === "Show only Compute signature";
       const { input, reads } = inputFor(sources, query);
       const result = await new ProjectSemanticService(ast, languageFor(sources, facts), logger).buildContext(input);
       assert.equal(result.selection.intent, declarationOnly ? "declaration" : "implementation");
@@ -309,7 +494,7 @@ for (const real of [false, true]) {
 
 test("lexical signature fallback retains multiline types without guessing a one-line declaration", async () => {
   const { sources } = signatureFixture();
-  const { input } = inputFor(sources, "Compute signature");
+  const { input } = inputFor(sources, "Compute signature only");
   const result = await new ProjectSemanticService(unavailableAst, languageFor(sources), logger).buildContext(input);
   const snippet = fullSnippet(result, "Entry.xbsl", 2, 5, lines("метод Compute(", "    Values: Массив<Строка>,", "    Flag: Булево", "): Число"));
   assert.equal(snippet.source, "lexical");

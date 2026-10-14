@@ -475,7 +475,14 @@ export class DocsSearchEngine {
     const fragmentsPool = caches.flatMap((cache) => cache.loaded.fragments);
     const maxItems = clampPositiveInteger(options.maxItems, 4, 1, 12);
     const maxCharsPerItem = clampPositiveInteger(options.maxCharsPerItem, MAX_ITEM_CHARS, 400, 4000);
-    const selected = selectReadFragments(fragmentsPool, options).slice(0, maxItems);
+    // Nested configured roots can load the same physical fragment more than once.
+    const seen = new Set<string>();
+    const selected = selectReadFragments(fragmentsPool, options).filter(fragment => {
+      const id = docsFragmentId(fragment);
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    }).slice(0, maxItems);
     return {
       roots: summarizeCaches(caches),
       fragments: selected.map((fragment) => {

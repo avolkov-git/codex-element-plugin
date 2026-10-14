@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const childProcess = require("child_process");
 const {
@@ -23,11 +22,14 @@ const runtimeRoot = args.runtimeRoot ? path.resolve(args.runtimeRoot) : "";
 const browserRuntimeRoot = args.browserRuntimeRoot ? path.resolve(args.browserRuntimeRoot) : "";
 const errors = [];
 const warnings = [];
+let payloadRoot;
+let keepWorkingRoot = false;
 
 main();
 
 function main() {
   validateTargetPath();
+  requestedRuntimeTargets();
   if (runtimeRoot) {
     validateRuntimeRoot();
   }
@@ -38,14 +40,13 @@ function main() {
     finish();
   }
 
-  const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-plugin-bin-backup."));
-  const backupBin = path.join(backupRoot, "bin");
-
+  let workingRoot;
   try {
-    backupExistingBin(backupBin);
-    resetTargetRoot();
-    copyPayload(sourceRoot, targetRoot);
-    overlayPreservedRuntimes(backupBin);
+    fs.mkdirSync(path.dirname(targetRoot), { recursive: true });
+    workingRoot = fs.mkdtempSync(path.join(path.dirname(targetRoot), ".codex-plugin-stage-"));
+    payloadRoot = path.join(workingRoot, "payload");
+    copyPayload(sourceRoot, payloadRoot);
+    overlayPreservedRuntimes(path.join(targetRoot, "bin"));
     overlayRuntimeRoot();
     overlayBrowserRuntimeRoot();
     pruneUnrequestedRuntimePlatforms();
@@ -53,8 +54,11 @@ function main() {
     removeInvalidAlternativeRuntimeFiles();
     removeInvalidUnrequestedRuntimeFiles();
     runDeployPreflight();
+    if (!errors.length) publishPayload(workingRoot);
+  } catch (error) {
+    errors.push(`staging failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
-    fs.rmSync(backupRoot, { recursive: true, force: true });
+    if (workingRoot && !keepWorkingRoot) fs.rmSync(workingRoot, { recursive: true, force: true });
   }
 
   finish();
@@ -72,6 +76,28 @@ function validateTargetPath() {
   }
   if (path.parse(targetRoot).root === targetRoot) {
     errors.push(`refusing to stage into filesystem root: ${targetRoot}`);
+  }
+  // Resolve existing ancestors too: a symlinked parent must not bypass checkout isolation.
+  const realSource = fs.realpathSync(sourceRoot);
+  const realTarget = resolveExistingAncestors(targetRoot);
+  if (realTarget === realSource || isInside(realSource, realTarget) || isInside(realTarget, realSource)) {
+    errors.push(`target must be separate from source root: ${targetRoot}`);
+  }
+  if (fs.existsSync(targetRoot) && (fs.lstatSync(targetRoot).isSymbolicLink() || !fs.statSync(targetRoot).isDirectory())) {
+    errors.push(`target must be a directory, not a link or file: ${targetRoot}`);
+  }
+}
+
+function resolveExistingAncestors(value) {
+  if (fs.existsSync(value)) return fs.realpathSync(value);
+  return path.join(resolveExistingAncestors(path.dirname(value)), path.basename(value));
+}
+
+function entryExists(value) {
+  try { fs.lstatSync(value); return true; }
+  catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
   }
 }
 
@@ -95,17 +121,22 @@ function validateBrowserRuntimeRoot() {
   }
 }
 
-function backupExistingBin(backupBin) {
-  const currentBin = path.join(targetRoot, "bin");
-  if (!fs.existsSync(currentBin)) {
-    return;
+function publishPayload(workingRoot) {
+  const previous = path.join(workingRoot, "previous");
+  const hadTarget = fs.existsSync(targetRoot);
+  if (hadTarget) fs.renameSync(targetRoot, previous);
+  try {
+    fs.renameSync(payloadRoot, targetRoot);
+  } catch (error) {
+    if (hadTarget) {
+      try { fs.renameSync(previous, targetRoot); }
+      catch (restoreError) {
+        keepWorkingRoot = true;
+        throw new Error(`could not publish or restore target; previous payload retained at ${previous}: ${restoreError.message}`);
+      }
+    }
+    throw error;
   }
-  copyDirectory(currentBin, backupBin);
-}
-
-function resetTargetRoot() {
-  fs.rmSync(targetRoot, { recursive: true, force: true });
-  fs.mkdirSync(targetRoot, { recursive: true });
 }
 
 function copyPayload(fromRoot, toRoot) {
@@ -116,6 +147,8 @@ function shouldCopyPayloadEntry(relativePath, entry) {
   const name = entry.name;
   // Linked Git worktrees store .git as a file, not a directory.
   if (name === ".git") { return false; }
+  // Browser trees are selected and copied whole, including their npm dependencies.
+  if (relativePath === "browser") { return false; }
   if (entry.isDirectory()) {
     if (args.platformOnly && path.dirname(relativePath) === "bin") {
       return requestedRuntimeDirectoryNames().has(name);
@@ -174,7 +207,7 @@ function overlayPreservedRuntimes(backupBin) {
         continue;
       }
 
-      const destinationPath = targetPaths(targetRoot, target, name)[0];
+      const destinationPath = targetPaths(payloadRoot, target, name)[0];
       const destinationValidation = validateRuntimeFile(destinationPath, target);
       if (destinationValidation.summary.exists && !destinationValidation.errors.length) {
         continue;
@@ -203,38 +236,62 @@ function overlayRuntimeRoot() {
         errors.push(...validation.errors.map((error) => `runtime root ${error}`));
         continue;
       }
-      const destinationPath = targetPaths(targetRoot, target, name)[0];
+      const destinationPath = targetPaths(payloadRoot, target, name)[0];
       copyFileWithMode(sourcePath, destinationPath);
     }
   }
 }
 
 function overlayBrowserRuntimeRoot() {
-  if (!browserRuntimeRoot) {
-    return;
+  const requested = new Set(requestedRuntimeTargets().map(target => target.platformId));
+  const platforms = new Set(requested);
+  if (!args.platformOnly) {
+    for (const root of [sourceRoot, targetRoot]) {
+      const browser = path.join(root, "browser");
+      if (entryExists(browser)) {
+        if (!fs.lstatSync(browser).isDirectory()) {
+          errors.push(`invalid browser runtime root: ${browser}`);
+          continue;
+        }
+        for (const entry of fs.readdirSync(browser)) platforms.add(entry);
+      }
+    }
   }
-
-  for (const target of requestedRuntimeTargets()) {
-    const sourcePath = path.join(browserRuntimeRoot, "browser", target.platformId);
-    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isDirectory()) {
-      errors.push(`browser runtime root has no payload for ${target.platformId}: ${sourcePath}`);
+  for (const platform of platforms) {
+    const explicit = browserRuntimeRoot && requested.has(platform);
+    const candidates = explicit ? [browserRuntimeRoot] : [sourceRoot, targetRoot];
+    let sourcePath;
+    for (const root of candidates) {
+      const browser = path.join(root, "browser");
+      if (entryExists(browser) && !fs.lstatSync(browser).isDirectory()) {
+        errors.push(`invalid browser runtime root: ${browser}`);
+        break;
+      }
+      const candidate = path.join(browser, platform);
+      if (entryExists(candidate)) { sourcePath = candidate; break; }
+    }
+    if (!sourcePath) {
+      if (explicit) errors.push(`browser runtime root has no payload for ${platform}`);
       continue;
     }
-    const destinationPath = path.join(targetRoot, "browser", target.platformId);
-    fs.rmSync(destinationPath, { recursive: true, force: true });
-    copyDirectory(sourcePath, destinationPath);
+    if (!targets.some(target => target.platformId === platform) || !fs.lstatSync(sourcePath).isDirectory()) {
+      errors.push(`invalid browser runtime directory: ${sourcePath}`);
+      continue;
+    }
+    copyDirectory(sourcePath, path.join(payloadRoot, "browser", platform));
+    if (isInside(sourcePath, targetRoot)) warnings.push(`preserved existing browser runtime for ${platform}`);
   }
 }
 
 function removeInvalidAlternativeRuntimeFiles() {
   for (const target of targets) {
-    const canonicalPath = targetPaths(targetRoot, target)[0];
+    const canonicalPath = targetPaths(payloadRoot, target)[0];
     const canonicalValidation = validateRuntimeFile(canonicalPath, target);
     if (!canonicalValidation.summary.exists || canonicalValidation.errors.length) {
       continue;
     }
 
-    for (const candidatePath of targetPaths(targetRoot, target).slice(1)) {
+    for (const candidatePath of targetPaths(payloadRoot, target).slice(1)) {
       if (!fs.existsSync(candidatePath)) {
         continue;
       }
@@ -257,7 +314,7 @@ function pruneUnrequestedRuntimePlatforms() {
   for (const target of targets) {
     if (requested.has(target.platformId)) {
       if (target.legacyPlatformId) {
-        const legacyDirectory = path.dirname(targetPaths(targetRoot, target)[1]);
+        const legacyDirectory = path.dirname(targetPaths(payloadRoot, target)[1]);
         if (fs.existsSync(legacyDirectory)) {
           fs.rmSync(legacyDirectory, { recursive: true, force: true });
           warnings.push(`removed legacy runtime directory from platform-only payload: ${legacyDirectory}`);
@@ -265,7 +322,7 @@ function pruneUnrequestedRuntimePlatforms() {
       }
       continue;
     }
-    for (const candidatePath of targetPaths(targetRoot, target)) {
+    for (const candidatePath of targetPaths(payloadRoot, target)) {
       const platformDirectory = path.dirname(candidatePath);
       if (!fs.existsSync(platformDirectory)) {
         continue;
@@ -280,7 +337,7 @@ function pruneUnrequestedBrowserPlatforms() {
   if (!args.platformOnly) {
     return;
   }
-  const browserRoot = path.join(targetRoot, "browser");
+  const browserRoot = path.join(payloadRoot, "browser");
   if (!fs.existsSync(browserRoot)) {
     return;
   }
@@ -301,7 +358,7 @@ function removeInvalidUnrequestedRuntimeFiles() {
     if (requested.has(target.platformId)) {
       continue;
     }
-    for (const candidatePath of targetPaths(targetRoot, target)) {
+    for (const candidatePath of targetPaths(payloadRoot, target)) {
       if (!fs.existsSync(candidatePath)) {
         continue;
       }
@@ -319,7 +376,7 @@ function runDeployPreflight() {
   const preflightArgs = [
     path.join(sourceRoot, "scripts", "verify-deploy-payload.js"),
     "--root",
-    targetRoot
+    payloadRoot
   ];
 
   if (args.requireAll) {
@@ -345,7 +402,9 @@ function runDeployPreflight() {
 
   const result = childProcess.spawnSync(process.execPath, preflightArgs, {
     cwd: sourceRoot,
-    encoding: "utf8"
+    encoding: "utf8",
+    timeout: 60000,
+    maxBuffer: 4 * 1024 * 1024
   });
 
   if (result.stderr) {

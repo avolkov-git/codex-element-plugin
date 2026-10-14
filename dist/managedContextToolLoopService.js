@@ -18,11 +18,26 @@ class ManagedContextToolLoopService {
     async buildContext(request) {
         const outcomes = [];
         const blocks = [];
+        // Both documentation paths must use the same project version evidence.
+        const search = request.chatKind === "project" && request.routing.shouldUseProjectContext
+            ? await this.options.projectTools.search({
+                chatId: request.chatId,
+                query: request.prompt,
+                reason: `managed fallback project search: ${request.routing.reason}`,
+                limits: { maxItems: PROJECT_CONTEXT_ITEMS, maxChars: PROJECT_CONTEXT_CHARS }
+            }) : undefined;
+        const expectedPlatformVersion = search?.ok ? (0, documentationCompatibility_1.normalizePlatformVersion)(search.metadata.platformVersion) : undefined;
+        if (search) {
+            outcomes.push({ name: search.toolName, route: routeFromResult(search, "added"), result: search });
+            blocks.push(...blocksFromResult(search));
+        }
         if (!request.hasExplicitDocs && request.routing.shouldUseDocsContext) {
             const result = request.routing.docsMode === "overview"
                 ? await this.options.docsTools.overview({
                     chatId: request.chatId,
                     query: request.prompt,
+                    expectedPlatformVersion,
+                    fragmentBlocks: true,
                     reason: `managed fallback docs overview: ${request.routing.reason}`,
                     limits: {
                         maxItems: DOCS_CONTEXT_ITEMS,
@@ -32,6 +47,8 @@ class ManagedContextToolLoopService {
                 : await this.options.docsTools.read({
                     chatId: request.chatId,
                     query: request.prompt,
+                    expectedPlatformVersion,
+                    fragmentBlocks: true,
                     reason: `managed fallback docs lookup: ${request.routing.reason}`,
                     limits: {
                         maxItems: DOCS_CONTEXT_ITEMS,
@@ -55,18 +72,7 @@ class ManagedContextToolLoopService {
             outcomes.push({ name: result.toolName, route, result });
             blocks.push(...blocksFromResult(result));
         }
-        if (request.chatKind === "project" && request.routing.shouldUseProjectContext) {
-            const search = await this.options.projectTools.search({
-                chatId: request.chatId,
-                query: request.prompt,
-                reason: `managed fallback project search: ${request.routing.reason}`,
-                limits: {
-                    maxItems: PROJECT_CONTEXT_ITEMS,
-                    maxChars: PROJECT_CONTEXT_CHARS
-                }
-            });
-            outcomes.push({ name: search.toolName, route: routeFromResult(search, "added"), result: search });
-            blocks.push(...blocksFromResult(search));
+        if (search) {
             // Concrete types from YAML/AST complement prompt-only documentation search.
             // They are lookup candidates, not a claim that the installed docs match the runtime version.
             const linkedQueries = search.ok && Array.isArray(search.metadata.documentationQueries)
@@ -76,19 +82,13 @@ class ManagedContextToolLoopService {
                 const linkedDocs = await this.options.docsTools.read({
                     chatId: request.chatId,
                     symbolNames: linkedQueries,
-                    expectedPlatformVersion: (0, documentationCompatibility_1.normalizePlatformVersion)(search.metadata.platformVersion),
+                    expectedPlatformVersion,
+                    fragmentBlocks: true,
                     reason: "Документация по точным идентификаторам заголовков из YAML/XBSL с проверкой явных меток версии",
                     limits: { maxItems: 3, maxChars: 7000 }
                 });
                 outcomes.push({ name: linkedDocs.toolName, route: routeFromResult(linkedDocs, "added"), result: linkedDocs });
-                const linkedBlocks = blocksFromResult(linkedDocs);
-                const existing = new Set(blocks.map((block) => block.text));
-                for (const block of linkedBlocks) {
-                    if (!existing.has(block.text)) {
-                        blocks.push(block);
-                        existing.add(block.text);
-                    }
-                }
+                appendDocumentationBlocks(blocks, blocksFromResult(linkedDocs));
             }
             const symbols = await this.options.projectTools.listSymbols({
                 chatId: request.chatId,
@@ -121,6 +121,36 @@ class ManagedContextToolLoopService {
     }
 }
 exports.ManagedContextToolLoopService = ManagedContextToolLoopService;
+function appendDocumentationBlocks(blocks, additions) {
+    for (const block of additions) {
+        const id = block.metadata?.fragmentId;
+        const index = typeof id === "string" && id
+            ? blocks.findIndex(existing => existing.source === "docs" && existing.metadata?.fragmentId === id) : -1;
+        if (index < 0) {
+            blocks.push(block);
+            continue;
+        }
+        const previous = blocks[index];
+        // Prefer an actual read to an overview summary; among reads retain the longer body.
+        const selected = previous.mode === "overview" && block.mode !== "overview" ? block
+            : block.mode === "overview" && previous.mode !== "overview" ? previous
+                : Number(previous.metadata?.fragmentBodyChars ?? 0) > Number(block.metadata?.fragmentBodyChars ?? 0) ? previous : block;
+        const symbolMatch = block.metadata?.titleMatch === "exact-identifier" ? block : previous;
+        blocks[index] = {
+            ...selected,
+            metadata: {
+                ...selected.metadata,
+                ...(symbolMatch.metadata?.titleMatch === "exact-identifier" ? {
+                    titleMatch: symbolMatch.metadata.titleMatch,
+                    matchedSymbols: symbolMatch.metadata.matchedSymbols,
+                    requestedSymbols: symbolMatch.metadata.requestedSymbols,
+                    unmatchedSymbols: symbolMatch.metadata.unmatchedSymbols,
+                    versionSelectionScope: symbolMatch.metadata.versionSelectionScope
+                } : {})
+            }
+        };
+    }
+}
 function blocksFromResult(result) {
     const blocks = result.ok ? result.blocks : result.partialBlocks;
     return blocks.map(contextTools_1.toContextBlock);

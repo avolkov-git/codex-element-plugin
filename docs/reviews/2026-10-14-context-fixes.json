@@ -1,0 +1,463 @@
+{
+  "baseCommit": "0b9b5ee63eb1b0a89815be8f2d63759bf9144cff",
+  "version": "1.0.4",
+  "date": "2026-10-14",
+  "fixedFindings": [
+    "R1",
+    "R2",
+    "R3",
+    "C1",
+    "C2",
+    "C3",
+    "A1",
+    "A2",
+    "A3",
+    "D1",
+    "D2",
+    "B1",
+    "B2",
+    "I1"
+  ],
+  "verification": {
+    "unitTests": {
+      "total": 623,
+      "passed": 623,
+      "skipped": 0
+    },
+    "contextChecks": {
+      "total": 316,
+      "passed": 316,
+      "skipped": 0
+    },
+    "build": true,
+    "typecheck": true,
+    "acceptance": {
+      "total": 12,
+      "passed": 12
+    },
+    "integration": {
+      "total": 6,
+      "passed": 6
+    },
+    "audit": {
+      "retrieval": {
+        "total": 10,
+        "passed": 7,
+        "cases": [
+          {
+            "id": "R01",
+            "passed": true
+          },
+          {
+            "id": "R02",
+            "passed": true
+          },
+          {
+            "id": "R03",
+            "passed": false
+          },
+          {
+            "id": "R04",
+            "passed": false
+          },
+          {
+            "id": "R05",
+            "passed": true
+          },
+          {
+            "id": "R06",
+            "passed": true
+          },
+          {
+            "id": "R07",
+            "passed": false
+          },
+          {
+            "id": "R08",
+            "passed": true
+          },
+          {
+            "id": "R09",
+            "passed": true
+          },
+          {
+            "id": "R10",
+            "passed": true
+          }
+        ]
+      },
+      "cache": {
+        "total": 10,
+        "passed": 10,
+        "cases": [
+          {
+            "id": "S01",
+            "passed": true
+          },
+          {
+            "id": "S02",
+            "passed": true
+          },
+          {
+            "id": "S03",
+            "passed": true
+          },
+          {
+            "id": "S04",
+            "passed": true
+          },
+          {
+            "id": "S05",
+            "passed": true
+          },
+          {
+            "id": "S06",
+            "passed": true
+          },
+          {
+            "id": "S07",
+            "passed": true
+          },
+          {
+            "id": "S08",
+            "passed": true
+          },
+          {
+            "id": "S09",
+            "passed": true
+          },
+          {
+            "id": "S10",
+            "passed": true
+          }
+        ]
+      },
+      "astLsp": {
+        "total": 9,
+        "passed": 8,
+        "cases": [
+          {
+            "id": "S1",
+            "passed": true
+          },
+          {
+            "id": "S2",
+            "passed": true
+          },
+          {
+            "id": "S3",
+            "passed": true
+          },
+          {
+            "id": "S4",
+            "passed": false
+          },
+          {
+            "id": "S5",
+            "passed": true
+          },
+          {
+            "id": "S6",
+            "passed": true
+          },
+          {
+            "id": "S7",
+            "passed": true
+          },
+          {
+            "id": "S8",
+            "passed": true
+          },
+          {
+            "id": "S9",
+            "passed": true
+          }
+        ]
+      },
+      "documentation": {
+        "total": 9,
+        "passed": 8,
+        "cases": [
+          {
+            "id": "S01",
+            "passed": true
+          },
+          {
+            "id": "S02",
+            "passed": false
+          },
+          {
+            "id": "S03",
+            "passed": true
+          },
+          {
+            "id": "S04",
+            "passed": true
+          },
+          {
+            "id": "S05",
+            "passed": true
+          },
+          {
+            "id": "S06",
+            "passed": true
+          },
+          {
+            "id": "S07",
+            "passed": true
+          },
+          {
+            "id": "S08",
+            "passed": true
+          },
+          {
+            "id": "S09",
+            "passed": true
+          }
+        ]
+      },
+      "deployment": {
+        "total": 10,
+        "passed": 10,
+        "cases": [
+          {
+            "id": "D01",
+            "passed": true
+          },
+          {
+            "id": "D02",
+            "passed": true
+          },
+          {
+            "id": "D03",
+            "passed": true
+          },
+          {
+            "id": "D04",
+            "passed": true
+          },
+          {
+            "id": "D05",
+            "passed": true
+          },
+          {
+            "id": "D06",
+            "passed": true
+          },
+          {
+            "id": "D07",
+            "passed": true
+          },
+          {
+            "id": "D08",
+            "passed": true
+          },
+          {
+            "id": "D09",
+            "passed": true
+          },
+          {
+            "id": "D10",
+            "passed": true
+          }
+        ]
+      }
+    },
+    "auditScripts": [
+      {
+        "name": "retrieval",
+        "args": [
+          "/private/tmp/codex-fixes-0b9b5ee/parent-audit/retrieval/repro.cjs"
+        ],
+        "sha256": "dcc5b27a5efd5caed197cc91ed38cb418b72d6de0e4de21733bd99cd818bf357",
+        "exitCode": 1,
+        "signal": null,
+        "elapsedMs": 2630
+      },
+      {
+        "name": "retrieval-confirm",
+        "args": [
+          "/private/tmp/codex-fixes-0b9b5ee/parent-audit/retrieval/confirm.cjs"
+        ],
+        "sha256": "37349e42733496f1c3a77acc32774acf5a256dc00527e73840956250b40928e2",
+        "exitCode": 1,
+        "signal": null,
+        "elapsedMs": 2449
+      },
+      {
+        "name": "cache",
+        "args": [
+          "/tmp/codex-review-0b9b5ee/cache/review.cjs"
+        ],
+        "sha256": "e739d966cdc647b605c0b7e22d9c3b2210608f6641f26af24243d4e585753ad2",
+        "exitCode": 0,
+        "signal": null,
+        "elapsedMs": 1060
+      },
+      {
+        "name": "ast-lsp",
+        "args": [
+          "/private/tmp/codex-fixes-0b9b5ee/parent-audit/ast-lsp/review.cjs"
+        ],
+        "sha256": "15a6d95b56888853ff4628f4a20c790cbfe2e217678ca9de4b0f2eb59b550941",
+        "exitCode": 1,
+        "signal": null,
+        "elapsedMs": 4764
+      },
+      {
+        "name": "docs",
+        "args": [
+          "/private/tmp/codex-fixes-0b9b5ee/parent-audit/docs/repro.cjs"
+        ],
+        "sha256": "d43bdf85b336f5b533c661551b7ec5e6f00462253c0d57c1c25fc1807e13b865",
+        "exitCode": 1,
+        "signal": null,
+        "elapsedMs": 348
+      },
+      {
+        "name": "deploy",
+        "args": [
+          "/private/tmp/codex-fixes-0b9b5ee/parent-audit/deploy/repro.cjs"
+        ],
+        "sha256": "1253d7907c3fd0f2068d889e979b9710b87ffc0261f8996c22961983d847a133",
+        "exitCode": 0,
+        "signal": null,
+        "elapsedMs": 4016
+      },
+      {
+        "name": "integration",
+        "args": [
+          "--test",
+          "/private/tmp/codex-fixes-0b9b5ee/parent-audit/integration/final-envelope.test.cjs"
+        ],
+        "sha256": "8c1ebed108fd4630a91a3be3d175633e89002fad69c17d5b6aa8edc39c2d0f81",
+        "exitCode": 0,
+        "signal": null,
+        "elapsedMs": 288
+      }
+    ]
+  },
+  "benchmark": {
+    "phase": "review-fixes-final",
+    "fixtureCommit": "5f3e72ed3afed7d04b9af8b700fe5094c847ee32",
+    "fixtureSha256": "3f3289852f6107b93a527ed5462f987cdc6cf0f94d616d16e53e54b5441069e1",
+    "oracleSha256": "22e5284ec7ea54b8ca45e410ecc6bd59a79fc4250add32b55954282a66f0fc8a",
+    "sourceSha256": "9d2f8c404791342081d468e35be865930b3d80d35bf819b8ef56ce616d2bc573",
+    "sourceChangedDuringRun": false,
+    "summary": {
+      "passedCases": 8,
+      "totalCases": 8,
+      "semanticCoverage": {
+        "fullMethods": {
+          "covered": 8,
+          "required": 8
+        },
+        "exactYaml": {
+          "covered": 12,
+          "required": 12
+        },
+        "signatures": {
+          "covered": 1,
+          "required": 1
+        }
+      },
+      "promptCoverage": {
+        "fullMethods": {
+          "covered": 8,
+          "required": 8
+        },
+        "exactYaml": {
+          "covered": 12,
+          "required": 12
+        },
+        "signatures": {
+          "covered": 1,
+          "required": 1
+        }
+      },
+      "semanticChars": 65384,
+      "deliveredPromptChars": 99698,
+      "semanticDuplicateChars": 0,
+      "promptDuplicateChars": 771,
+      "failedCases": []
+    },
+    "managed22k": {
+      "passedCases": 8,
+      "totalCases": 8,
+      "semanticCoverage": {
+        "fullMethods": {
+          "covered": 8,
+          "required": 8
+        },
+        "exactYaml": {
+          "covered": 12,
+          "required": 12
+        },
+        "signatures": {
+          "covered": 1,
+          "required": 1
+        }
+      },
+      "promptCoverage": {
+        "fullMethods": {
+          "covered": 8,
+          "required": 8
+        },
+        "exactYaml": {
+          "covered": 12,
+          "required": 12
+        },
+        "signatures": {
+          "covered": 1,
+          "required": 1
+        }
+      },
+      "semanticChars": 65384,
+      "deliveredPromptChars": 103698,
+      "semanticDuplicateChars": 0,
+      "promptDuplicateChars": 1273,
+      "failedCases": []
+    },
+    "production36k": {
+      "passedCases": 8,
+      "totalCases": 8,
+      "semanticCoverage": {
+        "fullMethods": {
+          "covered": 8,
+          "required": 8
+        },
+        "exactYaml": {
+          "covered": 12,
+          "required": 12
+        },
+        "signatures": {
+          "covered": 1,
+          "required": 1
+        }
+      },
+      "promptCoverage": {
+        "fullMethods": {
+          "covered": 8,
+          "required": 8
+        },
+        "exactYaml": {
+          "covered": 12,
+          "required": 12
+        },
+        "signatures": {
+          "covered": 1,
+          "required": 1
+        }
+      },
+      "semanticChars": 65384,
+      "deliveredPromptChars": 105732,
+      "semanticDuplicateChars": 0,
+      "promptDuplicateChars": 1337,
+      "failedCases": []
+    }
+  },
+  "liveIde": false,
+  "liveLsp": false,
+  "windowsExecution": false,
+  "modelAnswerQualityMeasured": false
+}

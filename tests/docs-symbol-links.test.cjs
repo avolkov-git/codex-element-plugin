@@ -257,15 +257,16 @@ test("managed loop keeps routes, origins and worklog counts for linked reads", a
   assert.equal(h.calls.projectSearch[0].limits.maxChars, 36_000);
   assert.equal(h.calls.read[0].query, "fix form");
   assert.deepEqual(h.calls.search.map(call => call.query), ["Форма", "Булево", "Строка"]);
-  const linked = result.blocks.find(block => block.metadata?.titleMatch === "exact-identifier");
-  assert.ok(linked);
-  assert.equal(linked.metadata.contextTool.toolName, "docs.read");
-  assert.equal(linked.metadata.contextTool.title, "Форма;Булево;Строка");
+  const linked = result.blocks.filter(block => block.metadata?.titleMatch === "exact-identifier");
+  assert.equal(linked.length, 3);
+  assert.ok(linked.every(block => block.metadata.contextTool.toolName === "docs.read"));
+  assert.deepEqual(plain(linked.map(block => block.metadata.contextTool.title)), ["Форма", "Булево", "Строка"]);
+  assert.equal(new Set(linked.map(block => block.metadata.fragmentId)).size, 3);
   const reads = result.worklog.filter(entry => entry.toolName === "docs.read");
   assert.equal(reads.length, 2);
-  assert.equal(reads[1].chars, linked.text.length);
+  assert.equal(reads[1].chars, linked.reduce((sum, block) => sum + block.text.length, 0));
   assert.equal(reads[1].itemCount, 3);
-  assert.equal(reads[1].blockCount, 1);
+  assert.equal(reads[1].blockCount, 3);
   assert.ok(reads[1].chars <= 7000);
 });
 
@@ -283,7 +284,7 @@ test("explicit docs and disabled docs routing prevent all automatic documentatio
   }
 });
 
-test("managed loop forwards only the parsed project platform version to linked reads", async () => {
+test("managed loop forwards the same parsed project platform version to both documentation reads", async () => {
   for (const [platformVersion, expected] of [
     ["9.1.9-1", "9.1.9-1"], [" 9.2.4-6 ", "9.2.4-6"], [undefined, undefined],
     [null, undefined], [42, undefined], [["9.1.9-1", "9.2.4-6"], undefined],
@@ -295,7 +296,7 @@ test("managed loop forwards only the parsed project platform version to linked r
     h.service.read = args => { requests.push(args); return read(args); };
     const result = await loopHarness(h, { platformVersion, extensionVersion: "1.0.4", parserVersion: "9.9.9-9" }).buildContext(loopRequest);
     assert.equal(requests.length, 2);
-    assert.equal(requests[0].expectedPlatformVersion, undefined);
+    assert.equal(requests[0].expectedPlatformVersion, expected);
     assert.equal(requests[1].expectedPlatformVersion, expected);
     const linked = result.blocks.find(block => block.metadata?.titleMatch === "exact-identifier");
     assert.equal(linked.metadata.expectedPlatformVersion, expected);

@@ -9,7 +9,7 @@ const { execFileSync } = require("node:child_process");
 const { root, loadSource, logger } = require("./service-test-utils.cjs");
 const { NativeXbslAstService, collectNativeAstSymbols } = loadSource("src/nativeXbslAstService.ts");
 
-function fixture(t, overrides = {}, respond = automaticReply) {
+function fixture(t, overrides = {}, respond = automaticReply, Service = NativeXbslAstService) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-native-ast-test-"));
   const extension = path.join(directory, "codex-element");
   const helperDir = path.join(extension, "resources/context/ast");
@@ -41,9 +41,21 @@ function fixture(t, overrides = {}, respond = automaticReply) {
     children.push(child);
     return child;
   };
-  const service = new NativeXbslAstService(extension, logger, { env: {}, nativeExtensionPaths: [], spawnProcess, ...overrides });
+  const service = new Service(extension, logger, { env: {}, nativeExtensionPaths: [], spawnProcess, ...overrides });
   t.after(() => { service.dispose(); fs.rmSync(directory, { recursive: true, force: true }); });
   return { service, directory, extension, jar, repo, children, calls };
+}
+
+function installParser(directory, version) {
+  const repo = path.join(directory, "bin/appengine-lsp/repo");
+  fs.mkdirSync(repo, { recursive: true });
+  const jar = path.join(repo, `com.e1c.g5rt.lsp.server.appengine-${version}.jar`);
+  fs.writeFileSync(jar, "fixture-parser");
+  return jar;
+}
+
+function registeredService(extensions) {
+  return loadSource("src/nativeXbslAstService.ts", { vscode: { extensions: { all: extensions } } }).NativeXbslAstService;
 }
 
 function reply(id, source) {
@@ -133,6 +145,154 @@ test("ambiguous native JAR directory is not guessed", async t => {
   fs.writeFileSync(path.join(repo, "com.e1c.g5rt.lsp.server.appengine-9.2.4-6.jar"), "other");
   assert.equal((await service.parse("test")).status, "unavailable");
   assert.equal(calls.length, 0);
+});
+
+test("ambiguous active extension never falls back to a valid sibling parser", async t => {
+  const extensions = [];
+  const f = fixture(t, { nativeExtensionPaths: undefined }, automaticReply, registeredService(extensions));
+  const active = path.join(f.directory, "active-engine");
+  installParser(active, "10.2.8-review");
+  installParser(active, "10.2.9-review");
+  extensions.push({ id: "1c-soft.1c-appengine-plugin", extensionPath: active, isActive: true });
+  const result = await f.service.parse("method Receipt()\n;\n");
+  assert.equal(result.status, "unavailable");
+  assert.equal(result.code, "parser_ambiguous");
+  assert.equal(result.parserVersion, undefined);
+  assert.equal(f.calls.length, 0);
+});
+
+test("one active registered extension wins over inactive registrations and siblings", async t => {
+  const extensions = [];
+  const f = fixture(t, { nativeExtensionPaths: undefined }, automaticReply, registeredService(extensions));
+  const active = path.join(f.directory, "active-engine");
+  const inactive = path.join(f.directory, "inactive-engine");
+  const jar = installParser(active, "10.3.0-review");
+  installParser(inactive, "8.7.0-review");
+  extensions.push(
+    { id: "old.appengine-plugin", extensionPath: inactive, isActive: false },
+    { id: "1c-soft.1c-appengine-plugin", extensionPath: active, isActive: true },
+    { id: "alias.appengine-plugin", extensionPath: path.join(active, "."), isActive: true },
+  );
+  const result = await f.service.parse("method Receipt()\n;\n");
+  assert.equal(result.status, "ready");
+  assert.equal(result.parserVersion, "10.3.0-review");
+  assert.equal(f.calls[0].args[f.calls[0].args.indexOf("-cp") + 1].split(path.delimiter).at(-1), jar);
+});
+
+test("multiple registered or configured extension roots are not chosen by order", async t => {
+  for (const mode of ["active", "inactive", "configured"]) {
+    await t.test(mode, async t => {
+      const extensions = [], paths = [];
+      const f = fixture(t, { nativeExtensionPaths: mode === "configured" ? paths : undefined }, automaticReply, registeredService(extensions));
+      for (const version of ["10.3.1-review", "10.3.2-review"]) {
+        const directory = path.join(f.directory, version);
+        installParser(directory, version);
+        paths.push(directory);
+        extensions.push({ id: `${version}.appengine-plugin`, extensionPath: directory, isActive: mode === "active" });
+      }
+      for (let order = 0; order < 2; order++) {
+        extensions.reverse(); paths.reverse();
+        const result = await f.service.parse("method Receipt()\n;\n");
+        assert.equal(result.status, "unavailable");
+        assert.equal(result.code, "parser_ambiguous");
+        assert.equal(f.calls.length, 0);
+      }
+    });
+  }
+});
+
+test("a registered extension without a usable parser does not enable sibling fallback", async t => {
+  const extensions = [];
+  const f = fixture(t, { nativeExtensionPaths: undefined }, automaticReply, registeredService(extensions));
+  const active = path.join(f.directory, "active-engine");
+  extensions.push({ id: "1c-soft.1c-appengine-plugin", extensionPath: active, isActive: true });
+  const jar = installParser(active, "10.3.0-review");
+  fs.unlinkSync(jar);
+  for (const missingRepo of [false, true]) {
+    if (missingRepo) fs.rmSync(path.dirname(jar), { recursive: true });
+    const result = await f.service.parse("method Receipt()\n;\n");
+    assert.equal(result.status, "unavailable");
+    assert.equal(result.code, "parser_not_found");
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("multiple sibling parser installations are ambiguous without a registered extension", async t => {
+  const f = fixture(t);
+  installParser(path.join(f.directory, "1c-appengine-plugin"), "8.7.0-review");
+  assert.equal((await f.service.parse("method Receipt()\n;\n")).code, "parser_ambiguous");
+  assert.equal(f.calls.length, 0);
+});
+
+test("explicit parserJarPath overrides ambiguous registry and LSP_SERVER_PATH", async t => {
+  const extensions = [];
+  const options = { env: { LSP_SERVER_PATH: "/missing-authoritative-lsp" }, nativeExtensionPaths: undefined };
+  const f = fixture(t, options, automaticReply, registeredService(extensions));
+  const explicit = fixture(t, { ...options, parserJarPath: f.jar }, automaticReply, registeredService(extensions));
+  for (const version of ["10.3.1-review", "10.3.2-review"]) {
+    const directory = path.join(f.directory, version);
+    installParser(directory, version);
+    extensions.push({ id: `${version}.appengine-plugin`, extensionPath: directory, isActive: true });
+  }
+  const result = await explicit.service.parse("method Receipt()\n;\n");
+  assert.equal(result.status, "ready");
+  assert.equal(result.parserVersion, "9.1.9-1");
+  assert.equal(explicit.calls.length, 1);
+  fs.unlinkSync(f.jar);
+  const missing = await explicit.service.parse("method Receipt()\n;\n");
+  assert.equal(missing.code, "parser_not_found");
+  assert.equal(explicit.calls.length, 1);
+});
+
+test("changing authoritative LSP_SERVER_PATH rechecks identity and never falls back on failure", async t => {
+  const extensions = [], env = {};
+  const f = fixture(t, { env, nativeExtensionPaths: undefined }, automaticReply, registeredService(extensions));
+  const active = path.join(f.directory, "active-engine");
+  installParser(active, "10.3.0-review");
+  extensions.push({ id: "1c-soft.1c-appengine-plugin", extensionPath: active, isActive: true });
+  const source = "method Receipt()\n;\n";
+  const a = await f.service.parse(source);
+  assert.equal(a.parserVersion, "10.3.0-review");
+  const other = path.join(f.directory, "configured-engine");
+  installParser(other, "10.4.0-review");
+  env.LSP_SERVER_PATH = path.join(other, "bin/appengine-lsp");
+  // An explicit LSP root remains authoritative even if registered engines become ambiguous.
+  extensions.push({ id: "other.appengine-plugin", extensionPath: other, isActive: true });
+  const b = await f.service.parse(source);
+  assert.equal(b.status, "ready");
+  assert.equal(b.parserVersion, "10.4.0-review");
+  assert.notEqual(b.parserFingerprint, a.parserFingerprint);
+  assert.equal(b.cacheHit, false);
+  assert.equal(f.children[0].killed, true);
+  installParser(other, "10.4.1-review");
+  assert.equal((await f.service.parse(source)).code, "parser_ambiguous");
+  env.LSP_SERVER_PATH = path.join(f.directory, "removed-engine");
+  assert.equal((await f.service.parse(source)).code, "parser_not_found");
+  delete env.LSP_SERVER_PATH;
+  assert.equal((await f.service.parse(source)).code, "parser_ambiguous");
+  assert.equal(f.calls.length, 2);
+  extensions.pop();
+  const restored = await f.service.parse(source);
+  assert.equal(restored.status, "ready");
+  assert.equal(restored.parserFingerprint, a.parserFingerprint);
+});
+
+test("missing configured Java keeps a discovered parser optional and returns lexical context", async t => {
+  const env = {};
+  const f = fixture(t, { env });
+  env.JAVA_HOME = path.join(f.directory, "missing-java");
+  const source = "метод ПринятьПоставку(): Число\n    возврат 17\n;";
+  const result = await f.service.parse(source);
+  assert.equal(result.status, "unavailable");
+  assert.equal(result.code, "java_not_found");
+  const { ProjectSemanticService } = loadSource("src/projectSemanticService.ts", { vscode: { Uri: { file: fsPath => ({ fsPath }) } } });
+  const semantic = new ProjectSemanticService(f.service, { inspect: async () => ({ status: "unavailable", symbols: [], queries: [] }) }, logger);
+  const context = await semantic.buildContext({ workspaceRoot: f.directory, query: "ПринятьПоставку", files: [{ path: "Receipt.xbsl", hash: "fixture" }],
+    selected: [{ path: "Receipt.xbsl", startLine: 1, endLine: 3, symbols: ["ПринятьПоставку"] }],
+    readFile: async () => ({ text: source, truncated: false, fromOpenDocument: false, startLine: 1, endLine: 3 }) });
+  assert.ok(context.snippets.some(snippet => snippet.source === "lexical" && snippet.text === source));
+  assert.equal(context.providers[0].ast, "unavailable");
+  assert.equal(f.calls.length, 0);
 });
 
 test("configured LSP path is authoritative; no silent fallback to another installation", async t => {
