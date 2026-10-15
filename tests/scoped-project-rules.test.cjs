@@ -11,7 +11,8 @@ const rule = (selectors, body = "SCOPED") => `---\n${selectors}\n---\n${body}`;
 const uri = fsPath => ({ scheme: "file", fsPath });
 
 function fixture(t, files = {}) {
-  const temporary = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "scoped-rules-")));
+  // Match native canonical paths so read hooks also fire under Windows 8.3 TEMP.
+  const temporary = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "scoped-rules-")));
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
   const root = path.join(temporary, "workspace");
   const other = path.join(temporary, "workspace-other");

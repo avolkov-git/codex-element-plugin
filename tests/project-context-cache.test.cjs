@@ -34,7 +34,8 @@ async function readyContext(request) {
 }
 
 function fixture(t, options = {}) {
-  const temporary = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "project-cache-")));
+  // Match fs.promises.realpath, including expansion of Windows 8.3 temp paths.
+  const temporary = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "project-cache-")));
   const rootA = path.join(temporary, "A");
   const rootB = path.join(temporary, "B");
   fs.mkdirSync(rootA);

@@ -15,7 +15,7 @@ const unavailableAst = { parse: async () => ({ status: "unavailable", diagnostic
 
 function request(sources, query = "Применить", selected = "A/Form.yaml") {
   return {
-    workspaceRoot: "/workspace", query,
+    workspaceRoot: path.resolve("/workspace"), query,
     files: Object.entries(sources).map(([name, text]) => ({ path: name, hash: "test", structure: analyzeProjectStructure(name, text) })),
     selected: [{ path: selected, startLine: 1, endLine: 10, symbols: [] }],
     readFile: async (name) => ({ text: sources[name], startLine: 1, endLine: sources[name].split("\n").length, truncated: false, fromOpenDocument: false }),
@@ -75,8 +75,8 @@ test("native AST exact range replaces lexical range and every nested node remain
 
 test("LSP definitions are used only inside indexed workspace and stale source hashes are rejected", async () => {
   const language = { inspect: async () => ({ status: "ready", symbols: [], queries: [{ position: { line: 0, character: 6 }, hover: "method Применить()", definitions: [
-    { uri: "file:///workspace/A/Target.xbsl", startLine: 1, endLine: 3 },
-    { uri: "file:///outside/secret.xbsl", startLine: 1, endLine: 3 },
+    { uri: pathToFileURL(path.resolve("/workspace/A/Target.xbsl")).href, startLine: 1, endLine: 3 },
+    { uri: pathToFileURL(path.resolve("/outside/secret.xbsl")).href, startLine: 1, endLine: 3 },
   ] }] }) };
   const input = request({ "A/Form.yaml": form, "A/Form.xbsl": method, "A/Target.xbsl": method });
   const result = await new ProjectSemanticService(unavailableAst, language, logger).buildContext(input);

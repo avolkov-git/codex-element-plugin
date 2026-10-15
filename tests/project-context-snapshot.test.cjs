@@ -77,7 +77,8 @@ test("rule targets resolve known module families without assigning kinds to arbi
 });
 
 function fixture(t, options = {}) {
-  const temporary = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "project-snapshot-")));
+  // IO race hooks compare with the native canonical paths used by the service.
+  const temporary = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "project-snapshot-")));
   const rootA = path.join(temporary, "A");
   const rootB = path.join(temporary, "B");
   fs.mkdirSync(rootA);
