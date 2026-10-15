@@ -198,7 +198,7 @@ export class CodexRuntimeController implements vscode.Disposable {
   private compactionWaiters = new Map<string, Array<() => void>>();
   private cancellingChatIds = new Set<string>();
   private cancelledTurnIds = new Set<string>();
-  private completedTurnIds = new Set<string>();
+  private completedTurnIds = new Map<string, boolean>();
   private readonly changeReviewRuns = new Map<string, ChangeReviewRun>();
   private readonly postTurnReviews = new Map<string, Promise<void>>();
   private thinkingTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -585,7 +585,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     selectedSkills: readonly SkillSelection[] = [],
     attachments: readonly ChatAttachment[] = []
   ): Promise<void> {
-    return this.sendPromptCore(chatId, prompt, mode, transcriptText, explicitContextBlocks, {
+    await this.sendPromptCore(chatId, prompt, mode, transcriptText, explicitContextBlocks, {
       addUserMessage: true,
       selectedSkills,
       attachments
@@ -599,9 +599,10 @@ export class CodexRuntimeController implements vscode.Disposable {
     transcriptText: string | undefined,
     explicitContextBlocks: readonly ContextBlock[],
     options: SendPromptCoreOptions
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const runtimeEpoch = this.runtimeEpoch;
     const cancelEpoch = this.cancelEpoch(chatId);
+    let acceptedTurnId: string | undefined;
     if (this.experimentalContextSaving) throw new Error("Сохраняется режим контекста. Дождитесь завершения и отправьте сообщение снова.");
     if (this.promptStarts.has(chatId) || this.backendStopPromise || this.disposed) {
       throw new Error("Запрос уже отправляется или сервер Codex останавливается. Дождитесь завершения.");
@@ -711,12 +712,13 @@ export class CodexRuntimeController implements vscode.Disposable {
         if (!turnId) {
           throw new Error("turn/start did not return an accepted turn ID.");
         }
+        acceptedTurnId = turnId;
         if (runtimeEpoch === this.runtimeEpoch && options.queuedMessageId) {
           this.options.state.acceptQueuedChatMessage(chatId, options.queuedMessageId, turnId);
         }
         this.throwIfCancelled(chatId, cancelEpoch, runtimeEpoch);
         if (this.completedTurnIds.has(turnId)) {
-          return;
+          return turnId;
         }
         if (turnId) {
           this.activeTurnChatId.set(turnId, chatId);
@@ -728,6 +730,7 @@ export class CodexRuntimeController implements vscode.Disposable {
         });
         this.notifyChatChange(chatId);
         this.options.logger.info(`turn/start accepted: turn=${turnId || "-"}.`);
+        return turnId;
       } catch (error) {
         if (runtimeEpoch !== this.runtimeEpoch) {
           return;
@@ -754,6 +757,7 @@ export class CodexRuntimeController implements vscode.Disposable {
       if (this.promptStarts.get(chatId) === dispatchToken) {
         this.promptStarts.delete(chatId);
         if (runtimeEpoch === this.runtimeEpoch && cancelEpoch === this.cancelEpoch(chatId)
+          && acceptedTurnId && this.completedTurnIds.get(acceptedTurnId) === true
           && this.options.state.getChat(chatId)?.status === "idle") this.startNextQueuedPrompt(chatId);
         this.notifyExperimentalContextAvailability();
       }
@@ -1292,6 +1296,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     const cancelEpoch = this.cancelEpoch(chatId);
     const token = Symbol("question-response");
     let startingMode: ChatRunMode | undefined;
+    let acceptedTurnId: string | undefined;
     try {
       if (this.experimentalContextSaving) throw new Error("Сохраняется режим контекста. Дождитесь завершения и отправьте ответ снова.");
       if (typeof answer !== "string" || !answer.trim() || Buffer.byteLength(answer.trim(), "utf8") > 16 * 1024) {
@@ -1326,7 +1331,6 @@ export class CodexRuntimeController implements vscode.Disposable {
       const normalized = answer.trim();
       const prompt = `Вопрос: ${target!.title}\nОтвет: ${normalized}`;
       const mode: ChatRunMode = target!.kind === "clarification" ? "planning" : "normal";
-      let acceptedTurnId: string | undefined;
       if (this.options.state.getChat(chatId)?.status === "running") {
         try {
           acceptedTurnId = await this.steerTurn(chatId, prompt, [], assertOwner);
@@ -1378,12 +1382,13 @@ export class CodexRuntimeController implements vscode.Disposable {
     } finally {
       if (this.promptStarts.get(chatId) === token) {
         this.promptStarts.delete(chatId);
-        if (epoch === this.runtimeEpoch && historyGeneration === this.options.state.getHistoryGeneration()) {
+        if (epoch === this.runtimeEpoch && historyGeneration === this.options.state.getHistoryGeneration()
+          && cancelEpoch === this.cancelEpoch(chatId)) {
           const chat = this.options.state.getChat(chatId);
           if (startingMode && chat?.activeRunMode === startingMode && !chat.activeTurnId && (chat.status === "idle" || chat.status === "error")) {
             this.options.state.updateChat(chatId, { activeRunMode: null }, "immediate");
           }
-          if (chat?.status === "idle") this.startNextQueuedPrompt(chatId);
+          if (chat?.status === "idle" && acceptedTurnId && this.completedTurnIds.get(acceptedTurnId) === true) this.startNextQueuedPrompt(chatId);
         }
         this.notifyExperimentalContextAvailability();
       }
@@ -1694,14 +1699,24 @@ export class CodexRuntimeController implements vscode.Disposable {
       : undefined;
     assertReviewOwner();
     options.assertOwner?.();
-    if (previousReview && !(await this.options.changeReview?.context(chatId))) {
+    const currentReview = previousReview ? await this.options.changeReview?.context(chatId) : undefined;
+    assertReviewOwner();
+    if (previousReview && currentReview?.text !== previousReview.text) {
       turnContext = await this.options.contextOrchestrator.buildTurnContext({
         chatId, chatKind: chat.kind, prompt, runMode: mode, cwd, rulesEnabled: chat.rulesEnabled,
-        explicitContextBlocks, skipAutoDiagnostics: options.skipAutoDiagnostics,
+        explicitContextBlocks: currentReview ? [...explicitContextBlocks, currentReview] : explicitContextBlocks,
+        skipAutoDiagnostics: options.skipAutoDiagnostics,
         forceDiagnosticsContext: options.forceDiagnosticsContext, diagnosticsPriority: options.diagnosticsPriority,
         selectedSkills: options.selectedSkills, attachments: options.attachments
       });
       assertReviewOwner();
+      if (currentReview) {
+        const finalReview = await this.options.changeReview?.context(chatId);
+        assertReviewOwner();
+        if (!finalReview || finalReview.text !== currentReview.text) {
+          throw new Error("Данные проверки изменились во время подготовки запроса. Повторите отправку.");
+        }
+      }
     }
     assertReviewOwner();
     options.assertOwner?.();
@@ -2640,7 +2655,7 @@ export class CodexRuntimeController implements vscode.Disposable {
     if (notificationTurnId && this.cancelledTurnIds.has(notificationTurnId)) {
       if (notification.method === "turn/completed" || notification.method === "error") {
         this.cancelledTurnIds.delete(notificationTurnId);
-        this.rememberCompletedTurn(notificationTurnId);
+        this.rememberCompletedTurn(notificationTurnId, false);
       }
       this.pressure.ignoredNotifications++;
       return;
@@ -2948,7 +2963,8 @@ export class CodexRuntimeController implements vscode.Disposable {
       if (!chatId || !chatBeforeComplete || (chatBeforeComplete.activeTurnId && chatBeforeComplete.activeTurnId !== turnId)) {
         return;
       }
-      if (turnId) this.rememberCompletedTurn(turnId);
+      const completedNormally = status === "completed" || (!status && !errorMessage);
+      if (turnId) this.rememberCompletedTurn(turnId, completedNormally);
       this.clearChatItems(chatId);
       this.rejectUserInputsForChat(chatId, "Native user input ended with its turn.", turnId || undefined);
       this.declinePendingApprovalsForChat(chatId);
@@ -2979,7 +2995,6 @@ export class CodexRuntimeController implements vscode.Disposable {
         }
         this.notifyChatChange(chatId);
       }
-      const completedNormally = status === "completed" || (!status && !errorMessage);
       if (completedNormally) {
         if (!turnId || !this.finishChangeReview(chatId, turnId)) this.startNextQueuedPrompt(chatId);
       } else { this.cancelChangeReview(chatId); }
@@ -3055,11 +3070,12 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
     const runtimeEpoch = this.runtimeEpoch;
     const cancelEpoch = this.cancelEpoch(chatId);
+    let acceptedTurnId: string | undefined;
     this.notifyChatChange(chatId);
     const dispatch = Promise.resolve().then(async () => {
       const skills = await this.validateQueuedSkills(queued.skills ?? []);
       this.throwIfCancelled(chatId, cancelEpoch, runtimeEpoch);
-      await this.sendPromptCore(chatId, queued.text, queued.mode, undefined, [], {
+      acceptedTurnId = await this.sendPromptCore(chatId, queued.text, queued.mode, undefined, [], {
         addUserMessage: true, selectedSkills: skills, attachments: queued.attachments ?? [], queuedMessageId: queued.id
       });
     }).catch((error) => {
@@ -3072,7 +3088,9 @@ export class CodexRuntimeController implements vscode.Disposable {
       if (this.queuedDispatches.get(chatId) === dispatch) {
         this.queuedDispatches.delete(chatId);
         const current = this.options.state.getChat(chatId);
-        if (runtimeEpoch === this.runtimeEpoch && current?.status === "idle" && !current.queuedMessages.some((message) => message.id === queued.id)) {
+        if (runtimeEpoch === this.runtimeEpoch && cancelEpoch === this.cancelEpoch(chatId)
+          && acceptedTurnId && this.completedTurnIds.get(acceptedTurnId) === true
+          && current?.status === "idle" && !current.queuedMessages.some((message) => message.id === queued.id)) {
           this.startNextQueuedPrompt(chatId);
         }
         this.notifyExperimentalContextAvailability();
@@ -3281,10 +3299,11 @@ export class CodexRuntimeController implements vscode.Disposable {
     }
   }
 
-  private rememberCompletedTurn(turnId: string): void {
-    this.completedTurnIds.add(turnId);
+  private rememberCompletedTurn(turnId: string, completedNormally: boolean): void {
+    // Late acknowledgements may release queue barriers only for successful turns.
+    this.completedTurnIds.set(turnId, completedNormally);
     if (this.completedTurnIds.size > 4096) {
-      this.completedTurnIds.delete(this.completedTurnIds.values().next().value!);
+      this.completedTurnIds.delete(this.completedTurnIds.keys().next().value!);
     }
   }
 

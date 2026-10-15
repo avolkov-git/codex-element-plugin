@@ -15,9 +15,11 @@ function fixture() {
   let failRead = false;
   let failCapture = false;
   let analysisHook;
+  let captureHook;
   const calls = [];
   const root = path.resolve("/project");
-  const capture = async () => {
+  const capture = async (_profile, _refresh, signal) => {
+    await captureHook?.(signal);
     if (failCapture) throw new Error("capture failed");
     const captured = hash;
     return { workspaceRoot: root, files: [{ path: "Panel.xbsl", hash },
@@ -42,7 +44,7 @@ function fixture() {
   return { service, report, calls, diagnostic, formatChangeReview,
     profile: value => { profile = value; }, scope: value => { current = value; }, hash: value => { hash = value; },
     diagnostics: value => { diagnostics = value; }, failRead: () => { failRead = true; }, failCapture: () => { failCapture = true; },
-    hook: fn => { analysisHook = fn; } };
+    hook: fn => { analysisHook = fn; }, captureHook: fn => { captureHook = fn; } };
 }
 
 test("review reads only diagnostic cache entries for changed or related files, without declaring new errors introduced", async () => {
@@ -179,6 +181,97 @@ test("long reports disclose omitted output", () => {
   const text = f.formatChangeReview({ report: f.report, diagnostics: [] });
   assert.ok(text.length <= 16000);
   assert.match(text, /часть замечаний не включена/);
+});
+
+test("IDE errors survive warning quotas and unrelated diagnostic floods", async () => {
+  const f = fixture();
+  const baseline = await f.service.begin();
+  f.diagnostics([
+    ...Array.from({ length: 2100 }, (_, i) => f.diagnostic("Other.xbsl", `Unrelated ${i}`)),
+    ...Array.from({ length: 40 }, (_, i) => f.diagnostic("Panel.xbsl", `Warning ${i}`, i, 1)),
+    f.diagnostic("Panel.xbsl", "Important IDE error", 42)
+  ]);
+  const result = await f.service.complete("chat", baseline, () => true);
+  assert.equal(result.diagnostics.length, 40);
+  assert.equal(result.diagnostics[0].severity, "error");
+  assert.match(result.text, /Important IDE error/);
+  assert.match(result.text, /ошибок 0, предупреждений 1/);
+  assert.doesNotMatch(result.text, /Unrelated/);
+  assert.match((await f.service.context("chat")).text, /Important IDE error/);
+});
+
+test("more errors than the quota are counted and displace all warnings", async () => {
+  const f = fixture();
+  f.diagnostics([
+    f.diagnostic("Panel.xbsl", "Warning", 1, 1),
+    ...Array.from({ length: 43 }, (_, i) => f.diagnostic("Panel.xbsl", `Error ${i}`))
+  ]);
+  const result = await f.service.complete("chat", await f.service.begin(), () => true);
+  assert.equal(result.diagnostics.length, 40);
+  assert.ok(result.diagnostics.every(item => item.severity === "error"));
+  assert.match(result.text, /ошибок 3, предупреждений 1/);
+});
+
+test("baseline diagnostic quota also prioritizes IDE errors", async () => {
+  const f = fixture();
+  f.diagnostics([
+    ...Array.from({ length: 2000 }, (_, i) => f.diagnostic("Other.xbsl", `Warning ${i}`, i, 1)),
+    f.diagnostic("Panel.xbsl", "Existing error")
+  ]);
+  const baseline = await f.service.begin();
+  const result = await f.service.complete("chat", baseline, () => true);
+  assert.equal(result.diagnostics[0].observed, "existing");
+});
+
+test("text budget preserves IDE errors before findings and reports exact omissions", () => {
+  const f = fixture();
+  f.report.findings = Array.from({ length: 60 }, () => ({ ...f.report.findings[0], message: "x".repeat(1000) }));
+  const text = f.formatChangeReview({ report: f.report, omittedDiagnostics: { errors: 2, warnings: 3 },
+    diagnostics: [...Array.from({ length: 39 }, (_, i) => ({ path: "Panel.xbsl", line: i + 1,
+      severity: "warning", observed: "existing", message: `Warning ${i}: ${"w".repeat(500)}` })),
+      { path: "Panel.xbsl", line: 1, severity: "error", observed: "existing", message: "Critical IDE error" }] });
+  assert.ok(text.length <= 16000);
+  assert.match(text, /Critical IDE error/);
+  assert.ok(text.indexOf("Critical IDE error") < text.indexOf("Warning 0"));
+  assert.match(text, /ошибок 2, предупреждений \d+/);
+  assert.match(text, /часть замечаний не включена/);
+});
+
+for (const phase of ["baseline", "context"]) test(`${phase} timeout aborts the snapshot operation`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture();
+  if (phase === "context") await f.service.complete("chat", await f.service.begin(), () => true);
+  let signal;
+  f.captureHook(value => {
+    signal = value;
+    return new Promise((_, reject) => value.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+  });
+  const pending = phase === "baseline" ? f.service.begin() : f.service.context("chat");
+  await Promise.resolve();
+  assert.ok(signal);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(phase === "baseline" ? 8000 : 2000);
+  assert.equal(await pending, undefined);
+  assert.equal(signal.aborted, true);
+});
+
+test("analysis timeout propagates cancellation instead of leaving work active", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture();
+  const baseline = await f.service.begin();
+  let signal;
+  f.hook(options => {
+    signal = options.signal;
+    return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+  });
+  const rejected = assert.rejects(f.service.complete("chat", baseline, () => true));
+  await new Promise(setImmediate);
+  assert.ok(signal);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(12000);
+  await rejected;
+  assert.equal(signal.aborted, true);
+  assert.equal(await f.service.context("chat"), undefined);
 });
 
 test("real index snapshots preserve the report across refresh and invalidate same-stat shell changes", async t => {

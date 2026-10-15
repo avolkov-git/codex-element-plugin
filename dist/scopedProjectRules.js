@@ -40,12 +40,15 @@ exports.loadScopedRules = loadScopedRules;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
+const projectStructure_1 = require("./projectStructure");
+const projectModulePaths_1 = require("./projectModulePaths");
 const yaml = require(path.join(__dirname, "..", "resources", "context", "yaml.cjs"));
 exports.SCOPED_RULES_LIMITS = Object.freeze({
     files: 64, directoryEntries: 256, fileBytes: 32 * 1024, totalBytes: 256 * 1024,
     frontmatterBytes: 8 * 1024, contextChars: 12000, targets: 64, selectors: 32, patternChars: 256,
     // Enough for one 2048-character confirmed path even after JSON quote escaping.
     displayTargets: 8, targetListChars: 4100,
+    targetFileBytes: 256 * 1024, targetTotalBytes: 1024 * 1024,
 });
 const RULES_DIRECTORY = ".local-codex/rules";
 function invalid(message) {
@@ -173,6 +176,12 @@ class RulesWorkspace {
         this.realRoot = realRoot;
         this.assertCurrent = assertCurrent;
         this.snapshots = new Map();
+        this.directories = new Map();
+        this.targetReads = new Set();
+        this.targetKinds = new Map();
+        this.yamlKinds = new Map();
+        this.targetBudget = { remaining: exports.SCOPED_RULES_LIMITS.targetTotalBytes };
+        this.targetWarnings = [];
     }
     static async create(root, assertCurrent) {
         assertCurrent();
@@ -225,7 +234,7 @@ class RulesWorkspace {
         }
         return current;
     }
-    async confirmTarget(target) {
+    async confirmTarget(target, enrich = true) {
         if (typeof target.path !== "string" || !target.path || target.path.length > 2048 || /[\x00-\x1f\x7f]/.test(target.path)
             || target.path.split(/[\\/]/).includes(".."))
             throw new Error("Неподтвержденный или недопустимый путь цели.");
@@ -245,7 +254,53 @@ class RulesWorkspace {
                 throw error;
         }
         this.assertCurrent();
-        return { path: relative.split(path.sep).join("/"), elementKind: typeof target.elementKind === "string" ? target.elementKind : undefined };
+        const confirmedPath = relative.split(path.sep).join("/");
+        let elementKind = typeof target.elementKind === "string" ? target.elementKind : undefined;
+        if (enrich && elementKind === undefined)
+            elementKind = await this.targetKind(confirmedPath);
+        return { path: confirmedPath, elementKind };
+    }
+    async targetKind(relative) {
+        if (this.targetKinds.has(relative))
+            return this.targetKinds.get(relative);
+        let kind;
+        try {
+            let candidates = [];
+            if (/\.ya?ml$/i.test(relative))
+                candidates = [relative];
+            else if (/\.xbsl$/i.test(relative)) {
+                const directory = path.posix.dirname(relative);
+                const catalog = await this.directoryPaths(directory, /\.ya?ml$/i);
+                candidates = catalog.filter(candidate => (0, projectModulePaths_1.isElementModuleCompanion)(relative, candidate));
+            }
+            if (candidates.length > 1)
+                throw new Error("неоднозначная пара YAML/XBSL");
+            if (candidates.length === 1) {
+                const yamlPath = candidates[0];
+                if (this.yamlKinds.has(yamlPath))
+                    kind = this.yamlKinds.get(yamlPath);
+                else {
+                    this.targetReads.add(yamlPath);
+                    try {
+                        if (this.targetBudget.remaining <= 0)
+                            throw new Error("исчерпан общий лимит чтения YAML 1 МБ");
+                        const text = await this.read(yamlPath, exports.SCOPED_RULES_LIMITS.targetFileBytes, this.targetBudget);
+                        const structure = (0, projectStructure_1.analyzeProjectStructure)(yamlPath, text);
+                        if (structure.errors.length)
+                            throw new Error("некорректная структура YAML");
+                        kind = structure.element?.kind;
+                    }
+                    finally {
+                        this.yamlKinds.set(yamlPath, kind);
+                    }
+                }
+            }
+        }
+        catch (error) {
+            this.targetWarnings.push(`${relative}: вид элемента не подтвержден; ${error instanceof Error ? error.message : "не удалось прочитать YAML"}.`);
+        }
+        this.targetKinds.set(relative, kind);
+        return kind;
     }
     async read(relative, maxBytes, budget) {
         const dirty = this.dirtyDocument(relative);
@@ -256,20 +311,33 @@ class RulesWorkspace {
             if (budget) {
                 if (bytes > budget.remaining) {
                     budget.remaining = 0;
-                    throw new Error("Подбор дополнительных правил усечен: общий лимит чтения 256 КБ.");
+                    throw new Error(budget === this.targetBudget ? "Подбор видов элементов усечен: общий лимит чтения YAML 1 МБ."
+                        : "Подбор дополнительных правил усечен: общий лимит чтения 256 КБ.");
                 }
                 budget.remaining -= bytes;
             }
             if (bytes > maxBytes)
                 throw tooLarge();
         };
-        let diskText = "";
-        let diskStamp;
+        let before;
         try {
-            const before = await fs.promises.lstat(filePath);
+            before = await fs.promises.lstat(filePath);
             if (!before.isFile() || before.isSymbolicLink())
                 throw new Error("Правила должны быть обычным файлом, без символических ссылок.");
-            if (before.size > maxBytes)
+        }
+        catch (error) {
+            if (!isMissingRulesFile(error) || !dirty)
+                throw error;
+        }
+        this.snapshots.set(relative, { diskStamp: before && stamp(before), document: dirty, version });
+        let text;
+        if (dirty) {
+            // The buffer is the source; disk metadata is only used for path safety and freshness.
+            text = dirty.getText();
+            consume(Buffer.byteLength(text, "utf8"));
+        }
+        else {
+            if (!before || before.size > maxBytes)
                 throw tooLarge();
             const file = await fs.promises.open(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
             try {
@@ -290,25 +358,13 @@ class RulesWorkspace {
                 if (stamp(before) !== stamp(await file.stat()) || stamp(before) !== stamp(await fs.promises.lstat(filePath))) {
                     throw new Error("Файл правил изменился во время чтения. Повторите запрос.");
                 }
-                diskText = buffer.subarray(0, length).toString("utf8");
-                diskStamp = stamp(before);
+                text = buffer.subarray(0, length).toString("utf8");
             }
             finally {
                 await file.close();
             }
         }
-        catch (error) {
-            if (!isMissingRulesFile(error) || !dirty)
-                throw error;
-            await this.safePath(relative, true);
-        }
-        this.assertCurrent();
-        if (this.dirtyDocument(relative) !== dirty || dirty?.version !== version)
-            throw new Error("Буфер правил изменился во время чтения. Повторите запрос.");
-        const text = dirty ? dirty.getText() : diskText;
-        if (dirty)
-            consume(Buffer.byteLength(text, "utf8"));
-        this.snapshots.set(relative, { diskStamp, document: dirty, version });
+        await this.validateRead(relative);
         return text;
     }
     async validateRead(relative) {
@@ -331,7 +387,16 @@ class RulesWorkspace {
         }
     }
     async rulePaths() {
-        const directory = await this.safePath(RULES_DIRECTORY);
+        return this.directoryPaths(RULES_DIRECTORY, /\.md$/);
+    }
+    async directoryPaths(relative, pattern, remember = true) {
+        const key = `${relative}\0${pattern}`;
+        const existing = this.directories.get(key);
+        if (remember && existing)
+            return existing.paths;
+        await this.checkCurrent();
+        const directory = relative === "." ? this.realRoot : await this.safePath(relative);
+        const before = stamp(await fs.promises.lstat(directory));
         const names = new Set();
         const handle = await fs.promises.opendir(directory);
         let entries = 0;
@@ -340,22 +405,45 @@ class RulesWorkspace {
             // Fail closed rather than selecting an arbitrary filesystem-order subset.
             if (++entries > exports.SCOPED_RULES_LIMITS.directoryEntries)
                 throw new Error("Подбор дополнительных правил усечен: в каталоге больше 256 записей.");
-            if (entry.name.endsWith(".md"))
+            if (pattern.test(entry.name))
                 names.add(entry.name);
         }
         for (const document of vscode.workspace.textDocuments ?? []) {
             if (document.isClosed || !document.isDirty || document.uri.scheme !== "file")
                 continue;
             const file = path.resolve(document.uri.fsPath);
-            if (![this.absolute(RULES_DIRECTORY), path.join(this.realRoot, RULES_DIRECTORY)].includes(path.dirname(file)))
+            if (![this.absolute(relative), path.join(this.realRoot, relative)].includes(path.dirname(file)))
                 continue;
-            if (file.endsWith(".md"))
+            if (pattern.test(file))
                 names.add(path.basename(file));
             if (names.size > exports.SCOPED_RULES_LIMITS.directoryEntries)
                 throw new Error("Подбор дополнительных правил усечен: больше 256 файлов и буферов.");
         }
-        await this.safePath(RULES_DIRECTORY);
-        return [...names].sort().map(name => `${RULES_DIRECTORY}/${name}`);
+        if (relative !== ".")
+            await this.safePath(relative);
+        else
+            await this.checkCurrent();
+        if (stamp(await fs.promises.lstat(directory)) !== before)
+            throw new Error("Каталог изменился во время чтения. Повторите запрос.");
+        const paths = [...names].sort().map(name => path.posix.join(relative, name));
+        if (remember)
+            this.directories.set(key, { relative, pattern, stamp: before, paths });
+        return paths;
+    }
+    async validateScopedReads() {
+        // Nonmatching, malformed and oversized reads also influenced the selection.
+        for (const relative of this.snapshots.keys()) {
+            if (relative.startsWith(`${RULES_DIRECTORY}/`) || this.targetReads.has(relative))
+                await this.validateRead(relative);
+        }
+        for (const snapshot of this.directories.values()) {
+            const { relative } = snapshot;
+            const paths = await this.directoryPaths(relative, snapshot.pattern, false);
+            const directory = relative === "." ? this.realRoot : await this.safePath(relative);
+            if (stamp(await fs.promises.lstat(directory)) !== snapshot.stamp || JSON.stringify(paths) !== JSON.stringify(snapshot.paths)) {
+                throw new Error("Каталог изменился во время сборки контекста. Повторите запрос.");
+            }
+        }
     }
 }
 exports.RulesWorkspace = RulesWorkspace;
@@ -374,6 +462,7 @@ async function loadScopedRules(workspace, targets) {
             result.warnings.push("Цель пропущена: путь не подтвержден в текущем workspace или содержит символическую ссылку.");
         }
     }
+    result.warnings.push(...workspace.targetWarnings);
     if (!confirmed.length)
         return result;
     let paths;
@@ -425,14 +514,13 @@ async function loadScopedRules(workspace, targets) {
     // Targets may disappear or turn into symlinks while rule files are being read.
     try {
         for (const target of confirmed)
-            await workspace.confirmTarget(target);
+            await workspace.confirmTarget(target, false);
     }
     catch {
         return { scopedMatchCount: 0, scopedPaths: [], warnings: [...result.warnings, "Цели изменились во время подбора; дополнительные правила не добавлены. Повторите запрос."] };
     }
     try {
-        for (const relative of result.scopedPaths)
-            await workspace.validateRead(relative);
+        await workspace.validateScopedReads();
     }
     catch {
         return { scopedMatchCount: 0, scopedPaths: [], warnings: [...result.warnings, "Дополнительные правила изменились во время сборки контекста и не добавлены. Повторите запрос."] };

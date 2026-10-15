@@ -62,13 +62,21 @@ function fixture(t, files = {}) {
   });
   const logs = [];
   const logger = { info: message => logs.push(message), warn: message => logs.push(message) };
-  const { RulesContextService } = loadSource("src/rulesContextService.ts", { fs: { ...fs, promises }, vscode: { workspace } });
+  const mocks = { fs: { ...fs, promises }, vscode: { workspace } };
+  const scoped = loadSource("src/scopedProjectRules.ts", mocks);
+  const read = scoped.RulesWorkspace.prototype.read;
+  scoped.RulesWorkspace.prototype.read = async function (...args) {
+    const text = await read.apply(this, args);
+    await hooks.afterRuleRead?.(args[0]);
+    return text;
+  };
+  const { RulesContextService } = loadSource("src/rulesContextService.ts", { ...mocks, "./scopedProjectRules": scoped });
   const service = new RulesContextService(logger);
   const target = (relative = "Form.xbsl", elementKind = "Форма") => ({ path: relative, elementKind });
   const build = (targets = [target()]) => service.buildContext("project", true, targets);
   const dirty = (relative, text, at = root) => {
     const document = { uri: uri(path.join(at, relative)), isDirty: true, isClosed: false, version: 1, text,
-      getText() { return this.text; } };
+      getText() { const text = this.text; hooks.afterDirtyRead?.(this.uri.fsPath); return text; } };
     documents.push(document);
     return document;
   };
@@ -282,9 +290,10 @@ test("same-size rewrite, deletion and editor edits during a read are detected", 
     const f = fixture(t, { [basePath]: "BASE", [scopedPath("a")]: rule('paths: ["**/*.xbsl"]', "BEFORE") });
     const file = path.join(f.root, scopedPath("a"));
     const document = mode === "editor" ? f.dirty(scopedPath("a"), rule('paths: ["**/*.xbsl"]', "BEFORE")) : undefined;
-    f.hooks.afterRead = current => {
+    const hook = mode === "editor" ? "afterDirtyRead" : "afterRead";
+    f.hooks[hook] = current => {
       if (current !== file) return;
-      delete f.hooks.afterRead;
+      delete f.hooks[hook];
       if (mode === "rewrite") {
         const before = fs.statSync(file);
         f.put(scopedPath("a"), rule('paths: ["**/*.xbsl"]', "AFTER!"));
@@ -444,10 +453,11 @@ test("a long quoted target is still displayed whole instead of yielding an empty
   const { loadScopedRules } = loadSource("src/scopedProjectRules.ts", { vscode: {} });
   const filePath = `${'"'.repeat(2043)}.xbsl`;
   const workspace = {
+    targetWarnings: [],
     confirmTarget: async target => target,
     rulePaths: async () => [scopedPath("a")],
     read: async () => rule('paths: ["**/*.xbsl"]', "QUOTED_BODY"),
-    validateRead: async () => {},
+    validateScopedReads: async () => {},
   };
   const result = await loadScopedRules(workspace, [{ path: filePath }]);
   assert.equal(result.scopedMatchCount, 1);
@@ -597,4 +607,270 @@ test("no workspace returns missing without reading rules", async t => {
   const result = await f.build();
   assert.equal(result.status.status, "missing");
   assert.equal(f.operations, 0);
+});
+
+for (const legacy of [false, true]) {
+  test(`a small dirty source replaces an oversized saved rule: ${legacy ? "legacy" : "scoped"}`, async t => {
+    const relative = legacy ? basePath : scopedPath("a");
+    const limit = (legacy ? 64 : 32) * 1024;
+    const f = fixture(t, { [relative]: "x".repeat(limit + 1) });
+    f.dirty(relative, legacy ? "CURRENT_BASE" : rule('paths: ["**/*.xbsl"]', "CURRENT_SCOPED"));
+    const result = await f.build();
+    assert.equal(legacy ? result.matchCount : result.scopedMatchCount, 1);
+    assert.match(legacy ? result.text : result.scopedText, /CURRENT_/);
+    assert.equal(result.warnings, undefined);
+    assert.ok(!f.reads.includes(path.join(f.root, relative)), "a dirty source must not read stale disk content");
+  });
+}
+
+test("scoped budget charges dirty UTF-8 sources once, not their saved copies", async t => {
+  const f = fixture(t, { [basePath]: "BASE" });
+  for (let i = 0; i < 10; i++) {
+    const relative = scopedPath(String(i));
+    f.put(relative, rule('paths: ["**/*.yaml"]', "x".repeat(30_000)));
+    f.dirty(relative, rule(`paths: ["**/*.${i === 9 ? "xbsl" : "yaml"}"]`, "CURRENT"));
+  }
+  const result = await f.build();
+  assert.equal(result.scopedMatchCount, 1);
+  assert.equal(result.scopedPaths[0], scopedPath("9"));
+  assert.equal(result.warnings, undefined);
+  assert.ok(f.reads.every(file => file.endsWith("rules.md")));
+});
+
+test("dirty nonmatching sources still exhaust the shared scoped read budget", async t => {
+  const f = fixture(t, { [basePath]: "BASE" });
+  for (let i = 0; i < 10; i++) {
+    const relative = scopedPath(String(i));
+    f.dirty(relative, rule('paths: ["**/*.yaml"]', "я".repeat(15_000)));
+  }
+  f.put(scopedPath("z"), rule('paths: ["**/*.xbsl"]', "BEYOND_BUDGET"));
+  const result = await f.build();
+  assert.equal(result.scopedText, undefined);
+  assert.match(warnings(result), /усечен.*256 КБ/);
+  assert.ok(!f.reads.some(file => file.endsWith("z.md")));
+  assert.match(result.text, /BASE/);
+});
+
+for (const source of ["disk", "dirty"]) {
+  for (const initial of [rule('paths: ["**/*.yaml"]'), "malformed frontmatter", "x".repeat(33 * 1024)]) {
+    test(`all observed rules are revalidated, including unmatched or rejected reads: ${source}, ${initial.length}`, async t => {
+      const a = scopedPath("a"), b = scopedPath("b");
+      const f = fixture(t, { [basePath]: "BASE", [a]: initial, [b]: rule('paths: ["**/*.yaml"]') });
+      const docA = source === "dirty" ? f.dirty(a, initial) : undefined;
+      const docB = source === "dirty" ? f.dirty(b, rule('paths: ["**/*.yaml"]')) : undefined;
+      f.hooks.before = (operation, file) => {
+        if (operation !== "lstat" || file !== path.join(f.root, b)) return;
+        delete f.hooks.before;
+        const nextA = rule('paths: ["**/*.xbsl"]', "CURRENT_A");
+        const nextB = rule('paths: ["**/*.xbsl"]', "CURRENT_B");
+        if (docA) {
+          docA.text = nextA; docA.version++;
+          docB.text = nextB; docB.version++;
+        } else { f.put(a, nextA); f.put(b, nextB); }
+      };
+      const result = await f.build();
+      assert.equal(result.scopedMatchCount, 0, "must not publish a mixed snapshot containing only B");
+      assert.equal(result.scopedText, undefined);
+      assert.match(warnings(result), /изменились во время сборки/);
+      assert.match(result.text, /BASE/);
+      const retry = await f.build();
+      assert.equal(retry.scopedMatchCount, 2);
+      assert.match(retry.scopedText, /CURRENT_A/);
+      assert.match(retry.scopedText, /CURRENT_B/);
+    });
+  }
+}
+
+for (const mutation of ["create", "rename", "delete", "dirty-create", "dirty-close"]) {
+  test(`rule catalog changes invalidate selection: ${mutation}`, async t => {
+    const a = scopedPath("a"), z = scopedPath("z");
+    const f = fixture(t, { [basePath]: "BASE", [a]: rule('paths: ["**/*.xbsl"]', "A") });
+    if (["rename", "delete"].includes(mutation)) f.put(z, rule('paths: ["**/*.xbsl"]', "Z"));
+    const document = mutation === "dirty-close" ? f.dirty(z, rule('paths: ["**/*.xbsl"]', "Z")) : undefined;
+    f.hooks.afterRuleRead = relative => {
+      if (relative !== a) return;
+      delete f.hooks.afterRuleRead;
+      if (mutation === "create") f.put(z, rule('paths: ["**/*.xbsl"]', "Z"));
+      if (mutation === "rename") fs.renameSync(path.join(f.root, z), path.join(f.root, scopedPath("new")));
+      if (mutation === "delete") fs.unlinkSync(path.join(f.root, z));
+      if (mutation === "dirty-create") f.dirty(z, rule('paths: ["**/*.xbsl"]', "Z"));
+      if (document) document.isClosed = true;
+    };
+    const result = await f.build();
+    assert.equal(result.scopedText, undefined);
+    assert.equal(result.scopedMatchCount, 0);
+    assert.match(warnings(result), /изменились во время сборки/);
+    assert.match(result.text, /BASE/);
+    const retry = await f.build();
+    assert.equal(retry.scopedMatchCount, ["delete", "dirty-close"].includes(mutation) ? 1 : 2);
+  });
+}
+
+const elementYaml = kind => `Имя: Element\nВидЭлемента: ${kind}\n`;
+
+for (const suffix of [".xbsl", ".Объект.xbsl", ".Object.xbsl", ".НаборЗаписей.xbsl", ".Запись.xbsl", ".yaml", ".yml", ".YAML"]) {
+  test(`path-only targets derive kinds from fresh paired YAML: ${suffix}`, async t => {
+    const targetPath = `Project/Element${suffix}`;
+    const yamlPath = /\.ya?ml$/i.test(suffix) ? targetPath : "Project/Element.yaml";
+    const f = fixture(t, { [basePath]: "BASE", [targetPath]: "", [yamlPath]: elementYaml("Справочник"),
+      [scopedPath("kind")]: rule('elementKinds: ["Справочник"]', "RIGHT_KIND"),
+      [scopedPath("wrong")]: rule('elementKinds: ["Форма"]', "WRONG_KIND") });
+    const result = await f.build([{ path: targetPath }]);
+    assert.equal(result.scopedMatchCount, 1);
+    assert.match(result.scopedText, /RIGHT_KIND/);
+    assert.doesNotMatch(result.scopedText, /WRONG_KIND/);
+    assert.ok(result.scopedText.includes(JSON.stringify([targetPath])));
+    assert.equal(result.warnings, undefined);
+  });
+}
+
+test("enriched kinds retain AND semantics for each confirmed target", async t => {
+  const f = fixture(t, { "Catalog.Объект.xbsl": "", "Catalog.yaml": elementYaml("Справочник"),
+    "Form.yaml": elementYaml("Форма"),
+    [scopedPath("catalog")]: rule('paths: ["Catalog.Объект.xbsl"]\nelementKinds: ["Справочник"]', "CATALOG"),
+    [scopedPath("form")]: rule('paths: ["Form.xbsl"]\nelementKinds: ["Форма"]', "FORM"),
+    [scopedPath("cross")]: rule('paths: ["Form.xbsl"]\nelementKinds: ["Справочник"]', "WRONG_TARGET") });
+  const result = await f.build([{ path: "Catalog.Объект.xbsl" }, { path: "Form.xbsl" }]);
+  assert.equal(result.scopedMatchCount, 2);
+  assert.match(result.scopedText, /CATALOG/);
+  assert.match(result.scopedText, /FORM/);
+  assert.doesNotMatch(result.scopedText, /WRONG_TARGET/);
+});
+
+test("arbitrary suffix targets cannot inherit a neighboring YAML kind", async t => {
+  const f = fixture(t, { "Form.Other.xbsl": "", "Form.yaml": elementYaml("Форма"),
+    [scopedPath("kind")]: rule('elementKinds: ["Форма"]', "WRONG_OWNER"),
+    [scopedPath("path")]: rule('paths: ["Form.Other.xbsl"]', "EXPLICIT_PATH") });
+  const result = await f.build([{ path: "Form.Other.xbsl" }]);
+  assert.equal(result.scopedMatchCount, 1);
+  assert.match(result.scopedText, /EXPLICIT_PATH/);
+  assert.doesNotMatch(result.scopedText, /WRONG_OWNER/);
+});
+
+test("kind enrichment prefers current dirty YAML and ignores stale clean or untitled buffers", async t => {
+  const f = fixture(t, { "Form.yaml": elementYaml("Справочник"),
+    [scopedPath("catalog")]: rule('elementKinds: ["Справочник"]', "CATALOG"),
+    [scopedPath("form")]: rule('elementKinds: ["Форма"]', "FORM") });
+  const document = f.dirty("Form.yaml", elementYaml("Форма"));
+  const targets = [{ path: "Form.xbsl" }];
+  assert.match((await f.build(targets)).scopedText, /Текст правила:\nFORM/);
+  document.text = elementYaml("ОбщийМодуль"); document.version++;
+  assert.equal((await f.build(targets)).scopedMatchCount, 0);
+  for (const state of ["clean", "untitled"]) {
+    document.isDirty = state !== "clean";
+    document.uri.scheme = state === "untitled" ? "untitled" : "file";
+    const result = await f.build(targets);
+    assert.equal(result.scopedMatchCount, 1);
+    assert.match(result.scopedText, /CATALOG/);
+  }
+});
+
+test("a new file-backed dirty YAML companion can supply the kind", async t => {
+  const f = fixture(t, { [scopedPath("a")]: rule('elementKinds: ["Форма"]') });
+  f.dirty("Form.yaml", elementYaml("Форма"));
+  assert.equal((await f.build([{ path: "Form.xbsl" }])).scopedMatchCount, 1);
+});
+
+for (const source of ["disk", "dirty", "new-dirty", "new-disk"]) {
+  test(`YAML source or companion catalog changes invalidate enriched selection: ${source}`, async t => {
+    const f = fixture(t, { [basePath]: "BASE", [scopedPath("path")]: rule('paths: ["**/*.xbsl"]'),
+      [scopedPath("kind")]: rule('elementKinds: ["Форма"]') });
+    if (!source.startsWith("new-")) f.put("Form.yaml", elementYaml("Форма"));
+    const document = source === "dirty" ? f.dirty("Form.yaml", elementYaml("Форма")) : undefined;
+    f.hooks.afterRuleRead = relative => {
+      if (relative !== scopedPath("path")) return;
+      delete f.hooks.afterRuleRead;
+      if (document) { document.text = elementYaml("Справочник"); document.version++; }
+      else if (source === "new-dirty") f.dirty("Form.yaml", elementYaml("Справочник"));
+      else f.put("Form.yaml", elementYaml("Справочник"));
+    };
+    const result = await f.build([{ path: "Form.xbsl" }]);
+    assert.equal(result.scopedText, undefined);
+    assert.match(warnings(result), /изменились во время сборки/);
+    assert.match(result.text, /BASE/);
+    const retry = await f.build([{ path: "Form.xbsl" }]);
+    assert.equal(retry.scopedMatchCount, 1);
+    assert.equal(retry.scopedPaths[0], scopedPath("path"));
+  });
+}
+
+for (const invalid of ["Имя: Form\n", "ВидЭлемента: Форма\n", "Имя: Form\nNested:\n  ВидЭлемента: Форма\n",
+  "Имя: Form\nВидЭлемента: Форма\nВидЭлемента: Справочник\n", "Имя: Form\nВидЭлемента: [\n"]) {
+  test(`malformed or non-element YAML does not invent a kind: ${JSON.stringify(invalid)}`, async t => {
+    const f = fixture(t, { "Form.yaml": invalid,
+      [scopedPath("kind")]: rule('elementKinds: ["Форма"]', "WRONG_KIND"),
+      [scopedPath("path")]: rule('paths: ["**/*.xbsl"]', "PATH_RULE") });
+    const result = await f.build([{ path: "Form.xbsl" }]);
+    assert.equal(result.scopedMatchCount, 1);
+    assert.match(result.scopedText, /PATH_RULE/);
+    assert.doesNotMatch(result.scopedText, /WRONG_KIND/);
+  });
+}
+
+test("companion enrichment rejects ambiguous, neighboring and cross-directory YAML", async t => {
+  const f = fixture(t, { "Other/Form.yaml": elementYaml("Форма"), "Forms.yaml": elementYaml("Форма"),
+    "Element.Объект.xbsl": "", "Element.yaml": elementYaml("Форма"), "Element.yml": elementYaml("Справочник"),
+    [scopedPath("kind")]: rule('elementKinds: ["Форма", "Справочник"]', "WRONG_KIND"),
+    [scopedPath("path")]: rule('paths: ["**/*.xbsl"]', "PATH_RULE") });
+  const result = await f.build([{ path: "Form.xbsl" }, { path: "Element.Объект.xbsl" }]);
+  assert.equal(result.scopedMatchCount, 1);
+  assert.match(result.scopedText, /PATH_RULE/);
+  assert.match(warnings(result), /неоднозначная пара/);
+  assert.ok(!f.reads.some(file => /\.ya?ml$/.test(file)), "no arbitrary choice among ambiguous companions");
+});
+
+for (const internal of [false, true]) {
+  test(`paired YAML symlinks cannot supply a kind, even with a dirty overlay: internal=${internal}`, async t => {
+    const f = fixture(t, { [basePath]: "BASE", [scopedPath("kind")]: rule('elementKinds: ["Форма"]', "SECRET_KIND"),
+      [scopedPath("path")]: rule('paths: ["**/*.xbsl"]', "PATH_RULE") });
+    const secret = f.put("private/Secret.yaml", elementYaml("Форма"), internal ? f.root : f.other);
+    fs.symlinkSync(secret, path.join(f.root, "Form.yaml"));
+    f.dirty("Form.yaml", elementYaml("Форма"));
+    const result = await f.build([{ path: "Form.xbsl" }]);
+    assert.equal(result.scopedMatchCount, 1);
+    assert.match(result.scopedText, /PATH_RULE/);
+    assert.doesNotMatch(result.scopedText, /SECRET_KIND/);
+    assert.match(warnings(result), /символическ/i);
+    assert.ok(!f.reads.some(file => file === secret || file.endsWith("Form.yaml")));
+  });
+}
+
+test("YAML enrichment enforces independent file and total budgets without spending the rules budget", async t => {
+  const f = fixture(t, { [basePath]: "BASE", [scopedPath("kind")]: rule('elementKinds: ["Форма"]', "KIND"),
+    [scopedPath("path")]: rule('paths: ["**/*.xbsl"]', "PATH_RULE") });
+  const targets = [];
+  for (let i = 0; i < 6; i++) {
+    f.put(`Element${i}.xbsl`, "");
+    f.put(`Element${i}.yaml`, elementYaml("Форма") + "#" + "x".repeat(250 * 1024));
+    targets.push({ path: `Element${i}.xbsl` });
+  }
+  f.put("Huge.xbsl", "");
+  f.put("Huge.yaml", elementYaml("Форма") + "#" + "x".repeat(257 * 1024));
+  const huge = await f.build([{ path: "Huge.xbsl" }]);
+  assert.equal(huge.scopedMatchCount, 1);
+  assert.match(warnings(huge), /слишком большой/);
+  assert.ok(!f.reads.some(file => file.endsWith("Huge.yaml")));
+  const result = await f.build(targets);
+  assert.equal(result.scopedMatchCount, 2);
+  assert.match(result.scopedText, /PATH_RULE/);
+  assert.match(warnings(result), /лимит чтения YAML 1 МБ/);
+  assert.ok(f.bytesRead < 1024 * 1024 + 1024);
+  assert.ok(!f.reads.some(file => file.endsWith("Element5.yaml")));
+  const kindBlock = result.scopedText.split("[Дополнительные правила проекта]")[1];
+  assert.doesNotMatch(kindBlock, /Element[45]\.xbsl/);
+});
+
+test("small dirty YAML replaces oversized saved YAML and is shared by companion targets", async t => {
+  const f = fixture(t, { "Element.Объект.xbsl": "", "Element.Запись.xbsl": "",
+    "Element.yaml": "x".repeat(257 * 1024), [scopedPath("kind")]: rule('elementKinds: ["Форма"]') });
+  const document = f.dirty("Element.yaml", elementYaml("Форма"));
+  let reads = 0;
+  const getText = document.getText;
+  document.getText = function () { reads++; return getText.call(this); };
+  const result = await f.build([{ path: "Element.Объект.xbsl" }, { path: "Element.Запись.xbsl" }]);
+  assert.equal(result.scopedMatchCount, 1);
+  assert.equal(reads, 1);
+  assert.equal(result.warnings, undefined);
+  assert.ok(!f.reads.some(file => file.endsWith("Element.yaml")));
+  assert.match(result.scopedText, /Совпавшие цели \(2 из 2\)/);
 });

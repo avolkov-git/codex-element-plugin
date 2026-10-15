@@ -167,6 +167,45 @@ test("same named forms in other directories/projects never become companion targ
   assert.ok(!result.findings.some(item => item.path.startsWith("Nested/")));
 });
 
+test("known element module companions retain YAML targets, module handlers and sibling impacts", async () => {
+  for (const suffix of ["Объект", "Object", "НаборЗаписей", "RecordSet", "Запись", "Record"]) {
+    const module = `UI/Form.${suffix}.xbsl`;
+    const shared = { "UI/Form.yaml": form("Pulse"), [module]: oldCode,
+      "UI/Form.xbsl": method("Sibling"), "Caller.xbsl": method("Wire", "    Pulse()"),
+      "Elsewhere/Form.yaml": form("Pulse"), "Elsewhere/Form.xbsl": oldCode };
+    const f = fixture(shared, { ...shared, [module]: newCode });
+    f.options.inspect = async (path, positions) => language(path, f.after[path], positions,
+      path === "Caller.xbsl" ? "UI/Form.xbsl" : module);
+    const result = await f.run();
+    assert.ok(f.reads.includes("UI/Form.yaml"), suffix);
+    assert.deepEqual(plain(result.elementTargets), [{ path: "UI/Form.yaml", elementKind: "Component", availability: "indexed" }], suffix);
+    assert.deepEqual(Array.from(handlers(result), item => item.path), ["UI/Form.yaml"], suffix);
+    assert.deepEqual(plain(handlers(result)[0].candidatePaths), [module], suffix);
+    assert.equal(handlers(result)[0].evidence, "lsp", suffix);
+    assert.equal(impacts(result).length, 1, suffix);
+    assert.deepEqual(plain(impacts(result)[0].targets), [{ path: "UI/Form.xbsl", line: 1 }], suffix);
+  }
+});
+
+test("removed resolver companions still check their current YAML handlers", async () => {
+  const shared = { "Form.yaml": form("Pulse"), "Form.НаборЗаписей.xbsl": oldCode };
+  const f = fixture(shared, { "Form.yaml": shared["Form.yaml"] });
+  const result = await f.run();
+  assert.ok(f.reads.includes("Form.yaml"));
+  assert.equal(handlers(result).length, 1);
+  assert.equal(handlers(result)[0].resolution, "unresolved");
+  assert.ok(result.elementTargets.some(item => item.path === "Form.yaml"));
+});
+
+test("YAML pairs sharing a resolver companion remain ambiguous", async () => {
+  for (const otherYaml of ["Form.yml", "Form.Запись.yaml"]) {
+    const shared = { "Form.yaml": form("Pulse"), [otherYaml]: form("Pulse"), "Form.Запись.xbsl": oldCode };
+    const result = await fixture(shared, { ...shared, "Form.Запись.xbsl": newCode }).run();
+    assert.equal(handlers(result).length, 2, otherYaml);
+    assert.ok(handlers(result).every(item => item.resolution === "ambiguous" && item.evidence === "candidate"), otherYaml);
+  }
+});
+
 test("a vanished nested manifest remains a boundary and never merges into the parent project", async () => {
   const caller = method("Wire", "    Pulse()");
   const f = fixture({ "Target.xbsl": oldCode, "Nested/project.yaml": "Name: Other\n", "Nested/Caller.xbsl": caller },
@@ -203,6 +242,28 @@ test("current native method names supplement lexical seeds for same-line annotat
   assert.equal(impacts(result).length, 2);
   assert.ok(impacts(result).every(item => item.name === "Pulse" && item.evidence === "ast"));
   assert.match(result.limitations.join(" "), /Прежний AST по текущему исходнику не восстанавливается/);
+});
+
+test("nested AST methods seed impacts without becoming module-level YAML handlers", async () => {
+  for (const kind of ["Method", "AbstractMethod"]) {
+    const annotated = "structure Box\n    @Client method Pulse()\n        return\n    ;\n;\n";
+    const caller = method("Wire", "    Pulse()\n    val Callback = &Pulse");
+    const shared = { "Form.xbsl": annotated, "Form.yaml": form("Pulse"), "Caller.xbsl": caller };
+    const f = fixture(shared, { ...shared, "Form.xbsl": annotated.replace("return", "return 1") });
+    assert.equal(f.options.before.files.find(file => file.path === "Form.xbsl").structure.symbols.filter(symbol => /method/i.test(symbol.kind)).length, 0);
+    f.options.parse = async text => {
+      const ast = native(text);
+      if (text.startsWith("structure")) ast.root.children = [node("BslStructure", text, 0, text.length, { name: "Box" }, [
+        node(kind, text, text.indexOf("@Client"), text.length - 2, { name: "Pulse" }),
+      ])];
+      return ast;
+    };
+    const result = await f.run();
+    assert.deepEqual(Array.from(impacts(result), item => item.occurrenceKind), ["call", "method-reference"], kind);
+    assert.ok(impacts(result).every(item => item.path === "Caller.xbsl" && item.candidatePaths.includes("Form.xbsl")), kind);
+    assert.equal(handlers(result)[0].resolution, "unresolved", kind);
+    assert.deepEqual(plain(handlers(result)[0].candidatePaths), [], kind);
+  }
 });
 
 test("unavailable native syntax and source-name prefilter do not invent diagnostics or calls", async () => {
@@ -415,6 +476,98 @@ test("empty, foreign, ambiguous, truncated, wrong URI and unrequested LSP respon
   }
 });
 
+test("LSP validates complete target and selection ranges against current UTF-16 lines", async () => {
+  const caller = method("Wire", "    Pulse()");
+  const invalidRanges = [
+    { endLine: 9 }, { startLine: 0 }, { startLine: 1.5 }, { endLine: Infinity },
+    { startCharacter: -1 }, { startCharacter: 999 }, { startCharacter: 0.5 },
+    { endCharacter: -1 }, { endCharacter: 2 }, { endCharacter: NaN },
+    { startLine: 3, endLine: 2 }, { endLine: 1, startCharacter: 8, endCharacter: 7 },
+    { endCharacter: undefined },
+  ];
+  for (const selection of [false, true]) {
+    for (const override of invalidRanges) {
+      const f = fixture({ "Target.xbsl": oldCode, "Caller.xbsl": caller }, { "Target.xbsl": newCode, "Caller.xbsl": caller });
+      f.options.inspect = async (path, positions) => {
+        const result = language(path, f.after[path], positions);
+        const target = result.queries[0].definitions[0];
+        if (selection) target.selectionRange = { ...target, ...override };
+        else Object.assign(target, override);
+        return result;
+      };
+      const result = await f.run();
+      assert.equal(impacts(result).length, 1);
+      assert.equal(impacts(result)[0].evidence, "ast", `${selection}/${JSON.stringify(override)}`);
+      assert.ok(!impacts(result)[0].targets);
+      assert.equal(result.status, "partial");
+    }
+  }
+});
+
+test("valid selection ranges cannot mask invalid targets or escape their target range", async () => {
+  const caller = method("Wire", "    Pulse()");
+  for (const mode of ["target-eof", "selection-before", "selection-after", "selection-null"]) {
+    const f = fixture({ "Target.xbsl": oldCode, "Caller.xbsl": caller }, { "Target.xbsl": newCode, "Caller.xbsl": caller });
+    f.options.inspect = async (path, positions) => {
+      const result = language(path, f.after[path], positions);
+      const target = result.queries[0].definitions[0];
+      target.selectionRange = { startLine: 1, startCharacter: 7, endLine: 1, endCharacter: 12 };
+      if (mode === "target-eof") target.endLine = 9;
+      if (mode === "selection-before") target.startCharacter = 8;
+      if (mode === "selection-after") { target.endLine = 1; target.endCharacter = 11; }
+      if (mode === "selection-null") target.selectionRange = null;
+      return result;
+    };
+    const result = await f.run();
+    assert.equal(impacts(result)[0].evidence, "ast", mode);
+    assert.ok(!impacts(result)[0].targets, mode);
+    assert.equal(result.status, "partial", mode);
+  }
+});
+
+test("LSP keeps distinct same-line target and selection ranges ambiguous but deduplicates exact repeats", async () => {
+  const caller = method("Wire", "    Pulse()");
+  for (const mode of ["target-start", "target-end", "selection-start", "selection-end", "exact-repeat"]) {
+    const f = fixture({ "Target.xbsl": oldCode, "Caller.xbsl": caller }, { "Target.xbsl": newCode, "Caller.xbsl": caller });
+    f.options.inspect = async (path, positions) => {
+      const result = language(path, f.after[path], positions);
+      const target = result.queries[0].definitions[0];
+      target.selectionRange = { startLine: 1, startCharacter: 7, endLine: 1, endCharacter: 12 };
+      const other = { ...target, selectionRange: { ...target.selectionRange } };
+      if (mode === "target-start") other.startCharacter++;
+      if (mode === "target-end") other.endCharacter--;
+      if (mode === "selection-start") other.selectionRange.startCharacter++;
+      if (mode === "selection-end") other.selectionRange.endCharacter--;
+      result.queries[0].definitions.push(other);
+      return result;
+    };
+    const result = await f.run();
+    assert.equal(impacts(result)[0].evidence, mode === "exact-repeat" ? "lsp" : "ast", mode);
+    assert.equal(result.status, mode === "exact-repeat" ? "checked" : "partial", mode);
+  }
+});
+
+test("LSP uses UTF-16 columns, excludes CRLF units and permits exact EOF boundaries", async () => {
+  const caller = method("Wire", "    Pulse()");
+  for (const newline of ["\n", "\r\n", "\r"]) {
+    const old = "// 😀\n" + oldCode.trimEnd();
+    const current = ("// 😀\n" + newCode.trimEnd()).replaceAll("\n", newline);
+    for (const extra of [0, 1, 2]) {
+      const f = fixture({ "Target.xbsl": old, "Caller.xbsl": caller }, { "Target.xbsl": current, "Caller.xbsl": caller });
+      f.options.inspect = async (path, positions) => {
+        const result = language(path, f.after[path], positions);
+        Object.assign(result.queries[0].definitions[0], { startLine: 1, startCharacter: "// 😀".length + extra,
+          endLine: 4, endCharacter: 1,
+          selectionRange: { startLine: 2, startCharacter: 7, endLine: 2, endCharacter: 12 } });
+        return result;
+      };
+      const result = await f.run();
+      assert.equal(impacts(result)[0].evidence, extra ? "ast" : "lsp", `${JSON.stringify(newline)}/${extra}`);
+      if (!extra) assert.deepEqual(plain(impacts(result)[0].targets), [{ path: "Target.xbsl", line: 2 }]);
+    }
+  }
+});
+
 test("LSP source changes invalidate everything; a verified different target removes a name-only impact", async () => {
   for (const stale of [false, true]) {
     const caller = method("Wire", "    Pulse()");
@@ -550,18 +703,21 @@ test("real native AST: callback, namespace, receiver, CRLF and exact UTF-16 posi
   for (const point of points) assert.equal(caller.split(/\r\n/)[point.line].slice(point.character, point.character + 5), "Pulse");
 });
 
-test("real native AST: object companion, nested declaration and inherited handler are not conflated", { skip: !realJar }, async t => {
-  const yaml = form("Pulse") + "OnOpen: Inherited\nInherits: Std::Form\n";
-  const code = "structure Box\n    method Pulse()\n        return\n    ;\n;\n";
-  const shared = { "Form.yaml": yaml, "Form.xbsl": code, "Form.Объект.xbsl": oldCode };
-  const f = fixture(shared, { ...shared, "Form.Объект.xbsl": newCode });
-  f.options.parse = realParser(t);
-  const result = await f.run();
-  const pulse = handlers(result).find(item => item.name === "Pulse");
-  assert.equal(pulse.evidence, "structural", JSON.stringify(result));
-  assert.deepEqual(plain(pulse.candidatePaths), ["Form.Объект.xbsl"]);
-  assert.equal(handlers(result).find(item => item.name === "Inherited").evidence, "candidate");
-});
+for (const suffix of ["Объект", "Object", "НаборЗаписей", "Запись"]) {
+  test(`real native AST: ${suffix} companion excludes nested and inherited handlers`, { skip: !realJar }, async t => {
+    const yaml = form("Pulse") + "OnOpen: Inherited\nInherits: Std::Form\n";
+    const code = "structure Box\n    method Pulse()\n        return\n    ;\n;\n";
+    const companion = `Form.${suffix}.xbsl`;
+    const shared = { "Form.yaml": yaml, "Form.xbsl": code, [companion]: oldCode };
+    const f = fixture(shared, { ...shared, [companion]: newCode });
+    f.options.parse = realParser(t);
+    const result = await f.run();
+    const pulse = handlers(result).find(item => item.name === "Pulse");
+    assert.equal(pulse.evidence, "structural", JSON.stringify(result));
+    assert.deepEqual(plain(pulse.candidatePaths), [companion]);
+    assert.equal(handlers(result).find(item => item.name === "Inherited").evidence, "candidate");
+  });
+}
 
 test("real native AST: current syntax diagnostics survive recovery without claiming introduction", { skip: !realJar }, async t => {
   const f = fixture({ "Target.xbsl": oldCode }, { "Target.xbsl": "method Pulse(\n" });
@@ -579,4 +735,49 @@ test("real native AST: same-line annotated method seeds impacts despite absent l
   f.options.parse = realParser(t);
   const result = await f.run();
   assert.deepEqual(Array.from(impacts(result), item => item.occurrenceKind), ["call", "method-reference"], JSON.stringify(result));
+});
+
+test("real native AST: same-line annotated structure method impacts its receiver call, not a YAML binding", { skip: !realJar }, async t => {
+  const target = "структура РасчетСкидки\n    @ВПроекте метод Рассчитать(Сумма: Число): Число\n        возврат Сумма * 0.1\n    ;\n;\n";
+  const caller = "метод Обновить(Правило: РасчетСкидки): Число\n    возврат Правило.Рассчитать(100)\n;\n";
+  const shared = { "Pricing.xbsl": target, "Pricing.yaml": form("Рассчитать"), "Cart.xbsl": caller };
+  const f = fixture(shared, { ...shared, "Pricing.xbsl": target.replace("0.1", "0.2") });
+  assert.equal(f.options.before.files.find(file => file.path === "Pricing.xbsl").structure.symbols.filter(item => /method/i.test(item.kind)).length, 0);
+  f.options.parse = realParser(t);
+  const result = await f.run();
+  assert.ok(f.reads.includes("Cart.xbsl"));
+  assert.equal(result.findings.filter(item => item.kind === "syntax").length, 0, JSON.stringify(result));
+  assert.equal(impacts(result).length, 1, JSON.stringify(result));
+  assert.equal(impacts(result)[0].occurrence, "Правило.Рассчитать");
+  assert.equal(impacts(result)[0].evidence, "ast");
+  assert.deepEqual(plain(impacts(result)[0].candidatePaths), ["Pricing.xbsl"]);
+  assert.equal(handlers(result)[0].resolution, "unresolved");
+  assert.deepEqual(plain(handlers(result)[0].candidatePaths), []);
+});
+
+test("real native AST: different parameter definitions on the same line are not one LSP target", { skip: !realJar }, async t => {
+  const target = "метод Настроить(Основная: ()->Число, Резервная: ()->Число)\n    возврат\n;\nметод Ставка(): Число\n    возврат 1\n;\n";
+  const caller = "метод Обновить(): Число\n    возврат Ставка()\n;\n";
+  const shared = { "Rates.xbsl": target, "Invoice.xbsl": caller };
+  const f = fixture(shared, { ...shared, "Rates.xbsl": target.replace("возврат 1", "возврат 3") });
+  f.options.parse = realParser(t);
+  const ast = await f.options.parse(f.after["Rates.xbsl"]);
+  assert.equal(ast.status, "ready");
+  assert.equal(ast.partial, false, JSON.stringify(ast.diagnostics));
+  const flatten = node => [node, ...node.children.flatMap(flatten)];
+  const parameters = flatten(ast.root).filter(node => ["Основная", "Резервная"].includes(node.attributes.name));
+  assert.equal(parameters.length, 2);
+  assert.equal(parameters[0].startLine, parameters[1].startLine);
+  f.options.inspect = async (path, positions) => {
+    const result = language(path, f.after[path], positions, "Rates.xbsl");
+    result.queries[0].definitions = parameters.map(node => ({ uri: "file:///workspace/Rates.xbsl",
+      startLine: node.startLine, startCharacter: position(f.after["Rates.xbsl"], node.startOffset).character,
+      endLine: node.endLine, endCharacter: position(f.after["Rates.xbsl"], node.endOffset).character }));
+    return result;
+  };
+  const result = await f.run();
+  assert.equal(impacts(result).length, 1, JSON.stringify(result));
+  assert.equal(impacts(result)[0].evidence, "ast");
+  assert.ok(!impacts(result)[0].targets);
+  assert.equal(result.status, "partial");
 });

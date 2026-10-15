@@ -40,6 +40,7 @@ const path = __importStar(require("path"));
 const url_1 = require("url");
 const projectStructure_1 = require("./projectStructure");
 const projectAstReferences_1 = require("./projectAstReferences");
+const projectModulePaths_1 = require("./projectModulePaths");
 /** Reserve 2 MiB and the final two seconds for verification; at most 400 distinct sources / 800 reads. */
 exports.PROJECT_CHANGE_LIMITS = Object.freeze({
     files: 400, sourceBytes: 2 * 1024 * 1024, totalBytes: 4 * 1024 * 1024, fileBytes: 512 * 1024,
@@ -171,17 +172,36 @@ class ChangeAnalysis {
                             startLine: method.line, endLine: method.line, selectionLine: method.line, selectionCharacter: 0 })), references: [], errors: [] });
             }
         }
-        const families = new Set(this.report.changedPaths.map(family));
-        const relevantYaml = [...this.after.values()].filter(entry => isYaml(entry.path) && families.has(family(entry.path)) && !isManifest(entry.path));
-        for (const entry of relevantYaml) {
+        const changedByDirectory = new Map();
+        for (const name of this.report.changedPaths) {
+            const directory = path.posix.dirname(name);
+            if (!changedByDirectory.has(directory))
+                changedByDirectory.set(directory, new Set());
+            changedByDirectory.get(directory).add(name);
+        }
+        const relatedYaml = new Map();
+        // Keep removed YAML pairs for impact filtering, without treating them as current sources.
+        for (const entry of new Map([...this.before, ...this.after]).values()) {
             if (!this.active())
                 break;
-            const source = await this.load(entry.path);
-            if (source)
-                await this.handlers(source);
+            if (!isYaml(entry.path) || isManifest(entry.path))
+                continue;
+            const directory = path.posix.dirname(entry.path);
+            const changed = changedByDirectory.get(directory);
+            if (!changed || ![...changed].some(name => name === entry.path || (0, projectModulePaths_1.isElementModuleCompanion)(name, entry.path)))
+                continue;
+            if (!relatedYaml.has(directory))
+                relatedYaml.set(directory, []);
+            relatedYaml.get(directory).push(entry.path);
+            if (this.after.has(entry.path)) {
+                const source = await this.load(entry.path);
+                if (source)
+                    await this.handlers(source);
+            }
         }
         for (const entry of this.after.values()) {
-            if (families.has(family(entry.path)))
+            const yaml = relatedYaml.get(path.posix.dirname(entry.path));
+            if (yaml?.some(name => name === entry.path || (0, projectModulePaths_1.isElementModuleCompanion)(name, entry.path)))
                 this.affected.add(entry.path);
         }
         // Cheap source token filtering precedes native parsing; there is no project-wide AST pass.
@@ -434,10 +454,23 @@ class ChangeAnalysis {
             this.note(`${source.entry.path}: дерево AST недоступно, некорректно, циклично или превышает лимит обхода.`);
             return undefined;
         }
-        const methods = (root.kind === "Module" ? root.children : [root])
-            .filter(node => /^(?:Method|AbstractMethod)$/.test(node.kind) && typeof node.attributes.name === "string" && node.startLine > 0)
-            .map(node => ({ name: node.attributes.name, line: node.startLine }));
-        source.ast = { methods, references: (0, projectAstReferences_1.collectAstReferences)(root, source.text), complete: !response.partial && !response.diagnostics.length };
+        const moduleNodes = new Set(root.kind === "Module" ? root.children : [root]);
+        const methods = [];
+        const moduleMethods = [];
+        const pending = [root];
+        // Impact names include nested declarations; YAML bindings must remain module-scoped.
+        while (pending.length) {
+            const node = pending.pop();
+            if (/^(?:Method|AbstractMethod)$/.test(node.kind) && typeof node.attributes.name === "string" && node.startLine > 0) {
+                const method = { name: node.attributes.name, line: node.startLine };
+                methods.push(method);
+                if (moduleNodes.has(node))
+                    moduleMethods.push(method);
+            }
+            for (let index = node.children.length - 1; index >= 0; index--)
+                pending.push(node.children[index]);
+        }
+        source.ast = { methods, moduleMethods, references: (0, projectAstReferences_1.collectAstReferences)(root, source.text), complete: !response.partial && !response.diagnostics.length };
         return source.ast;
     }
     /** Copy a bounded tree before handing it to the shared traversal (which assumes acyclic containment). */
@@ -478,7 +511,7 @@ class ChangeAnalysis {
         const references = structure.references.filter(reference => reference.kind === "handler");
         if (references.length > 100)
             this.note(`${source.entry.path}: проверка обработчиков YAML ограничена 100 записями.`);
-        const companions = [...this.after.values()].filter(entry => isXbsl(entry.path) && family(entry.path) === family(source.entry.path)
+        const companions = [...this.after.values()].filter(entry => (0, projectModulePaths_1.isElementModuleCompanion)(entry.path, source.entry.path)
             && this.project(entry.path) === this.project(source.entry.path));
         const candidates = new Map();
         const simpleNames = new Set(references.slice(0, 100).filter(reference => identifier.test(reference.name)).map(reference => reference.name));
@@ -492,7 +525,7 @@ class ChangeAnalysis {
             const ast = await this.ast(code, this.report.changedPaths.includes(companion.path));
             if (!ast?.complete)
                 continue;
-            for (const method of ast.methods) {
+            for (const method of ast.moduleMethods) {
                 if (!simpleNames.has(method.name))
                     continue;
                 if (!candidates.has(method.name))
@@ -501,7 +534,9 @@ class ChangeAnalysis {
             }
         }
         const pending = [];
-        const yamlPeers = [...this.after.keys()].filter(name => isYaml(name) && family(name) === family(source.entry.path));
+        const yamlPeers = [...this.after.keys()].filter(name => isYaml(name) && path.posix.dirname(name) === path.posix.dirname(source.entry.path)
+            && (name.replace(/\.ya?ml$/i, "") === source.entry.path.replace(/\.ya?ml$/i, "")
+                || companions.some(companion => (0, projectModulePaths_1.isElementModuleCompanion)(name, companion.path))));
         for (const reference of references.slice(0, 100)) {
             const matches = candidates.get(reference.name) ?? [];
             const qualified = !identifier.test(reference.name);
@@ -567,23 +602,28 @@ class ChangeAnalysis {
             let invalid = false;
             for (const definition of query.definitions) {
                 const name = this.uriPath(definition?.uri);
-                const line = definition?.selectionRange?.startLine ?? definition?.startLine;
-                if (!name || !this.after.has(name) || this.project(name) !== this.project(source.entry.path) || !Number.isInteger(line) || line < 1) {
+                const range = copyRange(definition);
+                const selectionRange = copyRange(definition?.selectionRange);
+                if (!name || !this.after.has(name) || this.project(name) !== this.project(source.entry.path) || !range
+                    || (definition.selectionRange !== undefined && (!selectionRange || !containsRange(range, selectionRange)))) {
                     invalid = true;
                     continue;
                 }
-                definitions.set(`${name}:${line}`, { path: name, line });
+                definitions.set(JSON.stringify([name, range, selectionRange]), { path: name, range, selectionRange });
             }
             if (invalid || definitions.size !== 1 || result.truncated) {
                 this.note(`${source.entry.path}:${item.finding.line}: неоднозначные, усечённые определения, цели другого проекта или вне индекса не подтверждают связь.`);
                 continue;
             }
-            const target = [...definitions.values()][0];
-            const targetSource = await this.load(target.path);
-            if (!targetSource || target.line > targetSource.text.split(/\r\n|\r|\n/).length) {
+            const definition = [...definitions.values()][0];
+            const targetSource = await this.load(definition.path);
+            const lines = targetSource?.text.split(/\r\n|\r|\n/);
+            if (!lines || !rangeWithinText(definition.range, lines)
+                || (definition.selectionRange && !rangeWithinText(definition.selectionRange, lines))) {
                 this.note(`${source.entry.path}:${item.finding.line}: исходник или диапазон цели LSP не удалось проверить.`);
                 continue;
             }
+            const target = { path: definition.path, line: (definition.selectionRange ?? definition.range).startLine };
             if (item.finding.kind === "impact" && !this.affected.has(target.path)) {
                 this.report.findings = this.report.findings.filter(finding => finding !== item.finding);
                 continue;
@@ -735,9 +775,23 @@ class ChangeAnalysis {
         }
     }
 }
-function family(name) {
-    const base = name.replace(/\.(?:xbsl|ya?ml)$/i, "");
-    return isXbsl(name) ? base.replace(/\.(?:\u041e\u0431\u044a\u0435\u043a\u0442|Object)$/, "") : base;
+function copyRange(value) {
+    if (!value)
+        return undefined;
+    const { startLine, startCharacter, endLine, endCharacter } = value;
+    if (![startLine, startCharacter, endLine, endCharacter].every(Number.isSafeInteger)
+        || startLine < 1 || endLine < startLine || startCharacter < 0 || endCharacter < 0
+        || (startLine === endLine && endCharacter < startCharacter))
+        return undefined;
+    return { startLine, startCharacter, endLine, endCharacter };
+}
+function containsRange(outer, inner) {
+    return (inner.startLine > outer.startLine || (inner.startLine === outer.startLine && inner.startCharacter >= outer.startCharacter))
+        && (inner.endLine < outer.endLine || (inner.endLine === outer.endLine && inner.endCharacter <= outer.endCharacter));
+}
+function rangeWithinText(range, lines) {
+    return range.endLine <= lines.length && range.startCharacter <= lines[range.startLine - 1].length
+        && range.endCharacter <= lines[range.endLine - 1].length;
 }
 function handlerPosition(text, reference) {
     const line = text.split(/\r\n|\r|\n/)[reference.startLine - 1] ?? "";

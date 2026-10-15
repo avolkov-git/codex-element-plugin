@@ -5,13 +5,13 @@
 Плагин для Theia IDE, который добавляет Codex в среду разработки 1C: Элемент. Runtime работает через поставляемый вместе с плагином [codex app-server](https://github.com/openai/codex).
 Подробнее про `codex app-server` [тут](https://developers.openai.com/codex/app-server) и [тут](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
-- Стабильная версия: `1.0.3`, на основе проверенной `1.0.2-rc` для 1C Element 9.2.4-6.
+- Стабильная версия: `1.0.4`. Условия проверки: [описание релиза](docs/release-1.0.4.md#проверки).
 - Текущая версия Codex CLI/app-server: `0.154.0`
 - Готовые поставки: Windows x64 и Linux x64
 - Исходный проект также содержит runtime-матрицу для Windows, Linux и macOS на x64 и arm64
 - [Релизы](https://github.com/avolkov-git/codex-element-plugin/releases)
 
-Изменения версии: [релиз 1.0.3](docs/release-1.0.3.md). Установка, проверка и перенос данных: [руководство](docs/1.0.0-rc-testing.md).
+Изменения версии: [релиз 1.0.4](docs/release-1.0.4.md). Установка, проверка и перенос данных: [руководство](docs/1.0.0-rc-testing.md).
 
 В `1.0.1-rc` исправлены очереди обновлений, diff, логов и истории; поиск документации вынесен в worker. [Разбор нагрузки, замеры и проверка обрывов IDE](docs/reviews/2026-09-08-streaming-pressure.md).
 
@@ -33,9 +33,11 @@
 ### Контекст
 
 - Экспериментальный режим Codex с заметками и поиском по истории: переключатель в «Настройки → Система»; [условия и поведение](docs/experimental-context.md).
-- Индекс проекта с поиском по файлам, чанкам и символам.
+- Индекс YAML/XBSL с поиском по файлам, чанкам и символам, подбором связанных модулей и документации.
+- Ответы работающего Language Server и штатный AST как дополнительные источники сведений о коде; без них доступен структурный индекс.
 - Поиск по нормализованной документации и server docs.
-- Правила проекта из `.local-codex/rules.md`.
+- Общепроектные правила из `.local-codex/rules.md` и адресные правила из `.local-codex/rules/`.
+- Проверка связей и диагностик после изменений с передачей актуального отчёта в следующий запрос; [возможности и ограничения](docs/project-change-review.md).
 - Базовые правила языка 1C: Element из поставки плагина.
 - Контекст открытого файла, выделения и ошибок IDE (диагностик).
 
@@ -63,8 +65,8 @@
 
 1. Откройте страницу [Releases](https://github.com/avolkov-git/codex-element-plugin/releases).
 2. Выберите архив по операционной системе сервера Element:
-   - Windows x64: `codex-plugins-1.0.3-win32-x64.zip`;
-   - Linux x64: `codex-plugins-1.0.3-linux-x64.tar.gz`.
+   - Windows x64: `codex-plugins-1.0.4-win32-x64.zip`;
+   - Linux x64: `codex-plugins-1.0.4-linux-x64.tar.gz`.
 3. Сверьте SHA-256 с `SHA256SUMS.txt`.
 4. Распакуйте архив.
 5. Остановите серверную IDE и замените установленный каталог плагина в `/plugins`, сохранив его имя. При первой установке поместите туда каталог `codex-plugins`. Не оставляйте две версии плагина одновременно.
@@ -227,7 +229,7 @@ Legacy layout для старых Windows, Linux и macOS сборок подд�
 Не копируйте рабочий Git-каталог в `/plugins`. Соберите payload без `.git`, `node_modules`, временных файлов и LFS pointers:
 
 ```bash
-node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy-1.0.3/win32-x64/codex-plugins --platform win32-x64 --platform-only --browser-runtime-root ../local-codex-temp/browser-runtime --strict
+node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy-1.0.4/win32-x64/codex-plugins --platform win32-x64 --platform-only --browser-runtime-root ../local-codex-temp/browser-runtime --strict
 ```
 
 Для тестовых сборок используйте отдельный target. Обычные команды ниже работают с каталогом `../codex-plugin-deploy`:
@@ -244,7 +246,7 @@ npm run preflight:deploy
 
 ```bash
 npm run build
-node scripts/package-platform-releases.js --output ../codex-plugin-release/1.0.3 --browser-runtime-root ../local-codex-temp/browser-runtime
+node scripts/package-platform-releases.js --output ../codex-plugin-release/1.0.4 --browser-runtime-root ../local-codex-temp/browser-runtime
 ```
 
 Перед локальной platform-specific упаковкой подготовьте browser runtime на целевой ОС. Кросс-компиляция browser runtime не поддерживается: Windows payload собирается на Windows, Linux payload — на Linux.
@@ -261,8 +263,8 @@ GitHub Actions делает это матрицей на `windows-latest` и `ub
 Команда собирает и повторно распаковывает оба архива, запускает строгий preflight и создает в указанном `--output`:
 
 ```text
-codex-plugins-1.0.3-win32-x64.zip
-codex-plugins-1.0.3-linux-x64.tar.gz
+codex-plugins-1.0.4-win32-x64.zip
+codex-plugins-1.0.4-linux-x64.tar.gz
 SHA256SUMS.txt
 README_RELEASE.md
 ```
@@ -271,7 +273,7 @@ README_RELEASE.md
 
 ### Автоматический выпуск
 
-Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v1.0.3`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
+Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v1.0.4`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
 
 CI загружает из Git LFS только `win32-x64` и `linux-x64`. Остальная runtime-матрица не скачивается для этого релиза.
 

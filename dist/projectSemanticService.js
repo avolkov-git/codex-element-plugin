@@ -33,14 +33,17 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ProjectSemanticService = void 0;
-exports.isCompanion = isCompanion;
+exports.ProjectSemanticService = exports.isElementModuleCompanion = exports.isCompanion = void 0;
 exports.formatSemanticContext = formatSemanticContext;
 const path = __importStar(require("path"));
 const crypto_1 = require("crypto");
 const vscode = __importStar(require("vscode"));
 const projectStructure_1 = require("./projectStructure");
 const projectAstReferences_1 = require("./projectAstReferences");
+const projectModulePaths_1 = require("./projectModulePaths");
+var projectModulePaths_2 = require("./projectModulePaths");
+Object.defineProperty(exports, "isCompanion", { enumerable: true, get: function () { return projectModulePaths_2.isCompanion; } });
+Object.defineProperty(exports, "isElementModuleCompanion", { enumerable: true, get: function () { return projectModulePaths_2.isElementModuleCompanion; } });
 const MAX_FILES = 10;
 const MAX_DEPTH = 2;
 const CONTEXT_CHARS = 32000;
@@ -62,7 +65,7 @@ class ProjectSemanticService {
         const explicitFiles = request.files.filter(file => /\.(xbsl|ya?ml)$/i.test(file.path)
             && (containsIdentifier(request.query, path.posix.basename(file.path).replace(/\.(xbsl|ya?ml)$/i, ""))
                 || !!file.structure?.element?.name && containsIdentifier(request.query, file.structure.element.name))).map(file => file.path);
-        const coveredMethodNames = new Set(request.files.filter(file => explicitFiles.some(explicit => explicit === file.path || isCompanion(explicit, file.path)))
+        const coveredMethodNames = new Set(request.files.filter(file => explicitFiles.some(explicit => explicit === file.path || (0, projectModulePaths_1.isCompanion)(explicit, file.path)))
             .flatMap(file => (file.structure?.symbols ?? []).filter(symbol => isMethodKind(symbol.kind)).map(symbol => symbol.name.toLowerCase())));
         for (const file of candidates) {
             if (!explicitFiles.includes(file) && request.files.find(item => item.path === file)?.structure?.symbols
@@ -78,9 +81,9 @@ class ProjectSemanticService {
         for (const file of explicitFiles.length ? explicitFiles : candidates) {
             if (considered.has(file))
                 continue;
-            const yaml = /\.ya?ml$/i.test(file) ? file : request.files.find(candidate => isCompanion(file, candidate.path))?.path;
+            const yaml = /\.ya?ml$/i.test(file) ? file : request.files.find(candidate => (0, projectModulePaths_1.isCompanion)(file, candidate.path))?.path;
             const group = [...new Set([file, ...(yaml ? [yaml] : []),
-                    ...request.files.filter(candidate => isCompanion(yaml ?? file, candidate.path)).map(candidate => candidate.path)])];
+                    ...request.files.filter(candidate => (0, projectModulePaths_1.isCompanion)(yaml ?? file, candidate.path)).map(candidate => candidate.path)])];
             group.forEach(member => considered.add(member));
             // Keep a component and its code together; explicit comparisons are not restricted to two seeds.
             if ((!explicitFiles.length && seedCount >= 2) || selectedFiles.size + group.filter(member => !selectedFiles.has(member)).length > MAX_FILES) {
@@ -192,7 +195,7 @@ class ProjectSemanticService {
             if (hasYamlFocus(structure, request.query)) {
                 focusedFiles.add(filePath);
                 for (const candidate of sources.keys())
-                    if (isCompanion(filePath, candidate))
+                    if ((0, projectModulePaths_1.isCompanion)(filePath, candidate))
                         focusedFiles.add(candidate);
             }
             const references = relevantYamlReferences(structure, request.query, request.selected.filter(item => item.path === filePath));
@@ -205,7 +208,7 @@ class ProjectSemanticService {
                     addDocumentationTerms(docs, reference.name);
                 const targets = [];
                 for (const [candidatePath, candidates] of symbols) {
-                    if (!isCompanion(filePath, candidatePath) || !/\.xbsl$/i.test(candidatePath))
+                    if (!(0, projectModulePaths_1.isCompanion)(filePath, candidatePath) || !/\.xbsl$/i.test(candidatePath))
                         continue;
                     for (const candidate of candidates) {
                         if (candidate.scope === "module" && candidate.symbol.name === reference.name && isMethodKind(candidate.symbol.kind)) {
@@ -421,7 +424,7 @@ class ProjectSemanticService {
                         enqueue({ path: module.path, startLine: 1, endLine: 12, source: "yaml", purpose: "evidence",
                             priority: 70, depth: range.depth + 1, reason: "Идентичность и окружение общего модуля" });
                     }
-                    candidateFiles = request.files.filter(file => /\.xbsl$/i.test(file.path) && verifiedModules.some(module => isCompanion(module, file.path)))
+                    candidateFiles = request.files.filter(file => /\.xbsl$/i.test(file.path) && verifiedModules.some(module => (0, projectModulePaths_1.isCompanion)(module, file.path)))
                         .map(file => file.path);
                     kind = "module-call";
                     if (!candidateFiles.length) {
@@ -564,17 +567,6 @@ function indexedDefinitionPath(request, fsPath) {
 }
 function inclusiveEndLine(range) {
     return range.endCharacter === 0 && range.endLine > range.startLine ? range.endLine - 1 : range.endLine;
-}
-function isCompanion(left, right) {
-    if (left === right || path.posix.dirname(left) !== path.posix.dirname(right))
-        return false;
-    const yaml = /\.ya?ml$/i.test(left) ? left : /\.ya?ml$/i.test(right) ? right : undefined;
-    const xbsl = /\.xbsl$/i.test(left) ? left : /\.xbsl$/i.test(right) ? right : undefined;
-    if (!yaml || !xbsl)
-        return false;
-    const base = yaml.replace(/\.ya?ml$/i, "");
-    const code = xbsl.replace(/\.xbsl$/i, "");
-    return code === base || code.startsWith(`${base}.`);
 }
 function isMethodKind(kind) {
     return /^(?:5|11|method|abstractmethod|function|lexical-(?:abstract-)?(?:method|function)(?:-partial)?)$/i.test(kind);

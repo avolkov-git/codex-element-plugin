@@ -6,6 +6,7 @@ import { Logger } from "./logger";
 import { ProjectContextDetails, SidebarSnapshot } from "./types";
 import { analyzeProjectStructure, ProjectStructure } from "./projectStructure";
 import type { ProjectSemanticService, SemanticContextResult } from "./projectSemanticService";
+import { isElementModuleCompanion } from "./projectModulePaths";
 
 interface ProjectIndexFile {
   path: string;
@@ -71,6 +72,7 @@ interface ProjectRequestScope {
 interface ProjectBufferSnapshot {
   text: string;
   version: number;
+  dirty: boolean;
 }
 
 interface ProjectRequestSnapshot {
@@ -144,20 +146,19 @@ export interface ProjectChangeSnapshot {
   isCurrent(): boolean;
   /** Strict revision/buffer guard for a result, including results with no file reads. */
   isContentCurrent(): boolean;
-  readFile(filePath: string): Promise<{ text: string; hash: string }>;
+  readFile(filePath: string, signal?: AbortSignal): Promise<{ text: string; hash: string }>;
 }
 
 export function projectRuleTargets(
   files: readonly { path: string; structure?: ProjectStructure }[], paths: readonly string[]
 ): Array<{ path: string; elementKind?: string }> {
   const indexed = new Map(files.map(file => [file.path, file]));
-  const candidates = paths.flatMap(filePath => /\.ya?ml$/u.test(filePath)
-    ? [filePath, ...[".xbsl", ".Объект.xbsl", ".Object.xbsl"].map(extension => filePath.replace(/\.ya?ml$/u, extension))] : [filePath]);
+  const candidates = paths.flatMap(filePath => /\.ya?ml$/i.test(filePath)
+    ? [filePath, ...files.filter(file => isElementModuleCompanion(filePath, file.path)).map(file => file.path)] : [filePath]);
   return [...new Set(candidates)].filter(filePath => indexed.has(filePath)).slice(0, 64).map(filePath => {
-    if (/\.ya?ml$/u.test(filePath)) return { path: filePath, elementKind: indexed.get(filePath)?.structure?.element?.kind };
-    const stem = filePath.replace(/(?:\.Объект|\.Object)?\.xbsl$/u, "").replace(/\.ya?ml$/u, "");
-    const kinds = new Set([`${stem}.yaml`, `${stem}.yml`]
-      .map(name => indexed.get(name)?.structure?.element?.kind).filter((kind): kind is string => Boolean(kind)));
+    if (/\.ya?ml$/i.test(filePath)) return { path: filePath, elementKind: indexed.get(filePath)?.structure?.element?.kind };
+    const kinds = new Set(files.filter(file => isElementModuleCompanion(filePath, file.path))
+      .map(file => file.structure?.element?.kind).filter((kind): kind is string => Boolean(kind)));
     return { path: filePath, elementKind: kinds.size === 1 ? [...kinds][0] : undefined };
   });
 }
@@ -328,6 +329,7 @@ const BINARY_EXTENSIONS = new Set([
 export class ProjectContextService implements vscode.Disposable {
   private cache: ProjectIndex | undefined;
   private cachePath: string | undefined;
+  private cachePersisted = false;
   private dirty = true;
   private watcher: vscode.FileSystemWatcher | undefined;
   private watcherRoot: string | undefined;
@@ -659,16 +661,19 @@ export class ProjectContextService implements vscode.Disposable {
     return read;
   }
 
-  async captureChangeSnapshot(profileId: string | undefined, refresh = false): Promise<ProjectChangeSnapshot> {
+  async captureChangeSnapshot(profileId: string | undefined, refresh = false, signal?: AbortSignal): Promise<ProjectChangeSnapshot> {
+    assertNotAborted(signal);
     const scope = this.captureScope();
     if (refresh) {
       this.dirty = true;
       this.forceReindexRevision += 1;
       this.clearSemanticCache();
     }
-    const { index: diskIndex, fileRevision } = await this.ensureToolIndex(profileId, scope);
+    const { index: diskIndex, fileRevision } = await this.ensureToolIndex(profileId, scope, signal);
+    assertNotAborted(signal);
     const snapshot = this.captureSnapshot(scope, fileRevision);
-    const index = await this.withOpenDocuments(diskIndex, snapshot);
+    const index = await this.withOpenDocuments(diskIndex, snapshot, signal);
+    assertNotAborted(signal);
     this.assertSnapshot(snapshot, index);
     const files = index.files.filter(file => /\.(?:xbsl|ya?ml)$/i.test(file.path))
       .map(file => ({ path: file.path, hash: file.hash, structure: file.structure
@@ -681,11 +686,13 @@ export class ProjectContextService implements vscode.Disposable {
       // Baselines survive edits, but never a workspace transition (including away/back).
       isCurrent: () => { try { this.assertScope(scope); return true; } catch { return false; } },
       isContentCurrent: () => { try { this.assertSnapshot(snapshot, index); return true; } catch { return false; } },
-      readFile: async filePath => {
+      readFile: async (filePath, readSignal) => {
+        assertNotAborted(readSignal);
         this.assertSnapshot(snapshot, index);
         const hash = hashes.get(filePath);
         if (!hash) throw new ProjectToolError("notFound", "Файл не входит в снимок проверки.");
-        const read = await this.readFileInScope(scope, { filePath, maxChars: MAX_FILE_BYTES, maxBytes: MAX_FILE_BYTES }, hash);
+        const read = await this.readFileInScope(scope, { filePath, maxChars: MAX_FILE_BYTES, maxBytes: MAX_FILE_BYTES }, hash, readSignal);
+        assertNotAborted(readSignal);
         this.assertSnapshot(snapshot, index);
         if (read.truncated) throw new ProjectToolError("tooLarge", "Файл не помещается в лимит проверки.");
         return { text: read.text, hash: crypto.createHash("sha256").update(read.text).digest("hex") };
@@ -693,12 +700,13 @@ export class ProjectContextService implements vscode.Disposable {
     };
   }
 
-  private async readFileInScope(scope: ProjectRequestScope, options: ProjectReadFileOptions, expectedHash?: string): Promise<ProjectToolReadFileResult> {
-    this.assertScope(scope);
+  private async readFileInScope(scope: ProjectRequestScope, options: ProjectReadFileOptions, expectedHash?: string, signal?: AbortSignal): Promise<ProjectToolReadFileResult> {
+    const assertCurrent = () => { assertNotAborted(signal); this.assertScope(scope); };
+    assertCurrent();
     const { workspaceRoot } = scope;
     const requested = resolveWorkspaceFilePath(workspaceRoot, options.filePath);
-    const resolved = await resolveWorkspaceFilePathSafe(workspaceRoot, options.filePath, () => this.assertScope(scope));
-    this.assertScope(scope);
+    const resolved = await resolveWorkspaceFilePathSafe(workspaceRoot, options.filePath, assertCurrent, signal);
+    assertCurrent();
     if (!resolved) {
       throw new ProjectToolError("unsafePath", "project.readFile can read only files inside the active workspace.");
     }
@@ -725,11 +733,12 @@ export class ProjectContextService implements vscode.Disposable {
     } else {
       let stat: fs.Stats;
       try {
-        stat = await fs.promises.stat(resolved.absolutePath);
+        stat = await abortable(() => fs.promises.stat(resolved.absolutePath), signal);
       } catch {
+        assertCurrent();
         throw new ProjectToolError("notFound", "Requested workspace file was not found.");
       }
-      this.assertScope(scope);
+      assertCurrent();
       if (!stat.isFile()) {
         throw new ProjectToolError("invalidRequest", "Requested workspace path is not a file.");
       }
@@ -738,8 +747,8 @@ export class ProjectContextService implements vscode.Disposable {
       if (size <= 0 || size > maxBytes) {
         throw new ProjectToolError("tooLarge", "Requested workspace file is empty or exceeds the read limit.");
       }
-      const buffer = await fs.promises.readFile(resolved.absolutePath);
-      this.assertScope(scope);
+      const buffer = await abortable(() => fs.promises.readFile(resolved.absolutePath, { signal }), signal);
+      assertCurrent();
       if (!isProbablyText(buffer)) {
         throw new ProjectToolError("unsafePath", "Requested workspace file is not text.");
       }
@@ -772,7 +781,7 @@ export class ProjectContextService implements vscode.Disposable {
       ? text : lines.slice(requestedStart - 1, requestedEnd).join("\n");
     const truncatedText = selectedText.length > maxChars ? `${selectedText.slice(0, maxChars - 1)}…` : selectedText;
 
-    this.assertScope(scope);
+    assertCurrent();
     return {
       workspaceRoot,
       path: resolved.relativePath,
@@ -954,7 +963,7 @@ export class ProjectContextService implements vscode.Disposable {
       if (document.isClosed || document.uri.scheme !== "file") continue;
       const relative = normalizeWorkspaceRelative(workspaceRoot, document.uri.fsPath);
       if (!relative || shouldSkipPath(path.basename(relative), relative) || BINARY_EXTENSIONS.has(path.extname(relative).toLowerCase())) continue;
-      buffers.set(relative, { text: document.getText(), version: document.version });
+      buffers.set(relative, { text: document.getText(), version: document.version, dirty: document.isDirty });
     }
     return buffers;
   }
@@ -980,25 +989,27 @@ export class ProjectContextService implements vscode.Disposable {
     const current = this.openBuffers(snapshot.scope.workspaceRoot);
     for (const [filePath, before] of snapshot.buffers) {
       const after = current.get(filePath);
-      if (!after || before.version !== after.version || before.text !== after.text) {
+      if (!after || before.version !== after.version || before.text !== after.text || before.dirty !== after.dirty) {
         throw new ProjectToolError("unavailable", "Буфер редактора изменился во время сборки контекста. Повторите запрос.");
       }
     }
-    if (index) {
-      const hashes = new Map(index.files.map((file) => [file.path, file.hash]));
-      for (const [filePath, buffer] of current) {
-        const expectedHash = hashes.get(filePath);
-        if (expectedHash && crypto.createHash("sha256").update(buffer.text).digest("hex") !== expectedHash) {
-          throw new ProjectToolError("unavailable", "Индекс не соответствует буферу редактора. Повторите запрос.");
-        }
+    const hashes = new Map(index?.files.map((file) => [file.path, file.hash]));
+    for (const [filePath, buffer] of current) {
+      const expectedHash = hashes.get(filePath);
+      // LSP may open an unchanged indexed file. New dirty or unindexed buffers
+      // are changes to the request's source set, even without a watcher event.
+      if ((!snapshot.buffers.has(filePath) && (buffer.dirty || !expectedHash))
+        || (expectedHash && crypto.createHash("sha256").update(buffer.text).digest("hex") !== expectedHash)) {
+        throw new ProjectToolError("unavailable", "Индекс не соответствует буферу редактора. Повторите запрос.");
       }
     }
   }
 
-  private async withOpenDocuments(index: ProjectIndex, snapshot: ProjectRequestSnapshot): Promise<ProjectIndex> {
+  private async withOpenDocuments(index: ProjectIndex, snapshot: ProjectRequestSnapshot, signal?: AbortSignal): Promise<ProjectIndex> {
     const overlays = new Map<string, IndexedFileResult | undefined>();
     const hashes = new Map(index.files.map((file) => [file.path, file.hash]));
     for (const [relative, buffer] of snapshot.buffers) {
+      assertNotAborted(signal);
       this.assertSnapshot(snapshot);
       const text = buffer.text;
       // Clean buffers can also be newer than a cached disk index (save event lag).
@@ -1007,15 +1018,17 @@ export class ProjectContextService implements vscode.Disposable {
       if (Buffer.byteLength(text, "utf8") > MAX_FILE_BYTES) continue;
       let resolved: { relativePath: string; absolutePath: string } | undefined;
       try {
-        resolved = await resolveWorkspaceFilePathSafe(index.workspaceRoot, relative, () => this.assertScope(snapshot.scope));
+        resolved = await resolveWorkspaceFilePathSafe(index.workspaceRoot, relative, () => this.assertScope(snapshot.scope), signal);
       } catch (error) {
         if (error instanceof ProjectToolError && error.code === "unavailable") throw error;
       }
+      assertNotAborted(signal);
       this.assertSnapshot(snapshot);
       if (!resolved) continue;
       // Request-local overlays, including deletions/empty buffers, are never persisted.
       overlays.set(relative, indexText({ relativePath: relative, absolutePath: resolved.absolutePath, mtimeMs: 0, size: Buffer.byteLength(text) }, text));
     }
+    assertNotAborted(signal);
     this.assertSnapshot(snapshot);
     if (!overlays.size) return index;
     const replacements = [...overlays.values()].filter((item): item is IndexedFileResult => Boolean(item));
@@ -1025,7 +1038,7 @@ export class ProjectContextService implements vscode.Disposable {
     };
   }
 
-  private async ensureToolIndex(profileId: string | undefined, scope = this.captureScope()): Promise<{
+  private async ensureToolIndex(profileId: string | undefined, scope = this.captureScope(), signal?: AbortSignal): Promise<{
     index: ProjectIndex;
     indexPath: string;
     workspaceRoot: string;
@@ -1036,40 +1049,47 @@ export class ProjectContextService implements vscode.Disposable {
     }
     this.assertScope(scope);
     const { workspaceRoot } = scope;
-    const { index, indexPath, fileRevision } = await this.ensureIndex(profileId, workspaceRoot, scope);
+    const { index, indexPath, fileRevision } = await this.ensureIndex(profileId, workspaceRoot, scope, signal);
+    assertNotAborted(signal);
     this.assertScope(scope);
     this.assertIndexRevision(fileRevision);
     return { index, indexPath, workspaceRoot, fileRevision };
   }
 
-  private async ensureIndex(profileId: string, workspaceRoot: string, scope = this.captureScope()): Promise<{
+  private async ensureIndex(profileId: string, workspaceRoot: string, scope = this.captureScope(), signal?: AbortSignal): Promise<{
     index: ProjectIndex;
     indexPath: string;
     stats: ProjectContextBuildStats;
     fileRevision: number;
   }> {
+    assertNotAborted(signal);
     this.assertScope(scope);
-    const operation = this.refreshTail.then(() => this.ensureIndexSerial(profileId, workspaceRoot, scope));
+    const operation = this.refreshTail.then(() => this.ensureIndexSerial(profileId, workspaceRoot, scope, signal));
     this.refreshTail = operation.catch(() => undefined);
-    const result = await operation;
+    // A cancelled waiter must not replace the running caller's queue slot.
+    const result = await abortable(() => operation, signal);
+    assertNotAborted(signal);
     this.assertScope(scope);
     this.assertIndexRevision(result.fileRevision);
     return result;
   }
 
-  private async ensureIndexSerial(profileId: string, workspaceRoot: string, scope: ProjectRequestScope): Promise<{
+  private async ensureIndexSerial(profileId: string, workspaceRoot: string, scope: ProjectRequestScope, signal?: AbortSignal): Promise<{
     index: ProjectIndex; indexPath: string; stats: ProjectContextBuildStats; fileRevision: number;
   }> {
+    assertNotAborted(signal);
     this.assertScope(scope);
     this.ensureWatcher();
 
     const indexPath = this.indexPath(profileId, workspaceRoot);
     if (this.cachePath !== indexPath) {
       this.clearSemanticCache();
-      const loaded = await this.loadIndex(indexPath, workspaceRoot);
+      const loaded = await this.loadIndex(indexPath, workspaceRoot, signal);
+      assertNotAborted(signal);
       this.assertScope(scope);
       this.cache = loaded;
       this.cachePath = indexPath;
+      this.cachePersisted = Boolean(loaded);
       // Persisted indexes predate this process's observed changes, including
       // changes already handled by another profile's in-memory index.
       this.cacheFileRevision = 0;
@@ -1077,7 +1097,15 @@ export class ProjectContextService implements vscode.Disposable {
       this.dirty = true;
     }
 
-    if (this.cache && !this.dirty) {
+    if (this.cache && !this.dirty && this.indexedRevision === this.forceReindexRevision) {
+      if (!signal && !this.cachePersisted) {
+        const revision = this.cacheFileRevision;
+        await this.writeIndex(indexPath, this.cache, () => {
+          this.assertScope(scope);
+          this.assertIndexRevision(revision);
+        });
+        this.cachePersisted = true;
+      }
       return {
         index: this.cache,
         indexPath,
@@ -1097,18 +1125,22 @@ export class ProjectContextService implements vscode.Disposable {
     const reindexRevision = this.forceReindexRevision;
     const existing = reindexRevision === this.indexedRevision && this.cacheFileRevision >= this.changeHistoryFloor ? this.cache : undefined;
     const assertCurrent = () => {
+      assertNotAborted(signal);
       this.assertScope(scope);
       this.assertIndexRevision(revision);
     };
-    const refreshed = await this.refreshIndex(existing, workspaceRoot, this.cacheFileRevision, assertCurrent);
+    const refreshed = await this.refreshIndex(existing, workspaceRoot, this.cacheFileRevision, assertCurrent, signal);
     assertCurrent();
-    await this.writeIndex(indexPath, refreshed.index, assertCurrent);
+    // Review deadlines must not await an uninterruptible write/rename or let an
+    // abandoned publication overwrite a newer index. These refreshes are local.
+    if (!signal) await this.writeIndex(indexPath, refreshed.index, assertCurrent);
     assertCurrent();
     this.cache = refreshed.index;
     this.cachePath = indexPath;
+    this.cachePersisted = !signal;
     this.cacheFileRevision = revision;
     this.indexedRevision = reindexRevision;
-    this.dirty = false;
+    this.dirty = reindexRevision !== this.forceReindexRevision;
     return {
       index: refreshed.index,
       indexPath,
@@ -1117,15 +1149,17 @@ export class ProjectContextService implements vscode.Disposable {
     };
   }
 
-  private async loadIndex(indexPath: string, workspaceRoot: string): Promise<ProjectIndex | undefined> {
+  private async loadIndex(indexPath: string, workspaceRoot: string, signal?: AbortSignal): Promise<ProjectIndex | undefined> {
     try {
-      const raw = await fs.promises.readFile(indexPath, "utf8");
+      const raw = await abortable(() => fs.promises.readFile(indexPath, { encoding: "utf8", signal }), signal);
+      assertNotAborted(signal);
       const parsed = normalizeIndex(JSON.parse(raw), workspaceRoot);
       if (parsed) {
         this.logger.info(`Project index v3 loaded lazily: ${parsed.files.length} files, ${parsed.chunks.length} chunks from ${indexPath}.`);
       }
       return parsed;
     } catch (error) {
+      assertNotAborted(signal);
       if (isNodeError(error) && error.code === "ENOENT") {
         this.logger.info("Project index v3 not found, will build lazily.");
         return undefined;
@@ -1135,12 +1169,12 @@ export class ProjectContextService implements vscode.Disposable {
     }
   }
 
-  private async refreshIndex(existing: ProjectIndex | undefined, workspaceRoot: string, fileRevision: number, assertScope: () => void): Promise<{
+  private async refreshIndex(existing: ProjectIndex | undefined, workspaceRoot: string, fileRevision: number, assertScope: () => void, signal?: AbortSignal): Promise<{
     index: ProjectIndex;
     stats: ProjectContextBuildStats;
   }> {
     const startedAt = Date.now();
-    const scanned = await scanWorkspace(workspaceRoot, assertScope);
+    const scanned = await scanWorkspace(workspaceRoot, assertScope, signal);
     assertScope();
     const previousFiles = new Map((existing?.files ?? []).map((file) => [file.path, file]));
     const previousChunks = new Map((existing?.chunks ?? []).map((chunk) => [chunk.chunkId, chunk]));
@@ -1151,6 +1185,7 @@ export class ProjectContextService implements vscode.Disposable {
     let skippedFiles = scanned.skippedFiles;
 
     for (const file of scanned.files) {
+      assertScope();
       const old = previousFiles.get(file.relativePath);
       const changed = (this.changedFiles.get(filePathKey(file.absolutePath)) ?? 0) > fileRevision;
       if (old && !changed && old.mtimeMs === file.mtimeMs && old.size === file.size && old.chunkIds.every((id) => previousChunks.has(id))) {
@@ -1165,7 +1200,7 @@ export class ProjectContextService implements vscode.Disposable {
         continue;
       }
 
-      const indexed = await indexFile(file);
+      const indexed = await indexFile(file, signal);
       assertScope();
       if (!indexed) {
         skippedFiles += 1;
@@ -1268,19 +1303,42 @@ export class ProjectContextService implements vscode.Disposable {
   }
 }
 
-async function scanWorkspace(workspaceRoot: string, assertScope: () => void): Promise<{ files: ScannedFile[]; skippedFiles: number }> {
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new ProjectToolError("unavailable", "Project context operation was cancelled.");
+}
+
+async function abortable<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  assertNotAborted(signal);
+  if (!signal) return run();
+  let cancel: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      new Promise<never>((_resolve, reject) => {
+        cancel = () => reject(new ProjectToolError("unavailable", "Project context operation was cancelled."));
+        signal.addEventListener("abort", cancel, { once: true });
+      }),
+      run()
+    ]);
+  } finally {
+    if (cancel) signal.removeEventListener("abort", cancel);
+  }
+}
+
+async function scanWorkspace(workspaceRoot: string, assertScope: () => void, signal?: AbortSignal): Promise<{ files: ScannedFile[]; skippedFiles: number }> {
   const files: ScannedFile[] = [];
   let skippedFiles = 0;
 
   async function walk(directory: string): Promise<void> {
+    assertScope();
     if (files.length >= MAX_INDEX_FILES) {
       return;
     }
 
     let entries: fs.Dirent[];
     try {
-      entries = await fs.promises.readdir(directory, { withFileTypes: true });
+      entries = await abortable(() => fs.promises.readdir(directory, { withFileTypes: true }), signal);
     } catch {
+      assertScope();
       skippedFiles += 1;
       return;
     }
@@ -1291,6 +1349,7 @@ async function scanWorkspace(workspaceRoot: string, assertScope: () => void): Pr
       || Number(/^(docs|specs)$/i.test(left.name)) - Number(/^(docs|specs)$/i.test(right.name))
       || left.name.localeCompare(right.name));
     for (const entry of entries) {
+      assertScope();
       if (files.length >= MAX_INDEX_FILES) {
         break;
       }
@@ -1315,8 +1374,9 @@ async function scanWorkspace(workspaceRoot: string, assertScope: () => void): Pr
 
       let stat: fs.Stats;
       try {
-        stat = await fs.promises.stat(absolutePath);
+        stat = await abortable(() => fs.promises.stat(absolutePath), signal);
       } catch {
+        assertScope();
         skippedFiles += 1;
         continue;
       }
@@ -1341,8 +1401,9 @@ async function scanWorkspace(workspaceRoot: string, assertScope: () => void): Pr
   return { files, skippedFiles };
 }
 
-async function indexFile(file: ScannedFile): Promise<IndexedFileResult | undefined> {
-  const buffer = await fs.promises.readFile(file.absolutePath);
+async function indexFile(file: ScannedFile, signal?: AbortSignal): Promise<IndexedFileResult | undefined> {
+  const buffer = await abortable(() => fs.promises.readFile(file.absolutePath, { signal }), signal);
+  assertNotAborted(signal);
   if (!isProbablyText(buffer)) {
     return undefined;
   }
@@ -1861,16 +1922,19 @@ function resolveWorkspaceFilePath(workspaceRoot: string, filePath: string): { ab
   return { absolutePath, relativePath };
 }
 
-async function resolveWorkspaceFilePathSafe(workspaceRoot: string, filePath: string, assertScope?: () => void): Promise<{ absolutePath: string; relativePath: string } | undefined> {
+async function resolveWorkspaceFilePathSafe(workspaceRoot: string, filePath: string, assertScope?: () => void, signal?: AbortSignal): Promise<{ absolutePath: string; relativePath: string } | undefined> {
+  assertNotAborted(signal);
   const resolved = resolveWorkspaceFilePath(workspaceRoot, filePath);
   if (!resolved) {
     return undefined;
   }
 
   try {
-    const workspaceRealPath = await fs.promises.realpath(workspaceRoot);
+    const workspaceRealPath = await abortable(() => fs.promises.realpath(workspaceRoot), signal);
+    assertNotAborted(signal);
     assertScope?.();
-    const fileRealPath = await fs.promises.realpath(resolved.absolutePath);
+    const fileRealPath = await abortable(() => fs.promises.realpath(resolved.absolutePath), signal);
+    assertNotAborted(signal);
     assertScope?.();
     const relativePath = normalizeWorkspaceRelative(workspaceRealPath, fileRealPath);
     if (!relativePath) {

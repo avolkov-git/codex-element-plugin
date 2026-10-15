@@ -13,6 +13,34 @@ const hash = text => crypto.createHash("sha256").update(text).digest("hex");
 const uri = file => ({ scheme: "file", fsPath: file, path: file, toString: () => pathToFileURL(file).href });
 const semanticResult = () => ({ links: [], snippets: [], documentationQueries: [], diagnostics: [], providers: [], hovers: [] });
 const unavailable = error => error?.code === "unavailable";
+const gate = () => {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+};
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+async function promptly(promise) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Operation remained blocked")), 1500);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+function pauseIo(f, phase, matches) {
+  const reached = gate(), release = gate();
+  let paused = false;
+  f.hooks[phase] = async (operation, args) => {
+    if (!paused && matches(operation, args)) {
+      paused = true;
+      reached.resolve();
+      await release.promise;
+    }
+  };
+  return { reached: reached.promise, release: release.resolve };
+}
 
 test("rule targets retain indexed XBSL and object modules without guessing ambiguous element kinds", () => {
   const { projectRuleTargets } = loadSource("src/projectContextService.ts", { vscode: {} });
@@ -27,6 +55,25 @@ test("rule targets retain indexed XBSL and object modules without guessing ambig
     { path: "Form.xbsl", elementKind: "Component" }, { path: "Form.Объект.xbsl", elementKind: "Component" },
     { path: "Ambiguous.xbsl" }, { path: "CodeOnly.xbsl" }
   ]);
+});
+
+test("rule targets resolve known module families without assigning kinds to arbitrary suffixes", () => {
+  const { projectRuleTargets } = loadSource("src/projectContextService.ts", { vscode: {} });
+  const files = [
+    { path: "register/Status.yaml", structure: { element: { kind: "Register" } } },
+    { path: "register/Status.НаборЗаписей.xbsl" }, { path: "register/Status.RecordSet.xbsl" },
+    { path: "constant/Settings.yml", structure: { element: { kind: "Constant" } } },
+    { path: "constant/Settings.Запись.xbsl" }, { path: "constant/Settings.Record.xbsl" },
+    { path: "constant/Settings.Custom.XBSL" }, { path: "elsewhere/Status.НаборЗаписей.xbsl" }
+  ];
+  const modules = files.filter(file => /\.xbsl$/i.test(file.path)).map(file => file.path);
+  const targets = projectRuleTargets(files, modules);
+  assert.deepEqual(JSON.parse(JSON.stringify(targets)), modules.map(filePath => ({ path: filePath,
+    ...(filePath.startsWith("register/") ? { elementKind: "Register" }
+      : filePath.startsWith("constant/") && !filePath.includes(".Custom.") ? { elementKind: "Constant" } : {})
+  })));
+  assert.deepEqual(Array.from(projectRuleTargets(files, ["register/Status.yaml", "constant/Settings.yml"]), target => target.path),
+    files.slice(0, -2).map(file => file.path));
 });
 
 function fixture(t, options = {}) {
@@ -52,6 +99,8 @@ function fixture(t, options = {}) {
   const workspace = {
     textDocuments: documents, workspaceFolders: [{ uri: uri(rootA) }],
     onDidChangeWorkspaceFolders: event("workspace"),
+    onDidOpenTextDocument: event("open"), onDidChangeTextDocument: event("edit"),
+    onDidCloseTextDocument: event("close"), onDidSaveTextDocument: event("save"),
     createFileSystemWatcher: () => ({
       dispose() {}, onDidCreate: event("create"), onDidChange: event("files"), onDidDelete: event("delete"),
     }),
@@ -104,6 +153,210 @@ test("change snapshots are detached and force-refresh detects stat-preserving sh
   assert.equal((await after.readFile("Form.xbsl")).text, changed);
   await assert.rejects(before.readFile("Form.xbsl"), unavailable);
 });
+
+for (const cancellable of [false, true]) {
+  test(`overlapping forced refresh rereads edits after the previous scan (signal: ${cancellable})`, async t => {
+    const f = fixture(t);
+    const baseline = await f.service.captureChangeSnapshot("user", true);
+    const blocked = pauseIo(f, "after", (op, args) => op === "readFile" && args[0] === f.fileA);
+    const controller = new AbortController();
+    const background = f.service.captureChangeSnapshot("user", true, cancellable ? controller.signal : undefined);
+    let fresh;
+    try {
+      await promptly(blocked.reached);
+      const changed = codeA.replace("FromA", "FromZ");
+      const stat = fs.statSync(f.fileA);
+      fs.writeFileSync(f.fileA, changed);
+      fs.utimesSync(f.fileA, stat.atime, stat.mtime);
+      const reads = f.calls.filter(call => call.operation === "readFile" && call.args[0] === f.fileA).length;
+      fresh = f.service.captureChangeSnapshot("user", true, cancellable ? controller.signal : undefined);
+      blocked.release();
+      await promptly(background);
+      const after = await promptly(fresh);
+      assert.equal(baseline.files[0].hash, hash(codeA));
+      assert.equal(after.files[0].hash, hash(changed));
+      assert.equal((await after.readFile("Form.xbsl")).text, changed);
+      assert.ok(f.calls.filter(call => call.operation === "readFile" && call.args[0] === f.fileA).length > reads);
+    } finally {
+      blocked.release();
+      await Promise.allSettled([background, fresh]);
+    }
+  });
+}
+
+for (const state of ["empty-on-disk", "new-on-disk", "missing-on-disk", "same-as-index"]) {
+  test(`new dirty buffer invalidates snapshot freshness (${state})`, async t => {
+    const f = fixture(t);
+    const file = state === "same-as-index" ? f.fileA : path.join(f.rootA, "New.yaml");
+    const text = state === "same-as-index" ? codeA : "Name: New\nElementKind: Structure\n";
+    if (state === "empty-on-disk") fs.writeFileSync(file, "");
+    const before = await f.service.captureChangeSnapshot("user", true);
+    if (state === "new-on-disk") fs.writeFileSync(file, text);
+    const doc = f.open(text, true, file);
+    f.emit("open", doc);
+    f.emit("edit", { document: doc });
+    assert.equal(before.isContentCurrent(), false, "new dirty buffers are part of the freshness guard, including unindexed paths");
+    assert.equal(before.isCurrent(), true, "baseline workspace identity survives edits");
+    await assert.rejects(before.readFile("Form.xbsl"), unavailable);
+    if (state !== "missing-on-disk") {
+      const after = await f.service.captureChangeSnapshot("user", true);
+      assert.equal(after.files.find(entry => entry.path === path.basename(file)).hash, hash(text));
+    }
+  });
+}
+
+test("new dirty buffer during semantic analysis cannot publish an obsolete source set", async t => {
+  const f = fixture(t, { semantic: async f => {
+    const doc = f.open("Name: New\nElementKind: Structure\n", true, path.join(f.rootA, "New.yaml"));
+    f.emit("open", doc);
+    return semanticResult();
+  } });
+  fs.writeFileSync(path.join(f.rootA, "New.yaml"), "");
+  await assert.rejects(f.service.searchTool("user", "FromA"), unavailable);
+});
+
+test("excluded new buffers do not invalidate change snapshots", async t => {
+  const f = fixture(t);
+  const snapshot = await f.service.captureChangeSnapshot("user", true);
+  for (const file of [path.join(f.rootA, ".env.local"), path.join(f.rootA, "dist/Generated.xbsl"), f.fileB]) {
+    const doc = f.open(codeB, true, file);
+    f.emit("open", doc);
+  }
+  assert.equal(snapshot.isContentCurrent(), true);
+});
+
+test("pre-cancelled snapshot requests perform no IO and do not dirty a warm index", async t => {
+  const f = fixture(t);
+  await f.service.captureChangeSnapshot("user");
+  const controller = new AbortController();
+  controller.abort();
+  const calls = f.calls.length;
+  await assert.rejects(f.service.captureChangeSnapshot("user", true, controller.signal), unavailable);
+  await f.service.listSymbolsTool("user");
+  assert.equal(f.calls.length, calls);
+});
+
+for (const phase of ["load", "readdir", "stat", "readFile"]) {
+  test(`cancelling stalled ${phase} releases the refresh queue without late publication`, async t => {
+    const f = fixture(t);
+    await f.service.captureChangeSnapshot("user", true);
+    const matches = (op, args) => phase === "load"
+      ? op === "readFile" && String(args[0]).endsWith("project-index-v3.json")
+      : op === phase && args[0] === (phase === "readdir" ? f.rootA : f.fileA);
+    const blocked = pauseIo(f, phase === "load" ? "before" : "after", matches);
+    const controller = new AbortController();
+    const pending = f.service.captureChangeSnapshot(phase === "load" ? "other" : "user", true, controller.signal);
+    const rejection = assert.rejects(pending, unavailable);
+    try {
+      await promptly(blocked.reached);
+      controller.abort();
+      await promptly(rejection);
+      const changed = codeA.replace("FromA", "FromZ");
+      fs.writeFileSync(f.fileA, changed);
+      const fresh = await promptly(f.service.listSymbolsTool("user"));
+      assert.ok(fresh.symbols.some(symbol => symbol.name === "FromZ"), "next caller finishes before releasing the obsolete IO");
+      const calls = f.calls.length;
+      blocked.release();
+      await tick(); await tick();
+      const warm = await f.service.captureChangeSnapshot("user");
+      assert.equal(warm.files[0].hash, hash(changed));
+      assert.equal(f.calls.length, calls, "late IO cannot resume scanning or replace the current cache");
+      const persisted = JSON.parse(fs.readFileSync(fresh.indexPath, "utf8"));
+      assert.equal(persisted.files[0].hash, hash(changed));
+    } finally {
+      controller.abort(); blocked.release(); await rejection;
+      await tick();
+    }
+  });
+}
+
+test("cancelling a queued caller neither cancels nor bypasses another caller's refresh", async t => {
+  const f = fixture(t);
+  await f.service.captureChangeSnapshot("user", true);
+  const blocked = pauseIo(f, "after", (op, args) => op === "readFile" && args[0] === f.fileA);
+  const activeController = new AbortController(), queuedController = new AbortController();
+  const active = f.service.captureChangeSnapshot("user", true, activeController.signal);
+  let queued, next;
+  try {
+    await promptly(blocked.reached);
+    queued = f.service.captureChangeSnapshot("user", true, queuedController.signal);
+    const rejected = assert.rejects(queued, unavailable);
+    queuedController.abort();
+    await promptly(rejected);
+    const calls = f.calls.length;
+    next = f.service.captureChangeSnapshot("user", true);
+    await tick();
+    assert.equal(f.calls.length, calls, "the next caller cannot bypass the still-running refresh");
+    blocked.release();
+    assert.equal((await promptly(active)).files[0].hash, hash(codeA));
+    assert.equal((await promptly(next)).files[0].hash, hash(codeA));
+  } finally {
+    activeController.abort(); blocked.release();
+    await Promise.allSettled([active, queued, next]);
+  }
+});
+
+test("cancellable refreshes never start an uninterruptible index publication", async t => {
+  const f = fixture(t);
+  const controller = new AbortController();
+  const snapshot = await f.service.captureChangeSnapshot("user", true, controller.signal);
+  assert.equal(snapshot.files[0].hash, hash(codeA));
+  assert.ok(!f.calls.some(call => ["mkdir", "writeFile", "rename"].includes(call.operation)));
+  controller.abort();
+  assert.equal((await snapshot.readFile("Form.xbsl")).text, codeA, "completed snapshots do not retain the capture deadline");
+});
+
+test("ordinary requests lazily persist a completed cancellable refresh without rescanning", async t => {
+  const f = fixture(t);
+  const controller = new AbortController();
+  await f.service.captureChangeSnapshot("user", true, controller.signal);
+  const before = f.calls.length;
+  const result = await f.service.listSymbolsTool("user");
+  assert.ok(f.calls.slice(before).some(call => call.operation === "rename"));
+  assert.ok(!f.calls.slice(before).some(call => ["readFile", "readdir", "stat"].includes(call.operation)));
+  assert.equal(JSON.parse(fs.readFileSync(result.indexPath, "utf8")).files[0].hash, hash(codeA));
+});
+
+test("cancelling overlay path validation stops additional IO without poisoning the disk index", async t => {
+  const f = fixture(t);
+  f.open(codeB);
+  const blocked = pauseIo(f, "after", op => op === "realpath");
+  const controller = new AbortController();
+  const pending = f.service.captureChangeSnapshot("user", true, controller.signal);
+  const rejected = assert.rejects(pending, unavailable);
+  try {
+    await promptly(blocked.reached);
+    controller.abort();
+    await promptly(rejected);
+    const snapshot = await promptly(f.service.captureChangeSnapshot("user"));
+    assert.equal(snapshot.files[0].hash, hash(codeB));
+    const calls = f.calls.length;
+    blocked.release(); await tick();
+    assert.equal(f.calls.length, calls);
+  } finally { controller.abort(); blocked.release(); await rejected; }
+});
+
+for (const phase of ["realpath", "stat", "readFile"]) {
+  test(`snapshot read cancellation stops stalled ${phase} and leaves independent readers usable`, async t => {
+    const f = fixture(t);
+    const snapshot = await f.service.captureChangeSnapshot("user", true);
+    const blocked = pauseIo(f, "after", (op, args) => op === phase
+      && args[0] === (phase === "realpath" ? f.rootA : f.fileA));
+    const controller = new AbortController();
+    const pending = snapshot.readFile("Form.xbsl", controller.signal);
+    const rejected = assert.rejects(pending, unavailable);
+    try {
+      await promptly(blocked.reached);
+      controller.abort();
+      await promptly(rejected);
+      assert.equal((await promptly(snapshot.readFile("Form.xbsl"))).text, codeA);
+      assert.equal(snapshot.isContentCurrent(), true);
+      const calls = f.calls.length;
+      blocked.release(); await tick();
+      assert.equal(f.calls.length, calls, "cancelled reads cannot resume hash validation or more IO");
+    } finally { controller.abort(); blocked.release(); await rejected; }
+  });
+}
 
 test("change snapshot rejects workspace away/back and non-snapshot paths", async t => {
   const f = fixture(t);

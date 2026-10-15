@@ -40,16 +40,16 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const projectStructure_1 = require("./projectStructure");
+const projectModulePaths_1 = require("./projectModulePaths");
 function projectRuleTargets(files, paths) {
     const indexed = new Map(files.map(file => [file.path, file]));
-    const candidates = paths.flatMap(filePath => /\.ya?ml$/u.test(filePath)
-        ? [filePath, ...[".xbsl", ".Объект.xbsl", ".Object.xbsl"].map(extension => filePath.replace(/\.ya?ml$/u, extension))] : [filePath]);
+    const candidates = paths.flatMap(filePath => /\.ya?ml$/i.test(filePath)
+        ? [filePath, ...files.filter(file => (0, projectModulePaths_1.isElementModuleCompanion)(filePath, file.path)).map(file => file.path)] : [filePath]);
     return [...new Set(candidates)].filter(filePath => indexed.has(filePath)).slice(0, 64).map(filePath => {
-        if (/\.ya?ml$/u.test(filePath))
+        if (/\.ya?ml$/i.test(filePath))
             return { path: filePath, elementKind: indexed.get(filePath)?.structure?.element?.kind };
-        const stem = filePath.replace(/(?:\.Объект|\.Object)?\.xbsl$/u, "").replace(/\.ya?ml$/u, "");
-        const kinds = new Set([`${stem}.yaml`, `${stem}.yml`]
-            .map(name => indexed.get(name)?.structure?.element?.kind).filter((kind) => Boolean(kind)));
+        const kinds = new Set(files.filter(file => (0, projectModulePaths_1.isElementModuleCompanion)(filePath, file.path))
+            .map(file => file.structure?.element?.kind).filter((kind) => Boolean(kind)));
         return { path: filePath, elementKind: kinds.size === 1 ? [...kinds][0] : undefined };
     });
 }
@@ -179,6 +179,7 @@ class ProjectContextService {
         this.configRoot = configRoot;
         this.logger = logger;
         this.semanticService = semanticService;
+        this.cachePersisted = false;
         this.dirty = true;
         this.workspaceRevision = 0;
         this.changeRevision = 0;
@@ -488,16 +489,19 @@ class ProjectContextService {
         this.assertScope(scope);
         return read;
     }
-    async captureChangeSnapshot(profileId, refresh = false) {
+    async captureChangeSnapshot(profileId, refresh = false, signal) {
+        assertNotAborted(signal);
         const scope = this.captureScope();
         if (refresh) {
             this.dirty = true;
             this.forceReindexRevision += 1;
             this.clearSemanticCache();
         }
-        const { index: diskIndex, fileRevision } = await this.ensureToolIndex(profileId, scope);
+        const { index: diskIndex, fileRevision } = await this.ensureToolIndex(profileId, scope, signal);
+        assertNotAborted(signal);
         const snapshot = this.captureSnapshot(scope, fileRevision);
-        const index = await this.withOpenDocuments(diskIndex, snapshot);
+        const index = await this.withOpenDocuments(diskIndex, snapshot, signal);
+        assertNotAborted(signal);
         this.assertSnapshot(snapshot, index);
         const files = index.files.filter(file => /\.(?:xbsl|ya?ml)$/i.test(file.path))
             .map(file => ({ path: file.path, hash: file.hash, structure: file.structure
@@ -522,12 +526,14 @@ class ProjectContextService {
             catch {
                 return false;
             } },
-            readFile: async (filePath) => {
+            readFile: async (filePath, readSignal) => {
+                assertNotAborted(readSignal);
                 this.assertSnapshot(snapshot, index);
                 const hash = hashes.get(filePath);
                 if (!hash)
                     throw new ProjectToolError("notFound", "Файл не входит в снимок проверки.");
-                const read = await this.readFileInScope(scope, { filePath, maxChars: MAX_FILE_BYTES, maxBytes: MAX_FILE_BYTES }, hash);
+                const read = await this.readFileInScope(scope, { filePath, maxChars: MAX_FILE_BYTES, maxBytes: MAX_FILE_BYTES }, hash, readSignal);
+                assertNotAborted(readSignal);
                 this.assertSnapshot(snapshot, index);
                 if (read.truncated)
                     throw new ProjectToolError("tooLarge", "Файл не помещается в лимит проверки.");
@@ -535,12 +541,13 @@ class ProjectContextService {
             }
         };
     }
-    async readFileInScope(scope, options, expectedHash) {
-        this.assertScope(scope);
+    async readFileInScope(scope, options, expectedHash, signal) {
+        const assertCurrent = () => { assertNotAborted(signal); this.assertScope(scope); };
+        assertCurrent();
         const { workspaceRoot } = scope;
         const requested = resolveWorkspaceFilePath(workspaceRoot, options.filePath);
-        const resolved = await resolveWorkspaceFilePathSafe(workspaceRoot, options.filePath, () => this.assertScope(scope));
-        this.assertScope(scope);
+        const resolved = await resolveWorkspaceFilePathSafe(workspaceRoot, options.filePath, assertCurrent, signal);
+        assertCurrent();
         if (!resolved) {
             throw new ProjectToolError("unsafePath", "project.readFile can read only files inside the active workspace.");
         }
@@ -567,12 +574,13 @@ class ProjectContextService {
         else {
             let stat;
             try {
-                stat = await fs.promises.stat(resolved.absolutePath);
+                stat = await abortable(() => fs.promises.stat(resolved.absolutePath), signal);
             }
             catch {
+                assertCurrent();
                 throw new ProjectToolError("notFound", "Requested workspace file was not found.");
             }
-            this.assertScope(scope);
+            assertCurrent();
             if (!stat.isFile()) {
                 throw new ProjectToolError("invalidRequest", "Requested workspace path is not a file.");
             }
@@ -581,8 +589,8 @@ class ProjectContextService {
             if (size <= 0 || size > maxBytes) {
                 throw new ProjectToolError("tooLarge", "Requested workspace file is empty or exceeds the read limit.");
             }
-            const buffer = await fs.promises.readFile(resolved.absolutePath);
-            this.assertScope(scope);
+            const buffer = await abortable(() => fs.promises.readFile(resolved.absolutePath, { signal }), signal);
+            assertCurrent();
             if (!isProbablyText(buffer)) {
                 throw new ProjectToolError("unsafePath", "Requested workspace file is not text.");
             }
@@ -613,7 +621,7 @@ class ProjectContextService {
         const selectedText = requestedStart === 1 && requestedEnd === lines.length
             ? text : lines.slice(requestedStart - 1, requestedEnd).join("\n");
         const truncatedText = selectedText.length > maxChars ? `${selectedText.slice(0, maxChars - 1)}…` : selectedText;
-        this.assertScope(scope);
+        assertCurrent();
         return {
             workspaceRoot,
             path: resolved.relativePath,
@@ -790,7 +798,7 @@ class ProjectContextService {
             const relative = normalizeWorkspaceRelative(workspaceRoot, document.uri.fsPath);
             if (!relative || shouldSkipPath(path.basename(relative), relative) || BINARY_EXTENSIONS.has(path.extname(relative).toLowerCase()))
                 continue;
-            buffers.set(relative, { text: document.getText(), version: document.version });
+            buffers.set(relative, { text: document.getText(), version: document.version, dirty: document.isDirty });
         }
         return buffers;
     }
@@ -813,24 +821,26 @@ class ProjectContextService {
         const current = this.openBuffers(snapshot.scope.workspaceRoot);
         for (const [filePath, before] of snapshot.buffers) {
             const after = current.get(filePath);
-            if (!after || before.version !== after.version || before.text !== after.text) {
+            if (!after || before.version !== after.version || before.text !== after.text || before.dirty !== after.dirty) {
                 throw new ProjectToolError("unavailable", "Буфер редактора изменился во время сборки контекста. Повторите запрос.");
             }
         }
-        if (index) {
-            const hashes = new Map(index.files.map((file) => [file.path, file.hash]));
-            for (const [filePath, buffer] of current) {
-                const expectedHash = hashes.get(filePath);
-                if (expectedHash && crypto.createHash("sha256").update(buffer.text).digest("hex") !== expectedHash) {
-                    throw new ProjectToolError("unavailable", "Индекс не соответствует буферу редактора. Повторите запрос.");
-                }
+        const hashes = new Map(index?.files.map((file) => [file.path, file.hash]));
+        for (const [filePath, buffer] of current) {
+            const expectedHash = hashes.get(filePath);
+            // LSP may open an unchanged indexed file. New dirty or unindexed buffers
+            // are changes to the request's source set, even without a watcher event.
+            if ((!snapshot.buffers.has(filePath) && (buffer.dirty || !expectedHash))
+                || (expectedHash && crypto.createHash("sha256").update(buffer.text).digest("hex") !== expectedHash)) {
+                throw new ProjectToolError("unavailable", "Индекс не соответствует буферу редактора. Повторите запрос.");
             }
         }
     }
-    async withOpenDocuments(index, snapshot) {
+    async withOpenDocuments(index, snapshot, signal) {
         const overlays = new Map();
         const hashes = new Map(index.files.map((file) => [file.path, file.hash]));
         for (const [relative, buffer] of snapshot.buffers) {
+            assertNotAborted(signal);
             this.assertSnapshot(snapshot);
             const text = buffer.text;
             // Clean buffers can also be newer than a cached disk index (save event lag).
@@ -841,18 +851,20 @@ class ProjectContextService {
                 continue;
             let resolved;
             try {
-                resolved = await resolveWorkspaceFilePathSafe(index.workspaceRoot, relative, () => this.assertScope(snapshot.scope));
+                resolved = await resolveWorkspaceFilePathSafe(index.workspaceRoot, relative, () => this.assertScope(snapshot.scope), signal);
             }
             catch (error) {
                 if (error instanceof ProjectToolError && error.code === "unavailable")
                     throw error;
             }
+            assertNotAborted(signal);
             this.assertSnapshot(snapshot);
             if (!resolved)
                 continue;
             // Request-local overlays, including deletions/empty buffers, are never persisted.
             overlays.set(relative, indexText({ relativePath: relative, absolutePath: resolved.absolutePath, mtimeMs: 0, size: Buffer.byteLength(text) }, text));
         }
+        assertNotAborted(signal);
         this.assertSnapshot(snapshot);
         if (!overlays.size)
             return index;
@@ -862,43 +874,58 @@ class ProjectContextService {
             chunks: [...index.chunks.filter((chunk) => !overlays.has(chunk.path)), ...replacements.flatMap((item) => item.chunks)]
         };
     }
-    async ensureToolIndex(profileId, scope = this.captureScope()) {
+    async ensureToolIndex(profileId, scope = this.captureScope(), signal) {
         if (!profileId) {
             throw new ProjectToolError("unavailable", "Codex profile is not selected.");
         }
         this.assertScope(scope);
         const { workspaceRoot } = scope;
-        const { index, indexPath, fileRevision } = await this.ensureIndex(profileId, workspaceRoot, scope);
+        const { index, indexPath, fileRevision } = await this.ensureIndex(profileId, workspaceRoot, scope, signal);
+        assertNotAborted(signal);
         this.assertScope(scope);
         this.assertIndexRevision(fileRevision);
         return { index, indexPath, workspaceRoot, fileRevision };
     }
-    async ensureIndex(profileId, workspaceRoot, scope = this.captureScope()) {
+    async ensureIndex(profileId, workspaceRoot, scope = this.captureScope(), signal) {
+        assertNotAborted(signal);
         this.assertScope(scope);
-        const operation = this.refreshTail.then(() => this.ensureIndexSerial(profileId, workspaceRoot, scope));
+        const operation = this.refreshTail.then(() => this.ensureIndexSerial(profileId, workspaceRoot, scope, signal));
         this.refreshTail = operation.catch(() => undefined);
-        const result = await operation;
+        // A cancelled waiter must not replace the running caller's queue slot.
+        const result = await abortable(() => operation, signal);
+        assertNotAborted(signal);
         this.assertScope(scope);
         this.assertIndexRevision(result.fileRevision);
         return result;
     }
-    async ensureIndexSerial(profileId, workspaceRoot, scope) {
+    async ensureIndexSerial(profileId, workspaceRoot, scope, signal) {
+        assertNotAborted(signal);
         this.assertScope(scope);
         this.ensureWatcher();
         const indexPath = this.indexPath(profileId, workspaceRoot);
         if (this.cachePath !== indexPath) {
             this.clearSemanticCache();
-            const loaded = await this.loadIndex(indexPath, workspaceRoot);
+            const loaded = await this.loadIndex(indexPath, workspaceRoot, signal);
+            assertNotAborted(signal);
             this.assertScope(scope);
             this.cache = loaded;
             this.cachePath = indexPath;
+            this.cachePersisted = Boolean(loaded);
             // Persisted indexes predate this process's observed changes, including
             // changes already handled by another profile's in-memory index.
             this.cacheFileRevision = 0;
             this.indexedRevision = 0;
             this.dirty = true;
         }
-        if (this.cache && !this.dirty) {
+        if (this.cache && !this.dirty && this.indexedRevision === this.forceReindexRevision) {
+            if (!signal && !this.cachePersisted) {
+                const revision = this.cacheFileRevision;
+                await this.writeIndex(indexPath, this.cache, () => {
+                    this.assertScope(scope);
+                    this.assertIndexRevision(revision);
+                });
+                this.cachePersisted = true;
+            }
             return {
                 index: this.cache,
                 indexPath,
@@ -917,18 +944,23 @@ class ProjectContextService {
         const reindexRevision = this.forceReindexRevision;
         const existing = reindexRevision === this.indexedRevision && this.cacheFileRevision >= this.changeHistoryFloor ? this.cache : undefined;
         const assertCurrent = () => {
+            assertNotAborted(signal);
             this.assertScope(scope);
             this.assertIndexRevision(revision);
         };
-        const refreshed = await this.refreshIndex(existing, workspaceRoot, this.cacheFileRevision, assertCurrent);
+        const refreshed = await this.refreshIndex(existing, workspaceRoot, this.cacheFileRevision, assertCurrent, signal);
         assertCurrent();
-        await this.writeIndex(indexPath, refreshed.index, assertCurrent);
+        // Review deadlines must not await an uninterruptible write/rename or let an
+        // abandoned publication overwrite a newer index. These refreshes are local.
+        if (!signal)
+            await this.writeIndex(indexPath, refreshed.index, assertCurrent);
         assertCurrent();
         this.cache = refreshed.index;
         this.cachePath = indexPath;
+        this.cachePersisted = !signal;
         this.cacheFileRevision = revision;
         this.indexedRevision = reindexRevision;
-        this.dirty = false;
+        this.dirty = reindexRevision !== this.forceReindexRevision;
         return {
             index: refreshed.index,
             indexPath,
@@ -936,9 +968,10 @@ class ProjectContextService {
             stats: refreshed.stats
         };
     }
-    async loadIndex(indexPath, workspaceRoot) {
+    async loadIndex(indexPath, workspaceRoot, signal) {
         try {
-            const raw = await fs.promises.readFile(indexPath, "utf8");
+            const raw = await abortable(() => fs.promises.readFile(indexPath, { encoding: "utf8", signal }), signal);
+            assertNotAborted(signal);
             const parsed = normalizeIndex(JSON.parse(raw), workspaceRoot);
             if (parsed) {
                 this.logger.info(`Project index v3 loaded lazily: ${parsed.files.length} files, ${parsed.chunks.length} chunks from ${indexPath}.`);
@@ -946,6 +979,7 @@ class ProjectContextService {
             return parsed;
         }
         catch (error) {
+            assertNotAborted(signal);
             if (isNodeError(error) && error.code === "ENOENT") {
                 this.logger.info("Project index v3 not found, will build lazily.");
                 return undefined;
@@ -954,9 +988,9 @@ class ProjectContextService {
             return undefined;
         }
     }
-    async refreshIndex(existing, workspaceRoot, fileRevision, assertScope) {
+    async refreshIndex(existing, workspaceRoot, fileRevision, assertScope, signal) {
         const startedAt = Date.now();
-        const scanned = await scanWorkspace(workspaceRoot, assertScope);
+        const scanned = await scanWorkspace(workspaceRoot, assertScope, signal);
         assertScope();
         const previousFiles = new Map((existing?.files ?? []).map((file) => [file.path, file]));
         const previousChunks = new Map((existing?.chunks ?? []).map((chunk) => [chunk.chunkId, chunk]));
@@ -966,6 +1000,7 @@ class ProjectContextService {
         let indexedFiles = 0;
         let skippedFiles = scanned.skippedFiles;
         for (const file of scanned.files) {
+            assertScope();
             const old = previousFiles.get(file.relativePath);
             const changed = (this.changedFiles.get(filePathKey(file.absolutePath)) ?? 0) > fileRevision;
             if (old && !changed && old.mtimeMs === file.mtimeMs && old.size === file.size && old.chunkIds.every((id) => previousChunks.has(id))) {
@@ -979,7 +1014,7 @@ class ProjectContextService {
                 reusedFiles += 1;
                 continue;
             }
-            const indexed = await indexFile(file);
+            const indexed = await indexFile(file, signal);
             assertScope();
             if (!indexed) {
                 skippedFiles += 1;
@@ -1076,18 +1111,43 @@ class ProjectContextService {
     }
 }
 exports.ProjectContextService = ProjectContextService;
-async function scanWorkspace(workspaceRoot, assertScope) {
+function assertNotAborted(signal) {
+    if (signal?.aborted)
+        throw new ProjectToolError("unavailable", "Project context operation was cancelled.");
+}
+async function abortable(run, signal) {
+    assertNotAborted(signal);
+    if (!signal)
+        return run();
+    let cancel;
+    try {
+        return await Promise.race([
+            new Promise((_resolve, reject) => {
+                cancel = () => reject(new ProjectToolError("unavailable", "Project context operation was cancelled."));
+                signal.addEventListener("abort", cancel, { once: true });
+            }),
+            run()
+        ]);
+    }
+    finally {
+        if (cancel)
+            signal.removeEventListener("abort", cancel);
+    }
+}
+async function scanWorkspace(workspaceRoot, assertScope, signal) {
     const files = [];
     let skippedFiles = 0;
     async function walk(directory) {
+        assertScope();
         if (files.length >= MAX_INDEX_FILES) {
             return;
         }
         let entries;
         try {
-            entries = await fs.promises.readdir(directory, { withFileTypes: true });
+            entries = await abortable(() => fs.promises.readdir(directory, { withFileTypes: true }), signal);
         }
         catch {
+            assertScope();
             skippedFiles += 1;
             return;
         }
@@ -1097,6 +1157,7 @@ async function scanWorkspace(workspaceRoot, assertScope) {
             || Number(/^(docs|specs)$/i.test(left.name)) - Number(/^(docs|specs)$/i.test(right.name))
             || left.name.localeCompare(right.name));
         for (const entry of entries) {
+            assertScope();
             if (files.length >= MAX_INDEX_FILES) {
                 break;
             }
@@ -1117,9 +1178,10 @@ async function scanWorkspace(workspaceRoot, assertScope) {
             }
             let stat;
             try {
-                stat = await fs.promises.stat(absolutePath);
+                stat = await abortable(() => fs.promises.stat(absolutePath), signal);
             }
             catch {
+                assertScope();
                 skippedFiles += 1;
                 continue;
             }
@@ -1140,8 +1202,9 @@ async function scanWorkspace(workspaceRoot, assertScope) {
     assertScope();
     return { files, skippedFiles };
 }
-async function indexFile(file) {
-    const buffer = await fs.promises.readFile(file.absolutePath);
+async function indexFile(file, signal) {
+    const buffer = await abortable(() => fs.promises.readFile(file.absolutePath, { signal }), signal);
+    assertNotAborted(signal);
     if (!isProbablyText(buffer)) {
         return undefined;
     }
@@ -1605,15 +1668,18 @@ function resolveWorkspaceFilePath(workspaceRoot, filePath) {
     }
     return { absolutePath, relativePath };
 }
-async function resolveWorkspaceFilePathSafe(workspaceRoot, filePath, assertScope) {
+async function resolveWorkspaceFilePathSafe(workspaceRoot, filePath, assertScope, signal) {
+    assertNotAborted(signal);
     const resolved = resolveWorkspaceFilePath(workspaceRoot, filePath);
     if (!resolved) {
         return undefined;
     }
     try {
-        const workspaceRealPath = await fs.promises.realpath(workspaceRoot);
+        const workspaceRealPath = await abortable(() => fs.promises.realpath(workspaceRoot), signal);
+        assertNotAborted(signal);
         assertScope?.();
-        const fileRealPath = await fs.promises.realpath(resolved.absolutePath);
+        const fileRealPath = await abortable(() => fs.promises.realpath(resolved.absolutePath), signal);
+        assertNotAborted(signal);
         assertScope?.();
         const relativePath = normalizeWorkspaceRelative(workspaceRealPath, fileRealPath);
         if (!relativePath) {

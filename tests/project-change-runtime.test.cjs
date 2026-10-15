@@ -176,6 +176,21 @@ function harness(t, { enabled = true, kind = "project", accessMode } = {}) {
   return h;
 }
 
+function inlineQuestion(h) {
+  const start = h.starts().at(-1);
+  h.runtime.handleNotification({ method: "item/completed", params: {
+    threadId: start.params.threadId, turnId: start.turnId,
+    item: { type: "agentMessage", id: "pending-steer-question", text: "Choose a target", delivery: "async",
+      questions: [{ title: "Which target?", options: ["Test", "Production"] }] }
+  } });
+  const item = h.items().find(item => item.backendItemId === "pending-steer-question");
+  assert.ok(item?.questions?.length);
+  return {
+    answer: () => h.runtime.respondToQuestion(h.chat.id, item.id, item.questions[0].id, "Test"),
+    current: () => h.state.getChatQuestion(h.chat.id, item.id, item.questions[0].id)
+  };
+}
+
 test("snapshot awaits context and finishes before the first turn/start RPC", async t => {
   const h = harness(t), context = h.gate(), snapshot = h.gate();
   const build = h.buildImpl;
@@ -222,33 +237,150 @@ test("shell-only changes produce one read-only review activity without any auto-
 });
 
 test("early completion drains the queue only after both review and acknowledgement", async t => {
-  for (const first of ["review", "acknowledgement"]) await t.test(first, async t => {
+  for (const queuedStart of [false, true]) for (const first of ["review", "acknowledgement"]) {
+    await t.test(`${queuedStart ? "queued" : "manual"} start: ${first}`, async t => {
     const h = harness(t), ack = h.gate(), review = h.gate();
     const rpc = h.rpcImpl;
-    h.rpcImpl = async entry => { if (entry.turnId === "turn-1") await ack.promise; return rpc(entry); };
-    h.completeImpl = () => review.promise;
-    const sending = h.send();
+    const turnNumber = queuedStart ? 2 : 1;
+    h.rpcImpl = async entry => { if (entry.turnId === `turn-${turnNumber}`) await ack.promise; return rpc(entry); };
+    h.completeImpl = call => call.baseline.id === `baseline-${turnNumber}` ? review.promise : h.result(call);
+    let sending;
+    if (queuedStart) {
+      await h.send();
+      await h.queue("queued start");
+      h.finish();
+    } else sending = h.send();
     await flush();
     assert.equal(await h.queue("queued"), true);
-    const original = h.starts()[0];
+    const original = h.starts().at(-1);
     h.finish(original);
     await flush();
-    assert.equal(h.reviews.length, 1, "completion must find a run before RPC acknowledgement");
-    assert.equal(h.starts().length, 1);
-    if (first === "review") review.resolve(h.result(h.reviews[0]));
+    assert.equal(h.reviews.length, turnNumber, "completion must find a run before RPC acknowledgement");
+    assert.equal(h.starts().length, turnNumber);
+    if (first === "review") review.resolve(h.result(h.reviews.at(-1)));
     else ack.resolve();
     await flush();
-    assert.equal(h.starts().length, 1, "one remaining barrier must still block dispatch");
+    assert.equal(h.starts().length, turnNumber, "one remaining barrier must still block dispatch");
     if (first === "review") ack.resolve();
-    else review.resolve(h.result(h.reviews[0]));
+    else review.resolve(h.result(h.reviews.at(-1)));
     await sending;
     await flush();
-    assert.equal(h.starts().length, 2, "last barrier release must retry queue draining");
-    assert.equal(h.state.getChat(h.chat.id).activeTurnId, "turn-2");
+    assert.equal(h.starts().length, turnNumber + 1, "last barrier release must retry queue draining");
+    assert.equal(h.starts().at(-1).params.input[0].text, "queued");
+    assert.equal(h.state.getChat(h.chat.id).activeTurnId, `turn-${turnNumber + 1}`);
+    assert.equal(h.state.getChat(h.chat.id).queuedMessages.length, 0);
     h.finish(original);
     await flush();
-    assert.equal(h.reviews.length, 1, "duplicate completion cannot review or stop the next turn");
-    assert.equal(h.state.getChat(h.chat.id).activeTurnId, "turn-2");
+    assert.equal(h.reviews.length, turnNumber, "duplicate completion cannot review or stop the next turn");
+    assert.equal(h.state.getChat(h.chat.id).activeTurnId, `turn-${turnNumber + 1}`);
+    });
+  }
+});
+
+test("late turn/start acknowledgement preserves the queue after abnormal completion", async t => {
+  for (const queuedStart of [false, true]) for (const status of ["interrupted", "failed"]) {
+    await t.test(`${queuedStart ? "queued" : "manual"} start: ${status}`, async t => {
+      const h = harness(t), ack = h.gate();
+      const rpc = h.rpcImpl;
+      const delayedTurn = queuedStart ? "turn-2" : "turn-1";
+      h.rpcImpl = async entry => { if (entry.turnId === delayedTurn) await ack.promise; return rpc(entry); };
+      let sending;
+      if (queuedStart) {
+        await h.send();
+        await h.queue("queued start");
+        await h.queue("must remain queued");
+        h.finish();
+      } else {
+        sending = h.send();
+        await flush();
+        await h.queue("must remain queued");
+      }
+      await flush();
+      const startsBeforeAck = h.starts().length;
+      const reviewsBeforeCompletion = h.reviews.length;
+      assert.equal(h.starts().at(-1).turnId, delayedTurn);
+      h.finish(h.starts().at(-1), status);
+      await flush();
+      ack.resolve();
+      await sending;
+      await flush();
+      assert.equal(h.starts().length, startsBeforeAck, "a late ack cannot restart interrupted or failed work");
+      assert.deepEqual(plain(h.state.getChat(h.chat.id).queuedMessages.map(item => [item.text, item.dispatchState])),
+        [["must remain queued", "queued"]]);
+      assert.equal(h.state.getChat(h.chat.id).activeTurnId, null);
+      assert.equal(h.reviews.length, reviewsBeforeCompletion, "abnormal completion does not start a review");
+      h.assertReleased();
+    });
+  }
+});
+
+test("pending inline steer and post-turn review release queued work exactly once", async t => {
+  for (const first of ["review", "steer"]) await t.test(first, async t => {
+    const h = harness(t), steer = h.gate(), review = h.gate();
+    const rpc = h.rpcImpl;
+    h.rpcImpl = async entry => entry.method === "turn/steer" ? steer.promise : rpc(entry);
+    h.completeImpl = () => review.promise;
+    await h.send();
+    const question = inlineQuestion(h);
+    await h.queue("after inline answer");
+    const responding = question.answer();
+    await flush();
+    assert.equal(h.requests.at(-1).method, "turn/steer");
+    h.finish();
+    await flush();
+    assert.equal(h.reviews.length, 1);
+    if (first === "review") review.resolve(h.result(h.reviews[0]));
+    else steer.resolve({ turnId: "turn-1" });
+    await flush();
+    assert.equal(h.starts().length, 1, "both pending barriers must finish before dispatch");
+    if (first === "review") steer.resolve({ turnId: "turn-1" });
+    else review.resolve(h.result(h.reviews[0]));
+    assert.equal((await responding).accepted, true);
+    await flush();
+    assert.equal(question.current().answer, "Test");
+    assert.equal(h.starts().length, 2);
+    assert.equal(h.starts()[1].params.input[0].text, "after inline answer");
+    assert.equal(h.state.getChat(h.chat.id).queuedMessages.length, 0);
+  });
+});
+
+test("cancel post-turn review with a pending inline steer acknowledgement keeps queued work", async t => {
+  for (const first of ["review", "steer"]) await t.test(first, async t => {
+    const h = harness(t), steer = h.gate(), review = h.gate();
+    const rpc = h.rpcImpl;
+    h.rpcImpl = async entry => entry.method === "turn/steer" ? steer.promise : rpc(entry);
+    h.completeImpl = () => review.promise;
+    await h.send();
+    const question = inlineQuestion(h);
+    await h.queue("must remain queued");
+    const responding = question.answer();
+    await flush();
+    assert.equal(h.requests.at(-1).method, "turn/steer");
+    h.finish();
+    await flush();
+    assert.equal(h.runtime.postTurnReviews.size, 1);
+    const pendingReview = h.reviews[0];
+    await h.runtime.cancelTurn(h.chat.id);
+    assert.equal(pendingReview.isCurrent(), false);
+    h.assertReleased();
+    if (first === "review") review.resolve(h.result(pendingReview));
+    else steer.resolve({ turnId: "turn-1" });
+    await flush();
+    assert.equal(h.starts().length, 1);
+    if (first === "review") steer.resolve({ turnId: "turn-1" });
+    else review.resolve(h.result(pendingReview));
+    const response = await responding;
+    await flush();
+    assert.equal(response.accepted, false);
+    assert.ok(response.error);
+    assert.equal(question.current().answer, undefined);
+    assert.equal(h.starts().length, 1, "late finalizers cannot authorize another writable turn");
+    assert.deepEqual(plain(h.state.getChat(h.chat.id).queuedMessages.map(item => [item.text, item.dispatchState])),
+      [["must remain queued", "queued"]]);
+    assert.doesNotMatch(JSON.stringify(h.activities()), /OBSERVED_REVIEW_/);
+    assert.equal(h.runtime.promptStarts.size, 0);
+    assert.equal(h.runtime.queuedDispatches.size, 0);
+    h.assertReleased();
   });
 });
 
@@ -564,6 +696,74 @@ test("only revalidated next-turn project context reaches RPC, preserving explici
     await sending;
     assert.equal(h.starts().length, 1, "a late truthy context result cannot authorize a changed scope");
     h.assertReleased();
+  });
+});
+
+test("final review diagnostics refresh replaces the report in turn/start", async t => {
+  for (const transition of ["replace", "clear", "arrive", "unchanged", "invalidate-on-rebuild", "churn-on-rebuild"]) await t.test(transition, async t => {
+    const h = harness(t), building = h.gate();
+    const workspaceRoot = h.workspace.workspaceFolders[0].uri.fsPath;
+    const uri = { scheme: "file", fsPath: path.join(workspaceRoot, "Changed.xbsl") };
+    const diagnostic = message => [uri, [{ message, severity: 0, range: { start: { line: 0 } }, source: "simulated-IDE" }]];
+    let cache = transition === "arrive" ? [] : [diagnostic("OLD_DIAGNOSTIC")];
+    let reads = 0;
+    let sourceCurrent = true;
+    const snapshot = {
+      workspaceRoot, files: [{ path: "Changed.xbsl", hash: "unchanged-source-hash" }], coverage: "bounded-index",
+      isCurrent: () => true, isContentCurrent: () => sourceCurrent,
+      readFile: async () => ({ text: "unchanged source", hash: "unchanged-source-hash" })
+    };
+    const { ProjectChangeReviewService } = loadSource("src/projectChangeReviewService.ts", {
+      vscode: { ...vscode, DiagnosticSeverity: { Error: 0, Warning: 1 }, languages: {
+        getDiagnostics: () => { reads++; return cache; }
+      } },
+      "./projectChangeAnalysis": { analyzeProjectChanges() { assert.fail("context refresh must not rerun analysis"); } }
+    });
+    const service = new ProjectChangeReviewService({ captureChangeSnapshot: async () => snapshot }, {}, {},
+      () => "profile-a", h.options.logger);
+    const result = h.result({ baseline: { id: "prior" } });
+    service.reports.set(h.chat.id, { result, snapshot, profileId: "profile-a", baselineDiagnostics: new Set() });
+    const refreshed = [];
+    const context = service.context.bind(service);
+    service.context = async chatId => { const block = await context(chatId); refreshed.push(block); return block; };
+    h.options.changeReview = service;
+    const build = h.buildImpl;
+    h.buildImpl = async input => {
+      await building.promise;
+      if (h.builds.length === 2) {
+        if (transition === "invalidate-on-rebuild") sourceCurrent = false;
+        if (transition === "churn-on-rebuild") cache = [diagnostic("CHANGED_AGAIN_DIAGNOSTIC")];
+      }
+      return build(input);
+    };
+    const explicit = { source: "project", text: "EXPLICIT_USER_CONTEXT", matchCount: 1, mode: "matched" };
+    const sending = h.send("explain diagnostics", h.chat.id, "normal", [explicit]);
+    await flush();
+    assert.equal(refreshed.length, 1);
+    assert.equal(h.starts().length, 0);
+    if (transition !== "unchanged") cache = transition === "clear" ? [] : [diagnostic("NEW_DIAGNOSTIC")];
+    building.resolve();
+    await sending;
+    assert.equal(refreshed.length, transition === "unchanged" ? 2 : 3,
+      "revalidate against the current IDE cache after every context build");
+    if (transition.endsWith("-on-rebuild")) {
+      assert.equal(h.starts().length, 0, "never send a report invalidated during rebuilding");
+      assert.equal(h.state.getChat(h.chat.id).status, "error");
+      assert.ok(h.logs.some(item => item.message.includes("Данные проверки изменились")));
+      assert.equal(h.builds.length, 2, "do not retry indefinitely when sources or diagnostics keep changing");
+      return;
+    }
+    assert.ok(reads >= 3, "read diagnostics for initial context, baseline and final context");
+    assert.equal(h.starts().length, 1);
+    assert.ok(refreshed[1]);
+    const input = h.starts()[0].params.input;
+    assert.equal(input.filter(item => item.text === refreshed[1].text).length, 1,
+      "send exactly the final validated report, including newly arrived or cleared diagnostics");
+    assert.equal(input.filter(item => item.text === explicit.text).length, 1);
+    assert.equal(h.builds.length, transition === "unchanged" ? 1 : 2,
+      "rebuild only when the validated report changes");
+    if (transition !== "unchanged") assert.doesNotMatch(JSON.stringify(input), /OLD_DIAGNOSTIC/);
+    assert.equal(JSON.stringify(input).includes("NEW_DIAGNOSTIC"), ["replace", "arrive"].includes(transition));
   });
 });
 

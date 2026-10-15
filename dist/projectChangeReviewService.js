@@ -54,10 +54,10 @@ class ProjectChangeReviewService {
         if (!profileId)
             return undefined;
         try {
-            const snapshot = await bounded(this.project.captureChangeSnapshot(profileId, true), 8000);
+            const snapshot = await bounded(signal => this.project.captureChangeSnapshot(profileId, true, signal), 8000);
             if (!snapshot.isCurrent() || profileId !== this.getProfileId())
                 return undefined;
-            return { snapshot, profileId, diagnostics: this.readDiagnostics(snapshot.workspaceRoot) };
+            return { snapshot, profileId, diagnostics: this.readDiagnostics(snapshot.workspaceRoot).entries };
         }
         catch {
             this.logger.warn("Change review: baseline unavailable; no claim of a completed check will be made.");
@@ -68,25 +68,27 @@ class ProjectChangeReviewService {
         const valid = () => isCurrent() && baseline.profileId === this.getProfileId() && baseline.snapshot.isCurrent();
         if (!valid())
             return undefined;
-        const after = await bounded(this.project.captureChangeSnapshot(baseline.profileId, true), 8000);
+        const after = await bounded(signal => this.project.captureChangeSnapshot(baseline.profileId, true, signal), 8000);
         const resultCurrent = () => valid() && after.isContentCurrent();
         if (!resultCurrent() || after.workspaceRoot !== baseline.snapshot.workspaceRoot)
             return undefined;
-        const report = await bounded((0, projectChangeAnalysis_1.analyzeProjectChanges)({
+        const report = await bounded(signal => (0, projectChangeAnalysis_1.analyzeProjectChanges)({
             before: baseline.snapshot,
             after,
-            readFile: filePath => after.readFile(filePath),
+            readFile: filePath => after.readFile(filePath, signal),
             parse: (text, signal) => this.ast.parse(text, { signal }),
             inspect: (filePath, positions) => this.language.inspect(vscode.Uri.file(path.join(after.workspaceRoot, filePath)), positions),
-            isCurrent: resultCurrent
+            isCurrent: resultCurrent,
+            signal
         }), 12000);
         if (!resultCurrent() || report.status === "stale")
             return undefined;
         const paths = new Set([...report.changedPaths, ...report.findings.map(finding => finding.path)]);
         const old = new Set(baseline.diagnostics.map(entry => entry.key));
-        const diagnostics = this.readDiagnostics(after.workspaceRoot).filter(entry => paths.has(entry.path)).slice(0, 40)
+        const selected = this.readDiagnostics(after.workspaceRoot, paths, 40);
+        const diagnostics = selected.entries
             .map(entry => ({ ...entry, observed: old.has(entry.key) ? "existing" : "not-in-baseline" }));
-        const result = { report, diagnostics, text: "" };
+        const result = { report, diagnostics, omittedDiagnostics: selected.omitted, text: "" };
         result.text = formatChangeReview(result);
         if (report.status !== "unchanged") {
             this.reports.delete(chatId);
@@ -105,21 +107,30 @@ class ProjectChangeReviewService {
             if (entry.profileId !== this.getProfileId() || !entry.snapshot.isContentCurrent())
                 throw new Error("scope");
             // A report is never replayed merely because the chat is the same.
-            await bounded((async () => {
-                const current = await this.project.captureChangeSnapshot(entry.profileId, true);
+            await bounded(async (signal) => {
+                const current = await this.project.captureChangeSnapshot(entry.profileId, true, signal);
+                if (signal.aborted)
+                    throw new Error("cancelled");
                 if (current.workspaceRoot !== entry.snapshot.workspaceRoot
                     || JSON.stringify(current.files.map(file => [file.path, file.hash])) !== JSON.stringify(entry.snapshot.files.map(file => [file.path, file.hash])))
                     throw new Error("changed");
-                for (const filePath of entry.result.report.checkedPaths)
-                    await entry.snapshot.readFile(filePath);
+                for (const filePath of entry.result.report.checkedPaths) {
+                    if (signal.aborted)
+                        throw new Error("cancelled");
+                    await entry.snapshot.readFile(filePath, signal);
+                }
+                if (signal.aborted)
+                    throw new Error("cancelled");
                 if (!current.isContentCurrent())
                     throw new Error("changed");
-            })(), 2000);
+            }, 2000);
             if (entry.profileId !== this.getProfileId() || !entry.snapshot.isContentCurrent())
                 throw new Error("scope");
             const paths = new Set([...entry.result.report.changedPaths, ...entry.result.report.findings.map(finding => finding.path)]);
-            entry.result.diagnostics = this.readDiagnostics(entry.snapshot.workspaceRoot).filter(item => paths.has(item.path)).slice(0, 40)
+            const selected = this.readDiagnostics(entry.snapshot.workspaceRoot, paths, 40);
+            entry.result.diagnostics = selected.entries
                 .map(item => ({ ...item, observed: entry.baselineDiagnostics.has(item.key) ? "existing" : "not-in-baseline" }));
+            entry.result.omittedDiagnostics = selected.omitted;
             entry.result.text = formatChangeReview(entry.result);
             return {
                 source: "project", text: entry.result.text,
@@ -139,14 +150,18 @@ class ProjectChangeReviewService {
     }
     forget(chatId) { this.reports.delete(chatId); }
     clear() { this.reports.clear(); }
-    readDiagnostics(root) {
-        const entries = [];
+    readDiagnostics(root, paths, limit = 2000) {
+        const errors = [];
+        const warnings = [];
+        const counts = { errors: 0, warnings: 0 };
         try {
             for (const [uri, diagnostics] of vscode.languages.getDiagnostics()) {
                 if (!uri || uri.scheme !== "file" || typeof uri.fsPath !== "string" || !Array.isArray(diagnostics))
                     continue;
                 const relative = path.relative(root, uri.fsPath).split(path.sep).join("/");
                 if (!relative || relative === ".." || relative.startsWith("../") || path.isAbsolute(relative))
+                    continue;
+                if (paths && !paths.has(relative))
                     continue;
                 for (const diagnostic of diagnostics) {
                     if (!diagnostic || typeof diagnostic.message !== "string" || !Number.isInteger(diagnostic.range?.start?.line)
@@ -156,17 +171,21 @@ class ProjectChangeReviewService {
                         : diagnostic.severity === vscode.DiagnosticSeverity.Warning ? "warning" : undefined;
                     if (!severity)
                         continue;
+                    const entries = severity === "error" ? errors : warnings;
+                    counts[severity === "error" ? "errors" : "warnings"]++;
+                    if (entries.length >= limit)
+                        continue;
                     const message = diagnostic.message.replace(/\s+/g, " ").slice(0, 500);
                     const code = diagnostic.code && typeof diagnostic.code === "object" ? diagnostic.code.value : diagnostic.code;
                     entries.push({ path: relative, line: diagnostic.range.start.line + 1, message, severity,
                         key: JSON.stringify([relative, diagnostic.source, code, severity, message]) });
-                    if (entries.length >= 2000)
-                        return entries;
                 }
             }
         }
         catch { /* Public diagnostics are optional in the Element bundle. */ }
-        return entries;
+        const selectedWarnings = warnings.slice(0, Math.max(0, limit - errors.length));
+        return { entries: [...errors, ...selectedWarnings],
+            omitted: { errors: counts.errors - errors.length, warnings: counts.warnings - selectedWarnings.length } };
     }
 }
 exports.ProjectChangeReviewService = ProjectChangeReviewService;
@@ -179,18 +198,50 @@ function formatChangeReview(result) {
         "Снимки отражают наблюдаемые изменения, включая ручные правки и работу других чатов; авторство изменений не устанавливается.",
         "Не меняй связанные места только по совпадению имени. Проверь определения и текущий код в рамках запроса пользователя.",
         "Наличие синтаксического замечания после правки не доказывает, что оно появилось из-за этой правки.",
-        ...report.findings.map(item => `- ${item.path}:${item.line} [${item.evidence}; ${item.kind}] ${item.message}`),
-        "Диагностики IDE: текущий кеш провайдеров, без подтверждения повторной компиляции. Пустой кеш не означает отсутствие ошибок.",
-        ...result.diagnostics.map(item => `- ${item.path}:${item.line} [${item.severity === "error" ? "ошибка" : "предупреждение"}; ${item.observed === "existing" ? "было до запроса" : "не было в исходном снимке кеша"}] ${item.message}`),
-        ...report.limitations.map(item => `Ограничение: ${item}`)
+        "Диагностики IDE: текущий кеш провайдеров, без подтверждения повторной компиляции. Пустой кеш не означает отсутствие ошибок."
     ];
-    const text = lines.join("\n");
-    return text.length > 16000 ? `${text.slice(0, 15800)}\nОтчёт сокращён до лимита; часть замечаний не включена.` : text;
+    const omitted = { errors: result.omittedDiagnostics?.errors ?? 0, warnings: result.omittedDiagnostics?.warnings ?? 0,
+        findings: 0, limitations: 0 };
+    let length = lines.join("\n").length;
+    const append = (text, kind) => {
+        // Reserve space for exact omission counts, including IDE errors beyond either budget.
+        if (length + text.length + 1 > 15000) {
+            omitted[kind]++;
+            return;
+        }
+        lines.push(text);
+        length += text.length + 1;
+    };
+    const diagnostic = (item) => `- ${item.path}:${item.line} [${item.severity === "error" ? "ошибка" : "предупреждение"}; ${item.observed === "existing" ? "было до запроса" : "не было в исходном снимке кеша"}] ${item.message}`;
+    const finding = (item) => `- ${item.path}:${item.line} [${item.evidence}; ${item.kind}] ${item.message}`;
+    for (const item of result.diagnostics)
+        if (item.severity === "error")
+            append(diagnostic(item), "errors");
+    for (const item of report.findings)
+        if (item.kind === "syntax")
+            append(finding(item), "findings");
+    for (const item of result.diagnostics)
+        if (item.severity === "warning")
+            append(diagnostic(item), "warnings");
+    for (const item of report.findings)
+        if (item.kind !== "syntax")
+            append(finding(item), "findings");
+    for (const item of report.limitations)
+        append(`Ограничение: ${item}`, "limitations");
+    if (Object.values(omitted).some(count => count > 0)) {
+        lines.push("Отчёт сокращён до лимита; часть замечаний не включена.");
+        lines.push(`Не включено диагностик IDE: ошибок ${omitted.errors}, предупреждений ${omitted.warnings}. Замечаний анализа: ${omitted.findings}. Ограничений: ${omitted.limitations}.`);
+    }
+    return lines.join("\n");
 }
-function bounded(promise, timeout) {
+function bounded(run, timeout) {
+    const controller = new AbortController();
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("Истекло время проверки изменений.")), timeout);
-        promise.then(resolve, reject).finally(() => clearTimeout(timer));
+        const timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error("Истекло время проверки изменений."));
+        }, timeout);
+        Promise.resolve().then(() => run(controller.signal)).then(resolve, reject).finally(() => clearTimeout(timer));
     });
 }
 //# sourceMappingURL=projectChangeReviewService.js.map

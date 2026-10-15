@@ -6,6 +6,8 @@ import { analyzeProjectStructure, ProjectStructure, StructureSymbol } from "./pr
 import { NativeXbslAstService } from "./nativeXbslAstService";
 import { ElementLanguageService, ElementLanguageResult, ElementLanguageSymbol, ElementLanguageRange } from "./elementLanguageService";
 import { collectAstReferences } from "./projectAstReferences";
+import { isCompanion } from "./projectModulePaths";
+export { isCompanion, isElementModuleCompanion } from "./projectModulePaths";
 
 interface SourceFile { path: string; hash: string; structure?: ProjectStructure }
 interface SourceText { text: string; truncated: boolean; fromOpenDocument: boolean; startLine: number; endLine: number }
@@ -520,16 +522,6 @@ function indexedDefinitionPath(request: SemanticRequest, fsPath: string): string
 
 function inclusiveEndLine(range: ElementLanguageRange): number {
   return range.endCharacter === 0 && range.endLine > range.startLine ? range.endLine - 1 : range.endLine;
-}
-
-export function isCompanion(left: string, right: string): boolean {
-  if (left === right || path.posix.dirname(left) !== path.posix.dirname(right)) return false;
-  const yaml = /\.ya?ml$/i.test(left) ? left : /\.ya?ml$/i.test(right) ? right : undefined;
-  const xbsl = /\.xbsl$/i.test(left) ? left : /\.xbsl$/i.test(right) ? right : undefined;
-  if (!yaml || !xbsl) return false;
-  const base = yaml.replace(/\.ya?ml$/i, "");
-  const code = xbsl.replace(/\.xbsl$/i, "");
-  return code === base || code.startsWith(`${base}.`);
 }
 
 function isMethodKind(kind: string): boolean {

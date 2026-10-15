@@ -9,7 +9,7 @@ const { loadSource, logger, root: pluginRoot } = require("./service-test-utils.c
 const uri = (file) => ({ scheme: "file", fsPath: file, path: file, toString: () => pathToFileURL(file).href });
 const vscode = { Uri: { file: uri, parse: (value) => uri(fileURLToPath(value)) } };
 const { analyzeProjectStructure } = loadSource("src/projectStructure.ts");
-const { ProjectSemanticService, isCompanion } = loadSource("src/projectSemanticService.ts", { vscode });
+const { ProjectSemanticService, isCompanion, isElementModuleCompanion } = loadSource("src/projectSemanticService.ts", { vscode });
 const emptyLanguage = () => ({ status: "unavailable", symbols: [], queries: [] });
 const unavailableAst = { parse: async () => ({ status: "unavailable", diagnostics: [], reason: "test" }) };
 
@@ -23,6 +23,17 @@ function request(sources, query = "Применить", selected = "A/Form.yaml"
 }
 const form = "ВидЭлемента: КомпонентИнтерфейса\nИмя: Form\nНаследует:\n  Тип: Форма<Булево>\n  ПриНажатии: Применить\n";
 const method = "метод Применить()\n    возврат\n;\n";
+
+test("confirmed element modules are stricter than filename retrieval candidates", () => {
+  for (const suffix of ["", ".Объект", ".Object", ".НаборЗаписей", ".RecordSet", ".Запись", ".Record"]) {
+    assert.equal(isElementModuleCompanion("A/Form.yaml", `A/Form${suffix}.xbsl`), true);
+    assert.equal(isElementModuleCompanion(`A/Form${suffix}.XBSL`, "A/Form.yml"), true);
+  }
+  for (const name of ["A/Form.Other.xbsl", "A/Form.Объект.Other.xbsl", "A/FormOther.xbsl", "B/Form.xbsl"]) {
+    assert.equal(isElementModuleCompanion("A/Form.yaml", name), false, name);
+  }
+  assert.equal(isCompanion("A/Form.yaml", "A/Form.Other.xbsl"), true, "stage-2 broad retrieval remains unchanged");
+});
 
 test("YAML handler selects only the companion XBSL, not a same-named method elsewhere", async () => {
   const service = new ProjectSemanticService(unavailableAst, { inspect: async () => emptyLanguage() }, logger);
