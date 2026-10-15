@@ -59,6 +59,8 @@ svg { flex-shrink: 0; vertical-align: middle; }
 .icon-button[aria-pressed=true] { background: var(--hover); color: var(--accent); }
 .header-toggle { border-radius: 7px; }
 .chat-stage { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; min-width: 0; overflow: hidden; }
+.chat-stage.has-viewer-error { grid-template-rows: auto minmax(0, 1fr); }
+.viewer-open-error { grid-column: 1 / -1; padding: 8px 22px; }
 .chat-stage.has-feature { grid-template-columns: minmax(220px, 1fr) minmax(260px, 340px); }
 .transcript-region { min-width: 0; min-height: 0; position: relative; }
 .body { height: 100%; width: 100%; overflow: auto; overflow-anchor: none; overscroll-behavior: contain; scrollbar-width: none; }

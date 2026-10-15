@@ -129,6 +129,8 @@ const turnRequests = [];
 
 async function checkConcurrentStartup() {
   const controller = Object.create(CodexRuntimeController.prototype);
+  let observerStops = 0;
+  controller.options = { onDidStopRuntime: () => { observerStops++; } };
   let running = false;
   let started = 0;
   let initialized;
@@ -150,6 +152,7 @@ async function checkConcurrentStartup() {
   running = false;
   controller.startBackendSession = async () => { throw new Error("startup fixture failure"); };
   await assert.rejects(controller.ensureBackendProcess(), /startup fixture failure/);
+  assert.equal(observerStops, 1, "failed startup must release its browser observer");
   controller.startBackendSession = async () => { started++; running = true; };
   await controller.ensureBackendProcess();
   assert.equal(started, 2, "failed startup must not block a retry");

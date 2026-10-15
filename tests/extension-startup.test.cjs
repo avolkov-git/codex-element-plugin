@@ -85,7 +85,9 @@ test("compiled extension activates before credentials/MCP exist and registers a 
   const fixture = await activateFixture(t);
   assert(fixture.commands.has("codexElement.openLogs"));
   assert(fixture.commands.has("codexElement.openSettings"));
-  assert.equal(fixture.serializers.size, 2);
+  assert(fixture.commands.has("codexElement.openBrowser"));
+  assert(fixture.serializers.has("codexElement.browserViewer"));
+  assert.equal(fixture.serializers.size, 3);
   const provider = fixture.providers.get("codexElement.sidebar");
   assert(provider);
   const messages = new Emitter(), visible = new Emitter(), disposed = new Emitter();

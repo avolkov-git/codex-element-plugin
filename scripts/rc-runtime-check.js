@@ -569,8 +569,13 @@ async function checkLaunchAndIdentityRaces() {
   h.options.settings = { listExistingProfileIds: () => [], ensureUserCodexHome: async () => temp,
     getRuntimeProxySettings: async () => ({}), getRuntimeToolEnvPatchResult: () => ({ env: {} }) };
   let launches = [], gets = 0, initializes = 0;
-  const launch = { args: ["-c", "mcp_servers.codex-element-browser.enabled=false", "-c", "mcp_servers.codex-element-browser-fixture.enabled=true"], managedServerName: "codex-element-browser-fixture" };
-  h.options.getManagedBrowserLaunch = () => { gets++; return launch; };
+  const browserLaunches = [];
+  h.options.getManagedBrowserLaunch = isCurrent => {
+    assert.equal(isCurrent(), true);
+    const name = `codex-element-browser-fixture-${++gets}`;
+    const launch = { args: ["-c", "mcp_servers.codex-element-browser.enabled=false", "-c", `mcp_servers.${name}.enabled=true`], managedServerName: name };
+    browserLaunches.push(launch); return launch;
+  };
   h.runtime.startBackendProcessAttempt = async (options) => { launches.push(options); return { pid: 1 }; };
   h.runtime.initializeBackendSession = async () => {
     if (initializes++ === 0) {
@@ -580,9 +585,10 @@ async function checkLaunchAndIdentityRaces() {
   };
   await h.runtime.startBackendSession();
   assert.equal(h.state.getSidebarSnapshot().auth.profileLabel, "Fixture Human");
-  assert.equal(gets, 1, "one trusted MCP identity across normal/minimal retries");
+  assert.equal(gets, 2, "a fallback launch rotates the browser observer and trusted MCP identity");
   assert.deepEqual(launches.map((item) => item.mode), ["normal", "minimal"]);
-  for (const entry of launches) {
+  for (const [index, entry] of launches.entries()) {
+    const launch = browserLaunches[index];
     assert.deepEqual(entry.args, ["app-server", ...launch.args]);
     assert.equal(entry.managedServerName, launch.managedServerName);
   }
@@ -593,13 +599,15 @@ async function checkLaunchAndIdentityRaces() {
   assert.equal(launches[0].managedServerName, undefined, "unready browser has no trusted MCP name");
   const resolvingBrowser = deferred();
   const browserLookupStarted = deferred();
-  h.options.getManagedBrowserLaunch = async () => { browserLookupStarted.resolve(); return resolvingBrowser.promise; };
+  let browserIsCurrent;
+  h.options.getManagedBrowserLaunch = async isCurrent => { browserIsCurrent = isCurrent; browserLookupStarted.resolve(); return resolvingBrowser.promise; };
   launches = [];
   const preparingBackend = h.runtime.startBackendSession();
   const rejectedBackend = assert.rejects(preparingBackend, /cancelled/);
   await browserLookupStarted.promise;
   await h.runtime.stopForIdentityChange();
-  resolvingBrowser.resolve(launch);
+  assert.equal(browserIsCurrent(), false, "observer setup can reject a cancelled launch before binding IPC");
+  resolvingBrowser.resolve(browserLaunches[0]);
   await rejectedBackend;
   assert.equal(launches.length, 0, "a delayed application URL lookup must not start an old backend after cancellation");
   h.options.getManagedBrowserLaunch = () => ({ args: ["-c", "mcp_servers.codex-element-browser.enabled=false"] });

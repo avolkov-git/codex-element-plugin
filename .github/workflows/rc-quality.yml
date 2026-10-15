@@ -54,6 +54,7 @@ jobs:
           npm run check:features
           npm run check:services
           npm run check:browser-runtime
+          npm run check:browser-viewer
           npm run check:pressure
       - name: Verify chat scrolling and worker fallback
         env:
@@ -68,6 +69,7 @@ jobs:
           npm run check:chat-pressure
           # The external Element bundle is checked separately on the release workstation.
           CODEX_TEST_SKIP_ELEMENT_WRAPPER=1 npm run check:browser-highlighter
+          CODEX_TEST_SKIP_ELEMENT_WRAPPER=1 npm run check:browser-viewer-ui
       - name: Upload UI evidence
         if: always()
         uses: actions/upload-artifact@v7

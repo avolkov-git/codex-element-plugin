@@ -37,17 +37,19 @@ exports.BrowserRuntimeService = void 0;
 const crypto_1 = require("crypto");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const url_1 = require("url");
 const codexIntegrationConstants_1 = require("./codexIntegrationConstants");
 const runtimeProcessManager_1 = require("./runtimeProcessManager");
 class BrowserRuntimeService {
     // Scope callbacks supply authenticated namespaces, never guessed profile paths.
-    constructor(context, settings, logger, getScopeRoot, getPersistentScopeRoot, application) {
+    constructor(context, settings, logger, getScopeRoot, getPersistentScopeRoot, application, viewer) {
         this.context = context;
         this.settings = settings;
         this.logger = logger;
         this.getScopeRoot = getScopeRoot;
         this.getPersistentScopeRoot = getPersistentScopeRoot;
         this.application = application;
+        this.viewer = viewer;
         this.fileChecks = new Map();
     }
     getView() {
@@ -92,13 +94,14 @@ class BrowserRuntimeService {
     // unauthenticated launches. Never inherit a managed entry from user config.
     prepareRuntimeLaunch() {
         this.managedServer = undefined;
+        this.viewer?.stop();
         const scopeRoot = this.resolveScopeRoot();
         const disabled = managedBrowserOverride(codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME, "codex-element-browser-disabled", [], false);
         try {
             if (!scopeRoot) {
                 throw new Error("Область browser runtime не подтверждена.");
             }
-            const server = this.prepareForScope(scopeRoot);
+            const server = this.prepareForScope(scopeRoot, true);
             // Config overrides deep-merge TOML tables. A never-persisted, unpredictable
             // name prevents foreign env/cwd/transport fields surviving that merge.
             server.name = `${codexIntegrationConstants_1.MANAGED_BROWSER_MCP_NAME}-${(0, crypto_1.randomBytes)(16).toString("hex")}`;
@@ -112,13 +115,14 @@ class BrowserRuntimeService {
             };
         }
         catch (error) {
+            this.viewer?.stop();
             return {
                 args: disabled,
                 disabledReason: errorMessage(error)
             };
         }
     }
-    prepareForScope(scopeRoot) {
+    prepareForScope(scopeRoot, observe = false) {
         const settings = this.getSettingsView();
         if (settings.validationMessage) {
             throw new Error(settings.validationMessage);
@@ -134,10 +138,18 @@ class BrowserRuntimeService {
         ensurePrivateDirectory(runtimeStateRoot);
         ensurePrivateDirectory(outputDir);
         const baseUrl = new URL(settings.baseUrl).toString();
+        const viewer = observe ? this.viewer?.startSession(scopeRoot) : undefined;
+        const viewerHook = viewer ? path.join(this.context.extensionUri.fsPath, "dist", "browserViewerHook.js") : "";
         const initPage = [
             "export default async ({ page }) => {",
             "  await page.setViewportSize({ width: 1440, height: 900 });",
-            `  await page.goto(${JSON.stringify(baseUrl)}, { waitUntil: "domcontentloaded" });`,
+            "  try {",
+            `    await page.goto(${JSON.stringify(baseUrl)}, { waitUntil: "domcontentloaded" });`,
+            "  } finally {",
+            // initPage is ESM. Attach after initial navigation, including failed navigation,
+            // so a newly created about:blank target cannot race the viewport setup.
+            ...(viewer ? [`    try { const observer = await import(${JSON.stringify((0, url_1.pathToFileURL)(viewerHook).href)}); (observer.default ?? observer).attachBrowserViewer(page, ${JSON.stringify(viewer)}); } catch { console.error("Codex browser viewer: observer could not be loaded."); }`] : []),
+            "  }",
             "};",
             ""
         ].join("\n");

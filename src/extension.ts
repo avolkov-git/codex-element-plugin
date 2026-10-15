@@ -4,6 +4,8 @@ import * as vscode from "vscode";
 import { ApprovalAttentionService } from "./approvalAttentionService";
 import { BaseContextService } from "./baseContextService";
 import { BrowserRuntimeService } from "./browserRuntimeService";
+import { BrowserViewerService } from "./browserViewerService";
+import { BrowserViewerPanelManager } from "./browserViewerPanelManager";
 import { ChatPanelManager } from "./chatPanelManager";
 import { ChatAttachmentService } from "./chatAttachmentService";
 import { ChatHistoryService } from "./chatHistoryService";
@@ -157,6 +159,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     featureRequest: async (command, value, chatId) => {
       await ensureHistoryLoaded();
       const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
+      if (command === "browser.viewer.open") { browserViewerPanel.open(); return { ok: true, command, status: "ready" }; }
       if (command === "history.search") { return { ok: true, command, status: "ready", ...await searchHistory(state.exportChatHistory(), payload.query, payload.offset) }; }
       if (command === "history.jump") {
         const targetChat = typeof payload.chatId === "string" ? payload.chatId : chatId;
@@ -397,8 +400,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     onDidChangeChat: (chatId: string) => chatPanels.postSnapshot(chatId),
     onDidResolveProfile: ensureHistoryLoaded,
-    getManagedBrowserLaunch: async () => {
+    onDidStopRuntime: () => browserViewer.stop(),
+    getManagedBrowserLaunch: async isCurrent => {
+      const epoch = identityEpoch;
       if (browserRuntime.getSettingsView().enabled) await browserRuntime.refreshApplication(true);
+      if (!isCurrent() || epoch !== identityEpoch) throw new Error("Запуск браузера отменён: сеанс IDE изменился.");
       return browserRuntime.prepareRuntimeLaunch();
     },
     beforeQueuedDispatch: async () => {
@@ -419,10 +425,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const browserSessionId = crypto.randomUUID();
   const elementApplication = new ElementApplicationService(logger);
   context.subscriptions.push(elementApplication);
-  const browserRuntime = new BrowserRuntimeService(context, settings, logger, () => {
+  const getBrowserScopeRoot = (): string | undefined => {
     const root = getScopeRoot();
     return root ? path.join(root, "sessions", browserSessionId) : undefined;
-  }, getScopeRoot, elementApplication);
+  };
+  const browserViewer = new BrowserViewerService(getBrowserScopeRoot);
+  const browserViewerPanel = new BrowserViewerPanelManager(context, browserViewer);
+  context.subscriptions.push(browserViewerPanel, browserViewer);
+  const browserRuntime = new BrowserRuntimeService(context, settings, logger, getBrowserScopeRoot, getScopeRoot, elementApplication, browserViewer);
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
     if (event.affectsConfiguration("1C.applicationId") || event.affectsConfiguration("1C.serverExternalUri")) {
       void runtime.stop().catch(() => logger.warn("Runtime stop failed after the IDE application changed."));
@@ -524,6 +534,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   context.subscriptions.push(pressureMonitor);
   const invalidateIdentity = (): void => {
+    browserViewer.stop();
     const epoch = ++identityEpoch;
     const previous = historyProfileId;
     const snapshot = state.exportChatHistory();
@@ -555,7 +566,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   perf.mark("sidebarProvider");
 
-  context.subscriptions.push(chatPanels.registerSerializer(), settingsPanels.registerSerializer());
+  context.subscriptions.push(chatPanels.registerSerializer(), settingsPanels.registerSerializer(), browserViewerPanel.registerSerializer());
   perf.mark("panelSerializer");
 
   context.subscriptions.push(
@@ -575,6 +586,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("codexElement.openSettings", async () => {
       settingsPanels.open();
+    }),
+    vscode.commands.registerCommand("codexElement.openBrowser", async () => {
+      await ensureHistoryLoaded(); browserViewerPanel.open();
     }),
     vscode.commands.registerCommand("codexElement.openLogs", () => {
       logger.show();

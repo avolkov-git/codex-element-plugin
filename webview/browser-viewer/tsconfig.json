@@ -1,0 +1,4 @@
+{
+  "extends": "../chat/tsconfig.json",
+  "include": ["./**/*.ts", "./**/*.tsx"]
+}

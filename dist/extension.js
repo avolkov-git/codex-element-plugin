@@ -41,6 +41,8 @@ const vscode = __importStar(require("vscode"));
 const approvalAttentionService_1 = require("./approvalAttentionService");
 const baseContextService_1 = require("./baseContextService");
 const browserRuntimeService_1 = require("./browserRuntimeService");
+const browserViewerService_1 = require("./browserViewerService");
+const browserViewerPanelManager_1 = require("./browserViewerPanelManager");
 const chatPanelManager_1 = require("./chatPanelManager");
 const chatAttachmentService_1 = require("./chatAttachmentService");
 const chatHistoryService_1 = require("./chatHistoryService");
@@ -181,6 +183,10 @@ async function activate(context) {
         featureRequest: async (command, value, chatId) => {
             await ensureHistoryLoaded();
             const payload = value && typeof value === "object" ? value : {};
+            if (command === "browser.viewer.open") {
+                browserViewerPanel.open();
+                return { ok: true, command, status: "ready" };
+            }
             if (command === "history.search") {
                 return { ok: true, command, status: "ready", ...await (0, historySearch_1.searchHistory)(state.exportChatHistory(), payload.query, payload.offset) };
             }
@@ -468,9 +474,13 @@ async function activate(context) {
         },
         onDidChangeChat: (chatId) => chatPanels.postSnapshot(chatId),
         onDidResolveProfile: ensureHistoryLoaded,
-        getManagedBrowserLaunch: async () => {
+        onDidStopRuntime: () => browserViewer.stop(),
+        getManagedBrowserLaunch: async (isCurrent) => {
+            const epoch = identityEpoch;
             if (browserRuntime.getSettingsView().enabled)
                 await browserRuntime.refreshApplication(true);
+            if (!isCurrent() || epoch !== identityEpoch)
+                throw new Error("Запуск браузера отменён: сеанс IDE изменился.");
             return browserRuntime.prepareRuntimeLaunch();
         },
         beforeQueuedDispatch: async () => {
@@ -499,10 +509,14 @@ async function activate(context) {
     const browserSessionId = crypto.randomUUID();
     const elementApplication = new elementApplicationService_1.ElementApplicationService(logger);
     context.subscriptions.push(elementApplication);
-    const browserRuntime = new browserRuntimeService_1.BrowserRuntimeService(context, settings, logger, () => {
+    const getBrowserScopeRoot = () => {
         const root = getScopeRoot();
         return root ? path.join(root, "sessions", browserSessionId) : undefined;
-    }, getScopeRoot, elementApplication);
+    };
+    const browserViewer = new browserViewerService_1.BrowserViewerService(getBrowserScopeRoot);
+    const browserViewerPanel = new browserViewerPanelManager_1.BrowserViewerPanelManager(context, browserViewer);
+    context.subscriptions.push(browserViewerPanel, browserViewer);
+    const browserRuntime = new browserRuntimeService_1.BrowserRuntimeService(context, settings, logger, getBrowserScopeRoot, getScopeRoot, elementApplication, browserViewer);
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration("1C.applicationId") || event.affectsConfiguration("1C.serverExternalUri")) {
             void runtime.stop().catch(() => logger.warn("Runtime stop failed after the IDE application changed."));
@@ -609,6 +623,7 @@ async function activate(context) {
     });
     context.subscriptions.push(pressureMonitor);
     const invalidateIdentity = () => {
+        browserViewer.stop();
         const epoch = ++identityEpoch;
         const previous = historyProfileId;
         const snapshot = state.exportChatHistory();
@@ -643,7 +658,7 @@ async function activate(context) {
         }
     }));
     perf.mark("sidebarProvider");
-    context.subscriptions.push(chatPanels.registerSerializer(), settingsPanels.registerSerializer());
+    context.subscriptions.push(chatPanels.registerSerializer(), settingsPanels.registerSerializer(), browserViewerPanel.registerSerializer());
     perf.mark("panelSerializer");
     context.subscriptions.push(vscode.commands.registerCommand("codexElement.open", async () => {
         const existingChatId = state.getSidebarSnapshot().activeChatId;
@@ -658,6 +673,9 @@ async function activate(context) {
         await createChat("general", state, sidebar, chatPanels, logger, rulesContext, ensureHistoryLoaded);
     }), vscode.commands.registerCommand("codexElement.openSettings", async () => {
         settingsPanels.open();
+    }), vscode.commands.registerCommand("codexElement.openBrowser", async () => {
+        await ensureHistoryLoaded();
+        browserViewerPanel.open();
     }), vscode.commands.registerCommand("codexElement.openLogs", () => {
         logger.show();
     }), vscode.commands.registerCommand("codexElement.openLogFolder", async () => {

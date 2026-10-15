@@ -160,6 +160,7 @@ function shouldCopyPayloadEntry(relativePath, entry) {
       ".git",
       "node_modules",
       ".tmp",
+      ".impeccable",
       "coverage"
     ].includes(name);
   }

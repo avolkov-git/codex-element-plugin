@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import * as vscode from "vscode";
 import { MANAGED_BROWSER_MCP_NAME } from "./codexIntegrationConstants";
 import { McpServerSaveInput } from "./codexIntegrationsService";
@@ -8,6 +9,7 @@ import { Logger } from "./logger";
 import { RuntimeProcessManager } from "./runtimeProcessManager";
 import type { BrowserApplicationProvider, ElementApplicationView } from "./elementApplicationService";
 import { BrowserSettingsInput, BrowserSettingsView, SettingsService } from "./settingsService";
+import type { BrowserViewerService } from "./browserViewerService";
 
 export type BrowserPreferencesInput = Pick<BrowserSettingsInput, "enabled" | "disableSandbox">;
 
@@ -69,7 +71,8 @@ export class BrowserRuntimeService {
     private readonly logger: Logger,
     private readonly getScopeRoot?: () => string | undefined,
     private readonly getPersistentScopeRoot?: () => string | undefined,
-    private readonly application?: BrowserApplicationProvider
+    private readonly application?: BrowserApplicationProvider,
+    private readonly viewer?: BrowserViewerService
   ) {}
 
   getView(): BrowserRuntimeView {
@@ -115,13 +118,14 @@ export class BrowserRuntimeService {
   // unauthenticated launches. Never inherit a managed entry from user config.
   prepareRuntimeLaunch(): BrowserRuntimeLaunchOptions {
     this.managedServer = undefined;
+    this.viewer?.stop();
     const scopeRoot = this.resolveScopeRoot();
     const disabled = managedBrowserOverride(MANAGED_BROWSER_MCP_NAME, "codex-element-browser-disabled", [], false);
     try {
       if (!scopeRoot) {
         throw new Error("Область browser runtime не подтверждена.");
       }
-      const server = this.prepareForScope(scopeRoot);
+      const server = this.prepareForScope(scopeRoot, true);
       // Config overrides deep-merge TOML tables. A never-persisted, unpredictable
       // name prevents foreign env/cwd/transport fields surviving that merge.
       server.name = `${MANAGED_BROWSER_MCP_NAME}-${randomBytes(16).toString("hex")}`;
@@ -134,6 +138,7 @@ export class BrowserRuntimeService {
         artifactsRoot: path.join(scopeRoot, "browser", "artifacts")
       };
     } catch (error) {
+      this.viewer?.stop();
       return {
         args: disabled,
         disabledReason: errorMessage(error)
@@ -141,7 +146,7 @@ export class BrowserRuntimeService {
     }
   }
 
-  private prepareForScope(scopeRoot: string): McpServerSaveInput {
+  private prepareForScope(scopeRoot: string, observe = false): McpServerSaveInput {
     const settings = this.getSettingsView();
     if (settings.validationMessage) {
       throw new Error(settings.validationMessage);
@@ -158,10 +163,18 @@ export class BrowserRuntimeService {
     ensurePrivateDirectory(outputDir);
 
     const baseUrl = new URL(settings.baseUrl).toString();
+    const viewer = observe ? this.viewer?.startSession(scopeRoot) : undefined;
+    const viewerHook = viewer ? path.join(this.context.extensionUri.fsPath, "dist", "browserViewerHook.js") : "";
     const initPage = [
       "export default async ({ page }) => {",
       "  await page.setViewportSize({ width: 1440, height: 900 });",
-      `  await page.goto(${JSON.stringify(baseUrl)}, { waitUntil: "domcontentloaded" });`,
+      "  try {",
+      `    await page.goto(${JSON.stringify(baseUrl)}, { waitUntil: "domcontentloaded" });`,
+      "  } finally {",
+      // initPage is ESM. Attach after initial navigation, including failed navigation,
+      // so a newly created about:blank target cannot race the viewport setup.
+      ...(viewer ? [`    try { const observer = await import(${JSON.stringify(pathToFileURL(viewerHook).href)}); (observer.default ?? observer).attachBrowserViewer(page, ${JSON.stringify(viewer)}); } catch { console.error("Codex browser viewer: observer could not be loaded."); }`] : []),
+      "  }",
       "};",
       ""
     ].join("\n");

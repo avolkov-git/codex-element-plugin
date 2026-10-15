@@ -51,7 +51,8 @@ async function main() {
         assert.ok(geometry.bubble.width <= geometry.user.width * .82 + 1, "master bubble width retained");
         if (!scenario.dark) assert.equal(geometry.userBackground, "rgb(243, 243, 245)");
         assert.equal(await page.locator(".message-meta").count(), 0, "no new role/time row above each reply");
-        assert.equal(await page.locator(".header .chat-navigation button").count(), 6);
+        assert.equal(await page.locator(".header .chat-navigation button").count(), 7);
+        assert.equal(await page.getByRole("button", { name: "Открыть браузер агента", exact: true }).count(), 1);
         await page.screenshot({ path: path.join(artifacts, `${name}-chat.png`) });
 
         for (const label of ["Модель", "Режим доступа", "Интеллект", "Скорость"]) {

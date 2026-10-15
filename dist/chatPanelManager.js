@@ -42,7 +42,7 @@ const webviewHtml_1 = require("./webviewHtml");
 exports.CHAT_PANEL_VIEW_TYPE = "codexElement.chatPanel";
 const FEATURE_COMMANDS = new Set([
     "history.search", "history.jump", "review.list", "review.open", "review.comment", "review.stage", "review.revert",
-    "project.actions", "project.action.run", "browser.artifacts.list", "browser.artifacts.open", "chat.fork",
+    "project.actions", "project.action.run", "browser.artifacts.list", "browser.artifacts.open", "browser.viewer.open", "chat.fork",
     "history.migration.list", "history.migration.import"
 ]);
 class ChatPanelManager {

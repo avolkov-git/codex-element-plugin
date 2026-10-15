@@ -1980,6 +1980,7 @@ class CodexRuntimeController {
         this.activeConcreteItemsByChat.clear();
     }
     stop() {
+        this.options.onDidStopRuntime?.();
         if (this.backendStopPromise) {
             return this.backendStopPromise;
         }
@@ -2038,6 +2039,7 @@ class CodexRuntimeController {
         this.options.onDidChange();
     }
     clearBackendRouting() {
+        this.options.onDidStopRuntime?.();
         this.managedBrowserServerName = null;
         this.ignoredServerResponses.clear();
         this.cancelledTurnIds.clear();
@@ -2137,6 +2139,11 @@ class CodexRuntimeController {
         try {
             await startup;
         }
+        catch (error) {
+            if (this.backendStartPromise === startup)
+                this.options.onDidStopRuntime?.();
+            throw error;
+        }
         finally {
             if (this.backendStartPromise === startup) {
                 this.backendStartPromise = undefined;
@@ -2189,7 +2196,7 @@ class CodexRuntimeController {
             this.options.logger.info(`Runtime ripgrep configured: path=${toolEnvResult.ripgrepPath}; pathPatched=${pathPatched ? "yes" : "no"}.`);
         }
         const cwd = resolveRuntimeCwd(this.options.context, codexHome);
-        const browserLaunch = await this.options.getManagedBrowserLaunch?.();
+        const browserLaunch = await this.options.getManagedBrowserLaunch?.(() => epoch === this.lifecycleEpoch && !this.disposed);
         this.assertLifecycleEpoch(epoch);
         const args = ["app-server", ...(browserLaunch?.args ?? [])];
         this.options.state.setRuntime({
@@ -2230,12 +2237,14 @@ class CodexRuntimeController {
         const fallbackCwd = resolveRuntimeCwd(this.options.context, codexHome, { forceSafe: true });
         const fallbackEnv = buildMinimalRuntimeEnv(codexHome, proxy, toolEnv);
         try {
+            const fallbackBrowser = await this.options.getManagedBrowserLaunch?.(() => epoch === this.lifecycleEpoch && !this.disposed);
+            this.assertLifecycleEpoch(epoch);
             const fallbackAttempt = await this.startBackendProcessAttempt({
                 runtimePath,
-                args,
+                args: ["app-server", ...(fallbackBrowser?.args ?? [])],
                 cwd: fallbackCwd,
                 env: fallbackEnv,
-                managedServerName: browserLaunch?.managedServerName,
+                managedServerName: fallbackBrowser?.managedServerName,
                 mode: "minimal"
             });
             this.assertLifecycleEpoch(epoch);

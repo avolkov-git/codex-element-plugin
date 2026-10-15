@@ -96,9 +96,11 @@ test("B1: unmodified npm strict command preserves the complete installed browser
 test("source browser includes nested npm dependencies, excludes dev dependencies, and replaces rather than merges old runtime", t => {
   const f = fixture(t), old = browser(f.target), source = browser(f.source, "source");
   put(old.dir, "obsolete-module.js"); put(f.source, "node_modules/dev-only/index.js");
+  put(f.source, ".impeccable/review/browser-viewer/desktop.png", "local UI evidence");
   const r = run(f); assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(snapshot(old.dir), snapshot(source.dir));
   assert.equal(fs.existsSync(path.join(f.target, "node_modules")), false);
+  assert.equal(fs.existsSync(path.join(f.target, ".impeccable")), false, "local UI screenshots must not ship to users");
 });
 
 test("explicit browser overlay takes precedence over both source and previous target", t => {

@@ -1,5 +1,5 @@
 import { useCallback, useState, useSyncExternalStore } from "react";
-import { Search, FileDiff, Play, PanelsTopLeft, GitFork, ChevronDown, ChevronRight, BookOpen } from "lucide-react";
+import { Search, FileDiff, Play, PanelsTopLeft, GitFork, ChevronDown, ChevronRight, BookOpen, Monitor } from "lucide-react";
 import { command, store } from "./bridge";
 import { IconButton, Modal } from "./controls";
 import { Composer } from "./Composer";
@@ -16,6 +16,7 @@ export function App() {
   const [forkTitle, setForkTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [viewerError, setViewerError] = useState("");
   const meta = view.meta;
   if (!meta) return <main className="app empty-app"><h1>Codex</h1><p className="muted">{view.revision ? "Выберите диалог или создайте новый." : "Загрузка диалога…"}</p></main>;
   const chat = meta.chat;
@@ -37,6 +38,12 @@ export function App() {
       <IconButton icon={Search} label="Поиск по истории" aria-pressed={feature === "history"} onClick={() => toggle("history")} />
       <IconButton icon={FileDiff} label="Проверить изменения" aria-pressed={feature === "review"} onClick={() => toggle("review")} />
       <IconButton icon={Play} label="Действия проекта" aria-pressed={feature === "project"} onClick={() => toggle("project")} />
+      <IconButton icon={Monitor} label="Открыть браузер агента" onClick={() => {
+        setViewerError("");
+        void store.request("browser.viewer.open", {}, chat.id).then(result => {
+          if (result?.ok === false) throw new Error(result.message || "Не удалось открыть браузер агента.");
+        }).catch(reason => setViewerError(reason instanceof Error ? reason.message : "Не удалось открыть браузер агента."));
+      }} />
       <IconButton icon={PanelsTopLeft} label="Артефакты браузера" aria-pressed={feature === "browser"} onClick={() => toggle("browser")} />
       <IconButton icon={BookOpen} label="Контекст проекта" aria-pressed={feature === "context"} onClick={() => toggle("context")} />
       <IconButton icon={GitFork} label="Разветвить диалог" disabled={chat.status !== "idle"} onClick={() => { setForkTitle(chat.title); setError(""); setFork(true); }} />
@@ -44,7 +51,8 @@ export function App() {
         <IconButton className="header-toggle" icon={expanded ? ChevronDown : ChevronRight} label={expanded ? "Свернуть заголовок" : "Развернуть заголовок"} aria-expanded={expanded} onClick={() => command(chat.id, "chat.header.toggle")} />
       </div>
     </header>
-    <div className={`chat-stage${feature ? " has-feature" : ""}`}>
+    <div className={`chat-stage${feature ? " has-feature" : ""}${viewerError ? " has-viewer-error" : ""}`}>
+      {viewerError && <p role="alert" className="viewer-open-error error-text">{viewerError}</p>}
       <Transcript key={chat.id} view={view} />
       {feature && <FeaturePanel key={`${chat.id}:${feature}`} kind={feature} chatId={chat.id} rulesEnabled={chat.rulesEnabled} contextSection={contextSection} close={() => setFeature(null)} />}
     </div>

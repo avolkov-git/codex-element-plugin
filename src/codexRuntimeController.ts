@@ -51,7 +51,8 @@ interface CodexRuntimeControllerOptions {
   onDidResolveProfile?: (profileId: string) => Promise<void>;
   /** Commit queued dispatch state before sending turn/start to the backend. */
   beforeQueuedDispatch?: (chatId: string) => Promise<void>;
-  getManagedBrowserLaunch?: () => { args: string[]; managedServerName?: string } | Promise<{ args: string[]; managedServerName?: string }>;
+  getManagedBrowserLaunch?: (isCurrent: () => boolean) => { args: string[]; managedServerName?: string } | Promise<{ args: string[]; managedServerName?: string }>;
+  onDidStopRuntime?: () => void;
   diffPatches?: DiffPatchStore;
   changeReview?: ProjectChangeReviewService;
 }
@@ -2134,6 +2135,7 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 
   stop(): Promise<void> {
+    this.options.onDidStopRuntime?.();
     if (this.backendStopPromise) {
       return this.backendStopPromise;
     }
@@ -2193,6 +2195,7 @@ export class CodexRuntimeController implements vscode.Disposable {
   }
 
   private clearBackendRouting(): void {
+    this.options.onDidStopRuntime?.();
     this.managedBrowserServerName = null;
     this.ignoredServerResponses.clear();
     this.cancelledTurnIds.clear();
@@ -2300,6 +2303,9 @@ export class CodexRuntimeController implements vscode.Disposable {
     this.backendStartPromise = startup;
     try {
       await startup;
+    } catch (error) {
+      if (this.backendStartPromise === startup) this.options.onDidStopRuntime?.();
+      throw error;
     } finally {
       if (this.backendStartPromise === startup) {
         this.backendStartPromise = undefined;
@@ -2360,7 +2366,7 @@ export class CodexRuntimeController implements vscode.Disposable {
       );
     }
     const cwd = resolveRuntimeCwd(this.options.context, codexHome);
-    const browserLaunch = await this.options.getManagedBrowserLaunch?.();
+    const browserLaunch = await this.options.getManagedBrowserLaunch?.(() => epoch === this.lifecycleEpoch && !this.disposed);
     this.assertLifecycleEpoch(epoch);
     const args = ["app-server", ...(browserLaunch?.args ?? [])];
 
@@ -2403,12 +2409,14 @@ export class CodexRuntimeController implements vscode.Disposable {
     const fallbackCwd = resolveRuntimeCwd(this.options.context, codexHome, { forceSafe: true });
     const fallbackEnv = buildMinimalRuntimeEnv(codexHome, proxy, toolEnv);
     try {
+      const fallbackBrowser = await this.options.getManagedBrowserLaunch?.(() => epoch === this.lifecycleEpoch && !this.disposed);
+      this.assertLifecycleEpoch(epoch);
       const fallbackAttempt = await this.startBackendProcessAttempt({
         runtimePath,
-        args,
+        args: ["app-server", ...(fallbackBrowser?.args ?? [])],
         cwd: fallbackCwd,
         env: fallbackEnv,
-        managedServerName: browserLaunch?.managedServerName,
+        managedServerName: fallbackBrowser?.managedServerName,
         mode: "minimal"
       });
       this.assertLifecycleEpoch(epoch);
