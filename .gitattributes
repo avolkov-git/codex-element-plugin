@@ -10,3 +10,7 @@ bin/darwin-*/codex-code-mode-host filter=lfs diff=lfs merge=lfs -text
 resources/icons/codex.svg text eol=lf
 media/settings-icons.js text eol=lf
 media/settings-icons.NOTICES.txt text eol=lf
+resources/context/*.cjs text eol=lf
+resources/context/*.LICENSE text eol=lf
+resources/context/ast/*.java text eol=lf
+resources/context/ast/build.json text eol=lf
