@@ -6,7 +6,10 @@ const { pathToFileURL } = require("node:url");
 const { chromium } = require("playwright");
 const { loadSource, root, vscode: vscodeMock } = require("../tests/service-test-utils.cjs");
 
-const fixture = pathToFileURL(path.join(__dirname, "settings-integrations-fixture.html")).href;
+const extensionVersion = require("../package.json").version;
+const fixtureUrl = pathToFileURL(path.join(__dirname, "settings-integrations-fixture.html"));
+fixtureUrl.searchParams.set("version", extensionVersion);
+const fixture = fixtureUrl.href;
 const darkTokens = {
   "editor-background": "#202020", "editor-foreground": "#ededed", foreground: "#ededed",
   descriptionForeground: "#aaa", "input-background": "#292929", "input-foreground": "#ededed",
@@ -67,7 +70,7 @@ async function runScenario(browser, scenario, artifacts) {
   assert.equal(await page.locator(".settings-nav-button svg").count(), 5);
   assert.equal(await page.locator("[data-mcp-row]").count(), 2, "managed browser is not duplicated among MCP servers");
   assert.match(await page.locator(".browser-section").innerText(), /Тестовое приложение/);
-  assert.equal((await page.locator(".settings-version").innerText()).trim(), require("../package.json").version);
+  assert.equal((await page.locator(".settings-version").innerText()).trim(), extensionVersion);
   await shot("tools");
 
   // Autosave has one owner; unrelated acknowledgements must not unlock it.
@@ -281,16 +284,16 @@ async function checkWebviewAssets(browser, fallback) {
     webview: { cspSource: "http://settings.fixture", asWebviewUri: uri => new URL(`http://settings.fixture/${path.relative(root, uri.fsPath).split(path.sep).join("/")}`) },
     scriptPath: "media/settings.js", preloadScriptPaths: ["media/settings-icons.js"], stylePath: "media/settings.css", title: "Настройки"
   });
-  await page.addInitScript(() => {
+  await page.addInitScript(version => {
     window.fixtureMessages = [];
     window.acquireVsCodeApi = () => ({
       getState: () => ({}), setState: () => {},
       postMessage(message) {
         window.fixtureMessages.push(message);
-        if (message.type === "ready") queueMicrotask(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "settings.snapshot", snapshot: { extensionVersion: "1.0.3" } } })));
+        if (message.type === "ready") queueMicrotask(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "settings.snapshot", snapshot: { extensionVersion: version } } })));
       }
     });
-  });
+  }, extensionVersion);
   const assets = new Set(["/media/settings.js", "/media/settings-icons.js", "/media/settings.css"]);
   await page.route("http://settings.fixture/**", async route => {
     const pathname = new URL(route.request().url()).pathname;
@@ -300,6 +303,7 @@ async function checkWebviewAssets(browser, fallback) {
   });
   await page.goto("http://settings.fixture/");
   await page.locator("#test-browser").waitFor();
+  assert.equal((await page.locator(".settings-version").innerText()).trim(), extensionVersion);
   assert.equal(await page.locator(".settings-brand svg").count(), 1);
   assert.equal(await page.locator(".settings-nav-button svg").count(), 5);
   assert.equal(await page.locator(".settings-workspace").evaluate(node => getComputedStyle(node).display), "grid");

@@ -62,7 +62,7 @@
         data: {
           type: "settings.snapshot",
           snapshot: {
-            extensionVersion: "1.0.3",
+            extensionVersion: new URL(window.location.href).searchParams.get("version") || "dev",
             system: { platformId: "win32-x64", codexVersion: "0.154.0" },
             experimentalContext: { status: "ready", enabled: false, runtimeEnabled: false, eligible: true, canChange: true, scopeId: "fixture", revision: "r1", message: "Выключено." },
             proxy: { url: "", username: "", passwordSaved: false },
