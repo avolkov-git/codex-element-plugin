@@ -118,7 +118,9 @@ test("platform-only staging keeps the requested old browser and prunes other pla
 
 test("without platform-only the other installed platform is preserved too", t => {
   const f = fixture(t); browser(f.target);
-  const other = browser(f.target, "linux", "linux-x64"), before = snapshot(other.dir);
+  // Windows cannot preserve Unix executable bits; use a second PE target there.
+  const platform = process.platform === "win32" ? "win32-arm64" : "linux-x64";
+  const other = browser(f.target, "other", platform), before = snapshot(other.dir);
   const r = run(f); assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(snapshot(other.dir), before);
 });
