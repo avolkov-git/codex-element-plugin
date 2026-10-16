@@ -29,6 +29,7 @@ function fixture(t, service) {
     setVisible: value => { calls.push(["visible", value]); states.fire(current); },
     setPaused: value => calls.push(["paused", value]),
     selectPage: (...args) => calls.push(["select", ...args]),
+    closePages: (...args) => calls.push(["close", ...args]),
     acknowledge: (...args) => calls.push(["ack", ...args])
   };
   function makePanel(viewColumn = 2) {
@@ -180,6 +181,69 @@ test("panel forwards manual controls only from the ready visible current session
   assert.deepEqual(h.calls, []);
 });
 
+test("panel validates viewer.close modes, page IDs and current sessions before forwarding", t => {
+  const h = fixture(t), panel = h.open();
+  panel.send({ type: "viewer.ready" }); h.calls.length = 0;
+  const close = { type: "viewer.close", sessionId: "session-a", pageId: "page-a", mode: "selected" };
+  for (const mode of [undefined, null, "all", "", true, {}, 1]) panel.send({ ...close, mode });
+  for (const pageId of [undefined, null, 1, {}, []]) panel.send({ ...close, pageId });
+  for (const sessionId of [undefined, null, "", "old-session", 1]) panel.send({ ...close, sessionId });
+  assert.deepEqual(h.calls, []);
+  panel.send(close);
+  panel.send({ ...close, mode: "others" });
+  assert.deepEqual(h.calls, [["close", "session-a", "page-a", "selected"], ["close", "session-a", "page-a", "others"]]);
+  h.setState(state({ sessionId: "session-b" })); h.calls.length = 0;
+  panel.send(close);
+  assert.deepEqual(h.calls, [], "a session rotation invalidates the old close envelope");
+  panel.send({ ...close, sessionId: "session-b" });
+  assert.deepEqual(h.calls, [["close", "session-b", "page-a", "selected"]]);
+});
+
+test("panel gates both close modes on readiness, panel visibility and document visibility", t => {
+  const h = fixture(t), panel = h.open();
+  const close = () => {
+    for (const mode of ["selected", "others"]) panel.send({ type: "viewer.close", sessionId: "session-a", pageId: "page-a", mode });
+  };
+  close(); assert.deepEqual(h.calls, []);
+  panel.send({ type: "viewer.ready", visible: false }); h.calls.length = 0;
+  close(); assert.deepEqual(h.calls, []);
+  panel.show(true); h.calls.length = 0;
+  close(); assert.deepEqual(h.calls, [], "showing the panel does not override a hidden document");
+  panel.send({ type: "viewer.visibility", visible: true });
+  panel.show(false); h.calls.length = 0;
+  close(); assert.deepEqual(h.calls, []);
+  panel.send({ type: "viewer.visibility", visible: true }); h.calls.length = 0;
+  close(); assert.deepEqual(h.calls, [], "document visibility does not override a hidden panel");
+  panel.show(true); h.calls.length = 0;
+  close();
+  assert.deepEqual(h.calls, [["close", "session-a", "page-a", "selected"], ["close", "session-a", "page-a", "others"]]);
+});
+
+test("panel forwards closing/error state and never accepts close from a disposed panel", t => {
+  const h = fixture(t), old = h.open();
+  old.send({ type: "viewer.ready" });
+  const pending = state({ closingPageIds: ["page-a"], controlId: "" });
+  h.setState(pending);
+  assert.deepEqual(old.sent.at(-1), pending);
+  old.show(false);
+  const failed = state({ closingPageIds: [], tabError: "Close failed" });
+  h.setState(failed);
+  assert.deepEqual(old.sent.at(-1), failed, "hidden panels still receive close completion/failure state");
+  old.dispose();
+  const replacement = h.open(), close = { type: "viewer.close", sessionId: "session-a", pageId: "page-a", mode: "selected" };
+  h.calls.length = 0;
+  old.send(close); replacement.send(close);
+  assert.deepEqual(h.calls, [], "replacement panels need their own ready handshake");
+  replacement.send({ type: "viewer.ready" }); h.calls.length = 0;
+  old.send(close);
+  assert.deepEqual(h.calls, []);
+  replacement.send(close);
+  assert.deepEqual(h.calls, [["close", "session-a", "page-a", "selected"]]);
+  const recovered = state({ closingPageIds: [] });
+  h.setState(recovered);
+  assert.deepEqual(replacement.sent.at(-1), recovered);
+});
+
 test("panel forwards pointer and input results without putting them into the chat bridge", t => {
   const h = fixture(t), panel = h.open();
   const pointer = { type: "browser.viewer.pointer", sessionId: "session-a", pageId: "page-a", kind: "move", x: .5, y: .5 };
@@ -227,6 +291,8 @@ for (const outcome of ["throw", "false", "reject"]) test(`viewer ${outcome} deli
   assert.deepEqual(h.calls.at(-1), ["visible", false]);
   const callsBefore = h.calls.length, messagesBefore = panel.sent.length;
   panel.send({ type: "viewer.ack", sessionId: "session-a", pageId: "page-a", sequence: 1 });
+  panel.send({ type: "viewer.close", sessionId: "session-a", pageId: "page-a", mode: "selected" });
+  panel.send({ type: "viewer.close", sessionId: "session-a", pageId: "page-a", mode: "others" });
   panel.send({ type: "viewer.visibility", visible: true });
   h.states.fire(state()); h.frames.fire(frame({ sequence: 2 }));
   assert.equal(h.calls.length, callsBefore, "failed delivery resets readiness, not only visibility");

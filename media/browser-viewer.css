@@ -23,6 +23,11 @@ body.vscode-dark, body.vscode-high-contrast { color-scheme: dark; }
 .viewer-icon-button[aria-pressed="true"] { color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #0879c6); }
 .viewer-icon-button[aria-pressed="true"]:hover:not(:disabled) { background: var(--vscode-button-hoverBackground, #0667a9); }
 .viewer-icon-button:disabled { opacity: .45; cursor: default; }
+.viewer-tab-actions { position: relative; flex: 0 0 30px; height: 30px; }
+.viewer-tab-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 2; min-width: 180px; max-width: calc(100vw - 20px); padding: 4px; background: var(--vscode-menu-background, var(--background)); color: var(--vscode-menu-foreground, var(--foreground)); border: 1px solid var(--border); border-radius: 5px; }
+.viewer-tab-menu button { display: block; width: 100%; min-height: 32px; padding: 6px 10px; border: 0; border-radius: 3px; background: transparent; color: inherit; font: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
+.viewer-tab-menu button:hover:not([aria-disabled="true"]), .viewer-tab-menu button:focus-visible { background: var(--hover); }
+.viewer-tab-menu button[aria-disabled="true"] { color: var(--muted); cursor: default; }
 .viewer-readonly { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .viewer-address { padding: 7px 14px; border-bottom: 1px solid var(--border); color: var(--muted); min-height: 34px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewer-stage { position: relative; min-height: 0; min-width: 0; overflow: hidden; display: flex; align-items: flex-start; justify-content: center; background: var(--panel); }
@@ -41,4 +46,4 @@ body.vscode-dark, body.vscode-high-contrast { color-scheme: dark; }
 .viewer-error { color: var(--vscode-errorForeground, #bd303b); }
 .viewer-indicator { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .viewer-indicator.live { background: #258248; }
-@media (max-width: 400px) { .viewer-readonly { display: none; } .viewer-toolbar { padding-inline: 10px; } }
+@media (max-width: 540px) { .viewer-readonly { display: none; } .viewer-toolbar { padding-inline: 10px; gap: 6px; } }

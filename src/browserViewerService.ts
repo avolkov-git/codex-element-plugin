@@ -27,6 +27,8 @@ export class BrowserViewerService {
   private pageRevision = 0;
   private controlId = "";
   private inputError = "";
+  private readonly tabErrors = new Map<string, string>();
+  private readonly closing = new Map<string, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
   private lastInputId = 0;
   private inputPending?: { pageId: string; inputId: number; controlId: string; timer: ReturnType<typeof setTimeout> };
 
@@ -79,7 +81,8 @@ export class BrowserViewerService {
     if (this.scope && !this.authorized()) this.stop();
     const status = this.failure ? "error" : !this.connection ? "idle" : !this.peers.size ? "waiting" : this.paused || !this.visible ? "paused" : "live";
     const messages = { idle: "Браузер агента ещё не запущен.", waiting: "Ожидание страницы браузера агента.", paused: "Просмотр приостановлен.", live: "Прямой просмотр", error: this.failure };
-    return { type: "browser.viewer.state", sessionId: this.connection?.sessionId ?? "", status, message: messages[status], pages: [...this.peers.values()].map(p => ({ ...p.page })), selectedPageId: this.selected, controlId: this.controlId, pageRevision: this.pageRevision, ...(this.inputError ? { inputError: this.inputError } : {}) };
+    const tabError = this.tabErrors.values().next().value;
+    return { type: "browser.viewer.state", sessionId: this.connection?.sessionId ?? "", status, message: messages[status], pages: [...this.peers.values()].map(p => ({ ...p.page })), selectedPageId: this.selected, controlId: this.controlId, pageRevision: this.pageRevision, closingPageIds: [...this.closing.keys()], ...(tabError ? { tabError } : {}), ...(this.inputError ? { inputError: this.inputError } : {}) };
   }
   setVisible(visible: boolean): void { this.visible = visible; this.sync(); }
   setPaused(paused: boolean): void {
@@ -94,9 +97,42 @@ export class BrowserViewerService {
   }
   selectPage(sessionId: string, pageId: string): void {
     if (sessionId !== this.connection?.sessionId || !this.peers.has(pageId) || this.selected === pageId) return;
-    this.revokeControl(); this.decodedPage = ""; this.inputError = "";
+    this.revokeControl(); this.decodedPage = ""; this.inputError = ""; this.failure = "";
     this.selected = pageId;
     this.clearPending();
+    this.sync();
+  }
+  closePages(sessionId: string, pageId: string, mode: "selected" | "others"): void {
+    if (!this.authorized()) { this.stop(); return; }
+    if (sessionId !== this.connection?.sessionId || !this.visible || pageId !== this.selected || !this.peers.has(pageId) || this.closing.size || (mode !== "selected" && mode !== "others")) return;
+    // Snapshot the owned pages: tabs opened after this action are never closed.
+    const targets = [...this.peers.keys()].filter(id => mode === "selected" ? id === pageId : id !== pageId);
+    if (!targets.length) return;
+    this.tabErrors.clear();
+    if (targets.includes(this.selected)) { this.revokeControl(); this.decodedPage = ""; this.clearPending(); }
+    for (const id of targets) {
+      const requestId = randomUUID();
+      const timer = setTimeout(() => this.closeFailed(id, requestId, "Браузер не подтвердил закрытие вкладки. Проверьте её состояние; команда не будет повторена автоматически."), 10_000);
+      timer.unref();
+      this.closing.set(id, { requestId, timer });
+    }
+    this.sync();
+    for (const id of targets) {
+      const pending = this.closing.get(id);
+      if (!pending) continue;
+      const requestId = pending.requestId;
+      if (!this.write(this.peers.get(id)?.socket, { type: "page.close", requestId })) this.closeFailed(id, requestId);
+    }
+  }
+  private clearClosing(pageId: string): void {
+    const pending = this.closing.get(pageId);
+    if (pending) clearTimeout(pending.timer);
+    this.closing.delete(pageId);
+  }
+  private closeFailed(pageId: string, requestId: unknown, message = "Не удалось закрыть вкладку. Повторите попытку."): void {
+    if (!this.closing.has(pageId) || this.closing.get(pageId)!.requestId !== requestId) return;
+    this.clearClosing(pageId);
+    this.tabErrors.set(pageId, message);
     this.sync();
   }
   acknowledge(sessionId: string, pageId: string, sequence: number): void {
@@ -111,7 +147,7 @@ export class BrowserViewerService {
     if (sessionId !== this.connection?.sessionId || pageId !== this.selected) return;
     this.revokeControl(); this.inputError = "";
     const peer = this.peers.get(pageId);
-    if (enabled && this.visible && !this.paused && !this.failure && peer?.streaming && this.decodedPage === pageId) {
+    if (enabled && !this.closing.has(pageId) && this.visible && !this.paused && !this.failure && peer?.streaming && this.decodedPage === pageId) {
       this.controlId = randomUUID();
       if (!this.write(peer.socket, { type: "control", controlId: this.controlId })) this.failInput("Не удалось включить управление. Повторите подключение.");
     }
@@ -120,7 +156,7 @@ export class BrowserViewerService {
   sendInput(sessionId: string, pageId: string, controlId: string, inputId: number, input: unknown): void {
     if (!this.authorized()) { this.stop(); return; }
     const peer = this.peers.get(pageId);
-    if (sessionId !== this.connection?.sessionId || pageId !== this.selected || !controlId || controlId !== this.controlId || !this.visible || this.paused || this.failure || !peer?.streaming) return;
+    if (sessionId !== this.connection?.sessionId || pageId !== this.selected || this.closing.has(pageId) || !controlId || controlId !== this.controlId || !this.visible || this.paused || this.failure || !peer?.streaming) return;
     if (!Number.isSafeInteger(inputId) || inputId <= this.lastInputId || !isViewerInput(input)) return;
     if (this.inputPending) { this.failInput("Ввод остановлен: предыдущая команда ещё выполняется. Включите управление снова."); return; }
     this.lastInputId = inputId;
@@ -168,7 +204,7 @@ export class BrowserViewerService {
     if (this.scope && !this.authorized()) { this.stop(); return; }
     if (!this.visible || this.paused || this.failure) { this.clearPending(); this.revokeControl(); this.decodedPage = ""; }
     for (const [id, peer] of this.peers) {
-      const active = this.visible && !this.paused && id === this.selected;
+      const active = this.visible && !this.paused && id === this.selected && !this.closing.has(id);
       if (peer.streaming !== active) {
         peer.streaming = active;
         this.write(peer.socket, { type: "stream", active });
@@ -190,9 +226,11 @@ export class BrowserViewerService {
       this.sockets.delete(socket);
       if (this.peers.get(peerId)?.socket !== socket) return;
       this.peers.delete(peerId);
-      if (this.selected === peerId) { this.revokeControl(); this.decodedPage = ""; }
+      this.clearClosing(peerId);
+      this.tabErrors.delete(peerId);
+      if (this.selected === peerId) { this.revokeControl(); this.decodedPage = ""; this.inputError = ""; this.failure = ""; }
       if (this.pending?.pageId === peerId) this.clearPending();
-      if (this.selected === peerId) this.selected = this.peers.keys().next().value ?? "";
+      if (this.selected === peerId) this.selected = [...this.peers.keys()].find(id => !this.closing.has(id)) ?? this.peers.keys().next().value ?? "";
       this.sync();
     });
     socket.on("data", chunk => {
@@ -218,13 +256,14 @@ export class BrowserViewerService {
           else if (message.type === "frame") this.frame(peerId, message);
           else if (message.type === "pointer") this.pointer(peerId, message);
           else if (message.type === "input.result") this.inputResult(peerId, message);
+          else if (message.type === "page.closeFailed") this.closeFailed(peerId, message.requestId);
           else if (message.type === "navigation" && peerId === this.selected) {
             this.revokeControl(); this.decodedPage = ""; this.inputError = "";
             this.pageRevision++; this.clearPending();
             this.write(socket, { type: "ack" });
             this.pointer(peerId, { kind: "clear", x: 0, y: 0 }); this.emitState();
           }
-          else if (message.type === "error") { this.failure = "Не удалось получить изображение страницы. Переключите страницу или возобновите просмотр."; this.revokeControl(); this.emitState(); }
+          else if (message.type === "error" && peerId === this.selected && !this.closing.has(peerId)) { this.failure = "Не удалось получить изображение страницы. Переключите страницу или возобновите просмотр."; this.revokeControl(); this.emitState(); }
         } catch { socket.destroy(); return; }
       }
       if (Buffer.byteLength(text, "utf8") > VIEWER_MAX_MESSAGE) socket.destroy();
@@ -255,6 +294,8 @@ export class BrowserViewerService {
   }
   stop(message = ""): void {
     this.revokeControl(); this.decodedPage = ""; this.inputError = "";
+    for (const id of this.closing.keys()) this.clearClosing(id);
+    this.tabErrors.clear();
     this.clearPending();
     this.scope = undefined;
     this.connection = undefined;

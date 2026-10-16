@@ -600,7 +600,7 @@ async function main() {
       phase = `${kind}: close selected viewer page`;
       const closingLease = await enable(extra.id, expectedUrl, color);
       const after = observed.count();
-      await call("browser_tabs", { action: "close", index });
+      viewer.closePages(connection.sessionId, extra.id, "selected");
       await observed.state(state => state.pages.length === 1 && state.selectedPageId === pageId, `closed ${kind} removed, original page selected`);
       assert.equal(viewer.getState().controlId, "", `${kind}: page closure did not revoke control`);
       await observed.frame(after, colors[2], pageId);
@@ -624,6 +624,22 @@ async function main() {
     const newTabUrl = `${baseUrl}/pages/new-tab`;
     await checkAdditionalPage("MCP new tab", () => call("browser_tabs", { action: "new", url: newTabUrl }), newTabUrl, colors[3]);
 
+    phase = "viewer closes all other tabs while keeping the selected page and lease";
+    const keptPage = await readState();
+    await call("browser_tabs", { action: "new", url: newTabUrl });
+    await call("browser_tabs", { action: "new", url: baseUrl });
+    await observed.state(state => state.pages.length === 3, "three pages registered before close others");
+    assert.equal(viewer.getState().selectedPageId, pageId);
+    lease = await enable(pageId, url, colors[2]);
+    viewer.closePages(connection.sessionId, pageId, "others");
+    await observed.state(state => state.pages.length === 1 && !state.closingPageIds.length, "other pages closed through viewer");
+    assert.equal(viewer.getState().selectedPageId, pageId);
+    assert.equal(viewer.getState().controlId, lease.controlId, "Closing other tabs revoked the kept page's control");
+    const remainingTabs = await call("browser_tabs", { action: "list" });
+    assert.equal([...remainingTabs.matchAll(/^- (\d+):/gm)].length, 1, "MCP must observe the same single surviving tab");
+    assert.equal((await readState()).fixtureId, keptPage.fixtureId);
+    console.log("PASS: viewer close-current and close-others remove real MCP pages, preserve the selected document, and leave MCP usable.");
+
     phase = "same-URL navigation revokes control";
     lease = await enable(pageId, url, colors[2]);
     const revision = viewer.getState().pageRevision;
@@ -637,9 +653,9 @@ async function main() {
     await ignored(lease, "navigated document's old control", navigated);
     console.log("PASS: same-URL navigation revokes control and ignores the old document's lease.");
 
-    phase = "MCP browser close";
+    phase = "viewer closes the last browser tab";
     const closedLease = await enable(pageId, url, colors[0]);
-    await call("browser_close");
+    viewer.closePages(connection.sessionId, pageId, "selected");
     await observed.state(state => state.pages.length === 0 && state.status === "waiting", "closed MCP page removed from viewer");
     assert.equal(viewer.getState().controlId, "", "Browser close did not revoke control");
     await observed.quiet("closed browser");

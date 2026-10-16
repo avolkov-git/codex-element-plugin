@@ -126,6 +126,9 @@ class BrowserViewerPanelManager {
                 else if (message.type === "viewer.select" && typeof message.pageId === "string") {
                     this.viewer.selectPage(message.sessionId, message.pageId);
                 }
+                else if (message.type === "viewer.close" && typeof message.pageId === "string" && (message.mode === "selected" || message.mode === "others") && this.panel?.visible && this.documentVisible) {
+                    this.viewer.closePages(message.sessionId, message.pageId, message.mode);
+                }
                 else if (message.type === "viewer.control" && typeof message.pageId === "string" && typeof message.enabled === "boolean" && this.panel?.visible && this.documentVisible) {
                     this.viewer.setControl(message.sessionId, message.pageId, message.enabled);
                 }

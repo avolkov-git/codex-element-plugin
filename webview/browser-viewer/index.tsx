@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { Monitor, Pause, Play, CircleAlert, MousePointer2 } from "lucide-react";
+import { Monitor, Pause, Play, CircleAlert, MousePointer2, X, Ellipsis } from "lucide-react";
 import type { BrowserViewerFrame, BrowserViewerPointer, BrowserViewerState } from "../../src/browserViewerProtocol";
 import { contentRect, modifiers, pointInFrame, textInputs, ViewerInputQueue } from "./input";
 
@@ -9,6 +9,38 @@ declare const acquireVsCodeApi: () => { postMessage(message: object): void };
 let host: ReturnType<typeof acquireVsCodeApi>;
 const initial: BrowserViewerState = { type: "browser.viewer.state", sessionId: "", status: "idle", message: "Подключение к просмотру браузера…", pages: [], selectedPageId: "", controlId: "", pageRevision: 0 };
 const navigationKeys = new Set(["Enter", "Tab", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
+
+function TabMenu({ disabled, canCloseOthers, onCloseOthers }: { disabled: boolean; canCloseOthers: boolean; onCloseOthers(): void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const item = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    item.current?.focus();
+    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [open]);
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  return <div ref={root} className="viewer-tab-actions" onBlur={event => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+  }} onKeyDown={event => {
+    if (event.key === "Escape" && open) {
+      event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus();
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault(); if (!disabled) { setOpen(true); item.current?.focus(); }
+    }
+  }}>
+    <button ref={trigger} className="viewer-icon-button" title="Действия с вкладками" aria-label="Действия с вкладками" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? "viewer-tab-menu" : undefined} disabled={disabled} onClick={() => setOpen(!open)}><Ellipsis size={18} aria-hidden="true" /></button>
+    {open && <div id="viewer-tab-menu" className="viewer-tab-menu" role="menu" aria-label="Действия с вкладками">
+      <button ref={item} role="menuitem" aria-disabled={!canCloseOthers} onClick={() => {
+        if (!canCloseOthers) return;
+        setOpen(false); trigger.current?.focus(); onCloseOthers();
+      }}>Закрыть остальные</button>
+    </div>}
+  </div>;
+}
 
 function App() {
   const [state, setState] = useState(initial);
@@ -75,7 +107,7 @@ function App() {
         const scopeChanged = next.sessionId !== previous.sessionId || next.selectedPageId !== previous.selectedPageId || next.pageRevision !== previous.pageRevision;
         if (scopeChanged || next.status === "idle") { clearFrame(); setInputError(""); }
         if (next.status !== "live") invalidateAcknowledgement();
-        if (scopeChanged || next.status !== "live" || next.inputError || (activeControl.current && next.controlId !== activeControl.current)) release();
+        if (scopeChanged || next.status !== "live" || next.inputError || next.closingPageIds?.includes(next.selectedPageId) || (activeControl.current && next.controlId !== activeControl.current)) release();
         current.current = next; setState(next);
         if (requested.current && next.controlId && !activeControl.current && acknowledged.current && !document.hidden) {
           activeControl.current = next.controlId;
@@ -187,8 +219,15 @@ function App() {
   const toggleLabel = suspended || imageError ? "Возобновить просмотр" : "Приостановить просмотр";
   const controlling = controlRequested && !!state.controlId && state.controlId === activeControl.current;
   const controlLabel = controlRequested ? "Отключить управление" : "Включить управление";
-  const error = inputError || state.inputError;
-  const status = imageError ? "Не удалось показать кадр. Возобновите просмотр." : error || state.message;
+  const closing = !!state.closingPageIds?.length;
+  const closingSelected = !!state.closingPageIds?.includes(state.selectedPageId);
+  const error = state.tabError || inputError || state.inputError;
+  const status = imageError ? "Не удалось показать кадр. Возобновите просмотр." : error || (closing ? "Закрытие вкладок…" : state.message);
+  const closeTabs = (mode: "selected" | "others") => {
+    if (!page || closing) return;
+    if (mode === "selected") release(true);
+    host.postMessage({ type: "viewer.close", sessionId: state.sessionId, pageId: state.selectedPageId, mode });
+  };
   const rect = frame && contentRect(stageSize.width, stageSize.height, frame.width, frame.height);
   return <main className="browser-viewer" onKeyDown={event => {
     if (event.key === "Escape" && requested.current) {
@@ -204,7 +243,9 @@ function App() {
         {!state.pages.length && <option value="">Браузер агента</option>}
         {state.pages.map(item => <option key={item.id} value={item.id}>{item.title || item.url || "Страница"}</option>)}
       </select>
-      <button ref={controlButton} className="viewer-icon-button" title={`${controlLabel}. Esc: отключить управление и освободить клавиатуру`} aria-label={controlLabel} aria-pressed={controlRequested} disabled={!page || state.status !== "live" || !frameReady || imageError} onClick={() => {
+      <button className="viewer-icon-button" title="Закрыть выбранную вкладку. Несохранённые данные могут быть потеряны" aria-label="Закрыть выбранную вкладку" disabled={!page || closing} onClick={() => closeTabs("selected")}><X size={18} aria-hidden="true" /></button>
+      <TabMenu key={state.sessionId + state.selectedPageId} disabled={!page || closing} canCloseOthers={state.pages.length > 1} onCloseOthers={() => closeTabs("others")} />
+      <button ref={controlButton} className="viewer-icon-button" title={`${controlLabel}. Esc: отключить управление и освободить клавиатуру`} aria-label={controlLabel} aria-pressed={controlRequested} disabled={!page || closingSelected || state.status !== "live" || !frameReady || imageError} onClick={() => {
         if (requested.current) { release(true); return; }
         setInputError(""); requested.current = true; setControlRequested(true);
         grantTimeout.current = setTimeout(() => failInput("Не удалось включить управление. Попробуйте снова."), 10_000);

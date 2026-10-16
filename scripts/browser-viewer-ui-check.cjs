@@ -14,7 +14,7 @@ const origin = "http://browser-viewer.fixture.invalid";
 const prefix = "/reverse-proxy/element";
 const escapeScript = value => value.replace(/<\/script/gi, "<\\/script");
 const { renderWebviewHtml } = loadSource("src/webviewHtml.ts", { vscode });
-const allowedMessages = new Set(["viewer.ready", "viewer.visibility", "viewer.pause", "viewer.select", "viewer.ack", "viewer.control", "viewer.input"]);
+const allowedMessages = new Set(["viewer.ready", "viewer.visibility", "viewer.pause", "viewer.select", "viewer.close", "viewer.ack", "viewer.control", "viewer.input"]);
 const themes = {
   light: { "editor-background": "#ffffff", "editor-foreground": "#25282c", "panel-border": "#d0d0d0",
     descriptionForeground: "#626871", "editorWidget-background": "#f3f4f6", "list-hoverBackground": "#e9ecef", errorForeground: "#bd303b" },
@@ -39,14 +39,14 @@ async function fits(frame, label) {
     for (const node of [document.documentElement, document.body, document.getElementById("root")]) {
       if (node.scrollWidth > node.clientWidth + 1 || node.scrollHeight > node.clientHeight + 1) failures.push(`${node.tagName}: document overflow`);
     }
-    const selectors = ".browser-viewer, .viewer-toolbar, .viewer-toolbar > *, .viewer-address, .viewer-stage, .viewer-frame, .viewer-empty, .viewer-empty p, .viewer-status, .viewer-status > *";
+    const selectors = ".browser-viewer, .viewer-toolbar, .viewer-toolbar > *, .viewer-tab-menu, .viewer-tab-menu button, .viewer-address, .viewer-stage, .viewer-frame, .viewer-empty, .viewer-empty p, .viewer-status, .viewer-status > *";
     for (const node of document.querySelectorAll(selectors)) {
       if (!node.getClientRects().length) continue;
       const rect = node.getBoundingClientRect(), style = getComputedStyle(node);
       if (rect.left < -1 || rect.top < -1 || rect.right > innerWidth + 1 || rect.bottom > innerHeight + 1) failures.push(`${node.className || node.tagName}: outside viewport`);
       // URL and native select labels are intentionally ellipsized, not wrapped.
       if (node.tagName !== "SELECT" && style.textOverflow !== "ellipsis" && node.scrollWidth > node.clientWidth + 1) failures.push(`${node.className || node.tagName}: clipped text`);
-      if (node.scrollHeight > node.clientHeight + 1) failures.push(`${node.className || node.tagName}: vertical overflow`);
+      if (!node.matches(".viewer-toolbar, .viewer-tab-actions") && node.scrollHeight > node.clientHeight + 1) failures.push(`${node.className || node.tagName}: vertical overflow`);
     }
     const rows = [...document.querySelector(".browser-viewer").children].map(node => node.getBoundingClientRect());
     for (let i = 1; i < rows.length; i++) if (rows[i].top < rows[i - 1].bottom - 1) failures.push("viewer rows overlap");
@@ -102,6 +102,52 @@ function hostHtml(contents, theme) {
       if (event.data.channel === 'onconsole' && event.data.data.level === 'error') window.fixtureHostErrors.push(event.data.data);
     });
     </script><iframe title="Element webview host" sandbox="allow-scripts allow-forms allow-same-origin allow-downloads" src="${prefix}/webview/index.html?id=viewer-probe"></iframe></body></html>`;
+}
+
+async function closeTabChecks({ page, frame, emit, messages, sendFrame, waitAck, shot, noImage }) {
+  const close = frame.getByRole("button", { name: "Закрыть выбранную вкладку", exact: true });
+  const menu = frame.getByRole("button", { name: "Действия с вкладками", exact: true });
+  const others = frame.getByRole("menuitem", { name: "Закрыть остальные", exact: true });
+  const commands = async () => (await messages()).filter(message => message.type === "viewer.close");
+  await menu.focus(); await page.keyboard.press("ArrowDown");
+  await others.waitFor();
+  assert(await others.evaluate(node => document.activeElement === node), "menu keyboard opening focuses its action");
+  await shot("tab-menu");
+  await page.keyboard.press("Escape");
+  assert.equal(await others.count(), 0);
+  assert(await menu.evaluate(node => document.activeElement === node), "Escape restores menu trigger focus");
+  await menu.click(); await frame.locator(".viewer-stage").click();
+  assert.equal(await others.count(), 0, "outside click dismisses the menu");
+  await menu.click(); await others.click();
+  await page.waitForFunction(() => window.fixtureMessages.some(message => message.type === "viewer.close"));
+  assert.deepEqual((await commands()).at(-1), { type: "viewer.close", sessionId: "session-a", pageId: "page-a", mode: "others" });
+  await emit(viewerState({ closingPageIds: ["page-b"] }));
+  assert(await close.isDisabled()); assert(await menu.isDisabled());
+  assert.match(await frame.getByRole("status").innerText(), /Закрытие/);
+  assert.equal(await frame.locator(".viewer-frame").count(), 1, "closing others preserves the selected image");
+  const survivor = viewerState({ pages: [viewerState().pages[0]] });
+  await emit(survivor);
+  await menu.click();
+  assert.equal(await others.getAttribute("aria-disabled"), "true", "one remaining tab cannot close others");
+  await page.keyboard.press("Enter"); await settle(frame);
+  assert.equal((await commands()).length, 1, "disabled action must not send a close");
+  await page.keyboard.press("Escape");
+  await close.click();
+  await page.waitForFunction(() => window.fixtureMessages.filter(message => message.type === "viewer.close").length === 2);
+  assert.deepEqual((await commands()).at(-1), { type: "viewer.close", sessionId: "session-a", pageId: "page-a", mode: "selected" });
+  await emit({ ...survivor, closingPageIds: ["page-a"] });
+  assert(await frame.getByRole("button", { name: "Включить управление" }).isDisabled());
+  await emit({ ...survivor, tabError: "Не удалось закрыть вкладку. Повторите попытку." });
+  assert(!await close.isDisabled());
+  assert.equal(await frame.getByRole("status").innerText(), "Не удалось закрыть вкладку. Повторите попытку.");
+  await shot("tab-close-error");
+  await emit(viewerState({ status: "waiting", pages: [], selectedPageId: "", message: "Ожидание страницы браузера агента." }));
+  await noImage("closing the last tab clears its image");
+  assert(await close.isDisabled()); assert(await menu.isDisabled());
+  await shot("tabs-closed");
+  await emit(viewerState());
+  await sendFrame(9000); await waitAck(9000);
+  await frame.locator(".viewer-frame").waitFor();
 }
 
 async function manualControlChecks({ page, frame, emit, messages, sendFrame, waitAck, shot, noImage }) {
@@ -489,6 +535,7 @@ async function runScenario(browser, scenario, jpeg) {
     assert.equal(image.fit, "contain"); assert.equal(image.pointerEvents, "none"); assert.equal(image.draggable, false);
     await shot("live");
 
+    await closeTabChecks({ page, frame, emit, messages, sendFrame, waitAck, shot, noImage });
     await manualControlChecks({ page, frame, emit, messages, sendFrame, waitAck, shot, noImage });
     const pause = frame.getByRole("button", { name: /^(Приостановить|Возобновить) просмотр$/ }), pauseName = await pause.getAttribute("aria-label");
     assert(pauseName); assert.equal(await pause.getAttribute("title"), pauseName);

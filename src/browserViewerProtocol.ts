@@ -12,6 +12,8 @@ export interface BrowserViewerState {
   controlId: string;
   pageRevision: number;
   inputError?: string;
+  closingPageIds?: string[];
+  tabError?: string;
 }
 export type BrowserViewerInput =
   | { kind: "move"; x: number; y: number }

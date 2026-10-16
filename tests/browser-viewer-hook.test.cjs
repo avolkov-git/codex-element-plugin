@@ -99,7 +99,7 @@ class FakeSocket extends EventEmitter {
 }
 
 function fixture(t, options = {}) {
-  const clock = fakeClock(), sockets = [], calls = [], inputCalls = [];
+  const clock = fakeClock(), sockets = [], calls = [], inputCalls = [], closeCalls = [];
   const bindings = new Map(), scripts = [], evaluations = [];
   const cdp = new EventEmitter();
   let detachCount = 0, sessionCount = 0, pageClosed = options.closed || false;
@@ -111,6 +111,16 @@ function fixture(t, options = {}) {
   const page = new EventEmitter();
   const mainFrame = { evaluate: async script => { evaluations.push(script); }, };
   const forbidden = method => (...args) => { inputCalls.push({ method, args }); throw new Error(`Forbidden input: ${method}`); };
+  const finishClose = () => { pageClosed = true; page.emit("close"); };
+  const browser = { close: forbidden("browser.close") };
+  const context = {
+    close: forbidden("context.close"), browser: () => browser,
+    newCDPSession: async target => {
+      assert.equal(target, page, "CDP must attach to the existing MCP page");
+      sessionCount++;
+      return options.newCDPSession ? options.newCDPSession(cdp) : cdp;
+    },
+  };
   Object.assign(page, {
     isClosed: () => pageClosed,
     title: options.title || (async () => "Fixture page"),
@@ -120,15 +130,14 @@ function fixture(t, options = {}) {
     frames: () => [mainFrame],
     exposeBinding: async (name, callback) => { bindings.set(name, callback); },
     addInitScript: async script => { scripts.push(script); },
-    context: () => ({ newCDPSession: async target => {
-      assert.equal(target, page, "CDP must attach to the existing MCP page");
-      sessionCount++;
-      return options.newCDPSession ? options.newCDPSession(cdp) : cdp;
-    } }),
+    context: () => context,
     goto: forbidden("goto"), click: forbidden("click"), evaluate: forbidden("evaluate"),
     keyboard: { press: forbidden("keyboard.press"), type: forbidden("keyboard.type") },
     mouse: { click: forbidden("mouse.click"), move: forbidden("mouse.move"), wheel: forbidden("mouse.wheel") },
-    close() { pageClosed = true; page.emit("close"); },
+    close(value) {
+      closeCalls.push(value && JSON.parse(JSON.stringify(value)));
+      return options.close ? options.close(value) : finishClose();
+    },
   });
   const { attachBrowserViewer } = loadHook({ net: { createConnection(socketPath) {
     assert.equal(socketPath, CONNECTION.socketPath);
@@ -137,7 +146,7 @@ function fixture(t, options = {}) {
     return socket;
   } } }, clock);
   t.after(async () => {
-    page.close();
+    finishClose();
     await settle();
     assert.equal(inputCalls.length, 0, "viewer must never call Playwright input/focus APIs");
     const allowed = new Set([...ALLOWED_CDP, ...(options.manual ? ["Input.dispatchMouseEvent", "Input.dispatchKeyEvent", "Input.insertText", "Page.getLayoutMetrics"] : [])]);
@@ -158,7 +167,7 @@ function fixture(t, options = {}) {
     cdp.emit("Page.screencastFrame", value);
     return value;
   };
-  return { clock, sockets, calls, cdp, page, attach, connect, stream, frame, bindings, scripts, evaluations, mainFrame,
+  return { clock, sockets, calls, cdp, page, attach, connect, stream, frame, bindings, scripts, evaluations, mainFrame, closeCalls, finishClose,
     get detachCount() { return detachCount; }, get sessionCount() { return sessionCount; } };
 }
 
@@ -704,3 +713,168 @@ test("hook iframe navigation refreshes observation without revoking the main-pag
   assert.equal(manualCalls(f).length, 1);
   assert.equal(inputResults(socket).at(-1).ok, true);
 });
+
+const closeFailures = socket => socket.messages.filter(message => message.type === "page.closeFailed");
+
+for (const streaming of [false, true]) {
+  test(`hook page.close closes only its ${streaming ? "streaming" : "inactive"} Page without beforeunload`, async t => {
+    const f = fixture(t), socket = await f.connect();
+    const other = fixture(t), otherSocket = await other.connect();
+    await other.stream(otherSocket, true);
+    if (streaming) {
+      await f.stream(socket, true);
+      f.frame(1); f.frame(2);
+    }
+    socket.receive({ type: "page.close", requestId: "close-1" });
+    await settle();
+    assert.deepEqual(f.closeCalls, [{ runBeforeUnload: false }]);
+    assert.equal(f.page.isClosed(), true);
+    assert.equal(socket.destroyed, true, "page close must disconnect its peer to confirm removal");
+    assert.equal(f.detachCount, streaming ? 1 : 0);
+    assert.equal(f.sessionCount, streaming ? 1 : 0, "closing an inactive page must not need a CDP session");
+    assert.deepEqual(closeFailures(socket), []);
+    assert.equal(f.page.listenerCount("close"), 0);
+    assert.equal(f.page.listenerCount("framenavigated"), 0);
+    const count = socket.messages.length;
+    await f.clock.advance(30000);
+    assert.equal(socket.messages.length, count);
+    assert.equal(f.clock.timers.size, 0);
+    assert.equal(other.page.isClosed(), false);
+    assert.deepEqual(other.closeCalls, []);
+    assert.equal(otherSocket.destroyed, false);
+    other.frame(1);
+    assert.equal(otherSocket.frames().length, 1, "another page must remain usable");
+  });
+}
+
+test("hook page.close rejects invalid request IDs before touching the Page", async t => {
+  const f = fixture(t), socket = await f.connect();
+  for (const requestId of [undefined, null, false, 1, {}, [], "", "a".repeat(65), "../page", "with space", "line\nbreak", "\u00e9"]) {
+    socket.receive({ type: "page.close", requestId });
+  }
+  for (const type of ["Page.close", "Browser.close", "context.close", "cdp"]) {
+    socket.receive({ type, requestId: "valid", method: "Page.close" });
+  }
+  await settle();
+  assert.deepEqual(f.closeCalls, []);
+  assert.deepEqual(closeFailures(socket), []);
+  assert.equal(socket.destroyed, false);
+  socket.receive({ type: "page.close", requestId: "A-" + "b".repeat(62) });
+  await settle();
+  assert.deepEqual(f.closeCalls, [{ runBeforeUnload: false }], "the maximum-length valid ID must be accepted");
+});
+
+test("hook page.close is idempotent while pending, after resolution and after page closure", async t => {
+  const pending = deferred(), f = fixture(t, { close: () => pending.promise }), socket = await f.connect();
+  socket.receive({ type: "page.close", requestId: "first" });
+  socket.receive({ type: "page.close", requestId: "first" });
+  socket.receive({ type: "page.close", requestId: "different" });
+  await settle();
+  assert.deepEqual(f.closeCalls, [{ runBeforeUnload: false }]);
+  await f.clock.advance(30000);
+  socket.receive({ type: "page.close", requestId: "later" });
+  await settle();
+  assert.equal(f.closeCalls.length, 1, "an unresolved close must never be replayed by time or a new request");
+  pending.resolve();
+  await settle();
+  socket.receive({ type: "page.close", requestId: "resolved-before-event" });
+  await settle();
+  assert.equal(f.closeCalls.length, 1, "the in-flight guard stays until the Page actually closes");
+  assert.equal(socket.destroyed, false);
+  f.finishClose();
+  await settle();
+  socket.receive({ type: "page.close", requestId: "after-close" });
+  await settle();
+  assert.equal(f.closeCalls.length, 1);
+  assert.equal(socket.destroyed, true);
+  assert.equal(f.clock.timers.size, 0);
+  assert.deepEqual(closeFailures(socket), []);
+});
+
+for (const failure of ["throw", "reject"]) {
+  test(`hook page.close ${failure} reports only its request ID and retries only on an explicit request`, async t => {
+    let fail = true;
+    const f = fixture(t, { close: () => {
+      if (!fail) return f.finishClose();
+      const error = new Error("private browser details");
+      if (failure === "throw") throw error;
+      return Promise.reject(error);
+    } }), socket = await f.connect();
+    socket.receive({ type: "page.close", requestId: "failed-close" });
+    await settle();
+    assert.deepEqual(f.closeCalls, [{ runBeforeUnload: false }]);
+    assert.deepEqual(closeFailures(socket), [{ type: "page.closeFailed", requestId: "failed-close" }]);
+    assert.equal(f.page.isClosed(), false);
+    assert.equal(socket.destroyed, false);
+    await f.clock.advance(30000);
+    assert.equal(f.closeCalls.length, 1, "failure must not schedule an automatic close retry");
+    assert.equal(closeFailures(socket).length, 1);
+    fail = false;
+    socket.receive({ type: "page.close", requestId: "explicit-retry" });
+    await settle();
+    assert.deepEqual(f.closeCalls, [{ runBeforeUnload: false }, { runBeforeUnload: false }]);
+    assert.equal(socket.destroyed, true);
+    assert.equal(closeFailures(socket).length, 1, "successful closure is confirmed by disconnect, not a failure reply");
+    assert.equal(f.clock.timers.size, 0);
+  });
+}
+
+test("hook page.close revokes queued and new manual input, including a replacement lease while closing", async t => {
+  const pending = deferred(), f = fixture(t, { manual: true, close: () => pending.promise }), socket = await f.connect();
+  await f.stream(socket, true);
+  socket.receive({ type: "control", controlId: "lease" });
+  socket.receive({ type: "input", controlId: "lease", inputId: 1, input: textInput });
+  socket.receive({ type: "page.close", requestId: "close-with-input" });
+  await settle();
+  assert.equal(manualCalls(f).length, 0, "queued input must be invalidated synchronously before Page.close runs");
+  socket.receive({ type: "control", controlId: "replacement" });
+  socket.receive({ type: "input", controlId: "replacement", inputId: 2, input: textInput });
+  await settle();
+  assert.equal(manualCalls(f).length, 0, "even a new lease cannot dispatch while closing");
+  pending.reject(new Error("close failed"));
+  await settle();
+  assert.deepEqual(closeFailures(socket), [{ type: "page.closeFailed", requestId: "close-with-input" }]);
+  socket.receive({ type: "input", controlId: "lease", inputId: 3, input: textInput });
+  await settle();
+  assert.equal(manualCalls(f).length, 0, "failure must not restore the pre-close lease");
+  socket.receive({ type: "control", controlId: "fresh" });
+  socket.receive({ type: "input", controlId: "fresh", inputId: 4, input: textInput });
+  await settle();
+  assert.equal(manualCalls(f).length, 1, "explicitly granting control after failure remains possible");
+  assert.equal(inputResults(socket).at(-1).ok, true);
+});
+
+test("hook page.close does not wait for a pending CDP attach and detaches its late result", async t => {
+  const pending = deferred(), f = fixture(t, { newCDPSession: () => pending.promise }), socket = await f.connect();
+  await f.stream(socket, true);
+  socket.receive({ type: "page.close", requestId: "close-during-attach" });
+  await settle();
+  assert.deepEqual(f.closeCalls, [{ runBeforeUnload: false }]);
+  assert.equal(socket.destroyed, true);
+  pending.resolve(f.cdp);
+  await settle();
+  assert.equal(f.detachCount, 1);
+  assert.equal(f.calls.filter(call => call.method === "Page.startScreencast").length, 0);
+  assert.equal(f.clock.timers.size, 0);
+});
+
+for (const cleanup of ["socket", "page"]) {
+  test(`hook late page.close failure after ${cleanup} cleanup cannot report or reconnect`, async t => {
+    const pending = deferred(), f = fixture(t, { close: () => pending.promise }), socket = await f.connect();
+    await f.stream(socket, true);
+    socket.receive({ type: "page.close", requestId: "late-failure" });
+    await settle();
+    if (cleanup === "socket") socket.destroy(); else f.finishClose();
+    await settle();
+    const count = socket.messages.length;
+    pending.reject(new Error("late rejection"));
+    await settle();
+    await f.clock.advance(30000);
+    assert.deepEqual(closeFailures(socket), []);
+    assert.equal(socket.messages.length, count);
+    assert.equal(f.closeCalls.length, 1);
+    assert.equal(f.detachCount, 1);
+    assert.equal(f.sockets.length, 1);
+    assert.equal(f.clock.timers.size, 0);
+  });
+}

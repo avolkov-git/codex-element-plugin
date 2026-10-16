@@ -2,10 +2,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
+const vm = require("node:vm");
+const { createRequire } = require("node:module");
 const { once } = require("node:events");
 const { setTimeout: delay } = require("node:timers/promises");
 const { test } = require("node:test");
-const { loadSource } = require("./service-test-utils.cjs");
+const ts = require("typescript");
+const { loadSource, root } = require("./service-test-utils.cjs");
 
 const { BrowserViewerService } = loadSource("src/browserViewerService.ts");
 const { VIEWER_MAX_FRAME, VIEWER_MAX_MESSAGE } = loadSource("src/browserViewerProtocol.ts");
@@ -20,9 +23,50 @@ async function until(predicate, message, timeout = 2000) {
   }
 }
 
-function fixture(t) {
+function closeClock() {
+  let now = 0;
+  const timers = new Set();
+  return {
+    timers,
+    setTimeout(callback, ms) {
+      const timer = { callback, at: now + ms, ms, unref() { return this; } };
+      timers.add(timer);
+      return timer;
+    },
+    clearTimeout: timer => timers.delete(timer),
+    advance(ms) {
+      const target = now + ms;
+      for (;;) {
+        const next = [...timers].filter(timer => timer.at <= target).sort((a, b) => a.at - b.at)[0];
+        if (!next) break;
+        timers.delete(next); now = next.at; next.callback();
+      }
+      now = target;
+    },
+  };
+}
+
+// Keep real IPC and polling timers; only the service's deadlines use this clock.
+function serviceWithClock(clock) {
+  const filename = path.join(root, "src/browserViewerService.ts");
+  const output = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
+    fileName: filename,
+  }).outputText;
+  const module = { exports: {} }, localRequire = createRequire(filename);
+  vm.runInNewContext(output, {
+    module, exports: module.exports, __filename: filename, __dirname: path.dirname(filename),
+    require: name => name === "./browserViewerProtocol" ? loadSource("src/browserViewerProtocol.ts") : localRequire(name),
+    Buffer, URL, process, console, Error, Date, AbortController,
+    setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+  }, { filename });
+  return module.exports.BrowserViewerService;
+}
+
+function fixture(t, clock) {
   let scope = "/users/alice/projects/one/sessions/current";
-  const service = new BrowserViewerService(() => scope);
+  const Service = clock ? serviceWithClock(clock) : BrowserViewerService;
+  const service = new Service(() => scope);
   const frames = [], states = [], clients = [], directories = [];
   service.onFrame(frame => frames.push(JSON.parse(JSON.stringify(frame))));
   service.onState(state => states.push(JSON.parse(JSON.stringify(state))));
@@ -30,6 +74,7 @@ function fixture(t) {
     clients.forEach(client => client.socket.destroy());
     service.dispose();
     await until(() => directories.every(directory => !fs.existsSync(directory)), "IPC directories must be removed after disposal");
+    if (clock) assert.equal(clock.timers.size, 0, "service disposal must clear all deadlines");
   });
   const start = () => {
     const connection = service.startSession(scope);
@@ -67,7 +112,8 @@ function fixture(t) {
     let serial = 0;
     client.barrier = async () => {
       const title = `barrier-${pageId}-${++serial}`;
-      client.send({ type: "page", title });
+      const url = service.getState().pages.find(page => page.id === pageId)?.url;
+      client.send({ type: "page", title, url });
       await until(() => service.getState().pages.some(page => page.id === pageId && page.title === title), "IPC barrier was not processed");
     };
     return client;
@@ -380,8 +426,8 @@ test("viewer publishes recovery from a CDP error on the next valid frame", async
   assert.equal(f.states.at(-1).status, "live", "UI must receive a recovery state, not just getState callers");
 });
 
-async function controllable(t) {
-  const f = fixture(t), connection = f.start(), client = await f.peer(connection);
+async function controllable(t, clock) {
+  const f = fixture(t, clock), connection = f.start(), client = await f.peer(connection);
   f.service.setVisible(true);
   client.send(FRAME);
   await until(() => f.frames.length === 1, "a decoded frame is required for manual control");
@@ -521,3 +567,343 @@ test("pointer forwarding is scoped, bounded and excludes arbitrary page data", a
   f.service.setPaused(true); f.client.send(event); await delay(10);
   assert.equal(pointers.length, 1);
 });
+
+const closeRequests = client => client.messages.filter(message => message.type === "page.close");
+const closingIds = service => Array.from(service.getState().closingPageIds);
+
+test("close selected revokes input and pending frames, then selects a survivor only on socket close", async t => {
+  const clock = closeClock(), f = await controllable(t, clock);
+  const b = await f.peer(f.connection, "page-b"), c = await f.peer(f.connection, "page-c"), results = [];
+  f.service.onInputResult(result => results.push(result));
+  f.service.sendInput(f.connection.sessionId, f.pageId, f.controlId, 1, { kind: "text", text: "once" });
+  f.client.send(FRAME);
+  await until(() => f.client.count("input") === 1 && f.frames.length === 2, "pending input/frame missing");
+  const pendingFrame = f.frames.at(-1), acks = f.client.count("ack");
+  f.service.closePages(f.connection.sessionId, f.pageId, "selected");
+  assert.deepEqual(closingIds(f.service), [f.pageId]);
+  assert.deepEqual(f.states.at(-1).closingPageIds, [f.pageId]);
+  assert.equal(f.service.getState().controlId, "");
+  assert.equal(f.service.getState().selectedPageId, f.pageId);
+  assert.equal(f.service.getState().pages.length, 3, "requesting close must not optimistically remove a peer");
+  assert.deepEqual([...clock.timers].map(timer => timer.ms), [10000], "input and frame deadlines must be cancelled");
+  await until(() => closeRequests(f.client).length === 1, "close command missing");
+  const request = closeRequests(f.client)[0];
+  assert.deepEqual(Object.keys(request).sort(), ["requestId", "type"]);
+  assert.match(request.requestId, /^[a-z0-9-]{1,64}$/i);
+  const closeIndex = f.client.messages.indexOf(request);
+  assert(f.client.messages.slice(0, closeIndex).some(message => message.type === "control" && message.controlId === ""));
+  assert(f.client.messages.slice(0, closeIndex).some(message => message.type === "stream" && message.active === false));
+  f.service.setControl(f.connection.sessionId, f.pageId, true);
+  f.service.sendInput(f.connection.sessionId, f.pageId, f.controlId, 2, { kind: "text", text: "forbidden" });
+  f.service.acknowledge(f.connection.sessionId, f.pageId, pendingFrame.sequence);
+  f.client.send({ type: "input.result", controlId: f.controlId, inputId: 1, ok: true });
+  f.client.send({ type: "error" });
+  f.client.send(FRAME);
+  f.client.send({ type: "page.closed", requestId: request.requestId });
+  await f.client.barrier();
+  assert.equal(f.service.getState().controlId, "");
+  assert.equal(f.service.getState().status, "live", "closing-stream errors must not poison the viewer");
+  assert.equal(f.service.getState().pages.length, 3, "only socket closure confirms removal");
+  assert.equal(f.client.count("input"), 1);
+  assert.equal(f.client.count("ack"), acks);
+  assert.equal(f.frames.length, 2);
+  assert.equal(results.length, 0);
+  assert.equal(closeRequests(b).length + closeRequests(c).length, 0);
+  f.client.socket.destroy();
+  await until(() => f.service.getState().selectedPageId === "page-b", "a remaining tab must be selected");
+  await until(() => b.messages.some(message => message.type === "stream" && message.active), "survivor stream missing");
+  assert.deepEqual(closingIds(f.service), []);
+  clock.advance(10000);
+  assert.equal(f.service.getState().tabError, undefined);
+  assert.equal(clock.timers.size, 0);
+});
+
+test("close last tab leaves the session waiting and accepts a later tab without replay", async t => {
+  const clock = closeClock(), f = fixture(t, clock), connection = f.start(), a = await f.peer(connection);
+  f.service.setVisible(true);
+  f.service.closePages(connection.sessionId, "page-a", "selected");
+  await until(() => closeRequests(a).length === 1, "close command missing");
+  a.socket.destroy();
+  await until(() => f.service.getState().status === "waiting", "last tab must leave a waiting session");
+  assert.equal(f.service.getState().sessionId, connection.sessionId);
+  assert.equal(f.service.getState().selectedPageId, "");
+  assert.deepEqual(closingIds(f.service), []);
+  const next = await f.peer(connection, "page-next");
+  await until(() => next.messages.some(message => message.active === true), "new tab must start streaming");
+  clock.advance(30000);
+  await next.barrier();
+  assert.equal(f.service.getState().selectedPageId, "page-next");
+  assert.equal(f.service.getState().status, "live");
+  assert.equal(f.service.getState().tabError, undefined);
+  assert.equal(closeRequests(next).length, 0);
+});
+
+test("close others snapshots multiple targets, preserves selected control and denies every concurrent batch", async t => {
+  const clock = closeClock(), f = await controllable(t, clock);
+  const b = await f.peer(f.connection, "page-b"), c = await f.peer(f.connection, "page-c");
+  f.service.closePages(f.connection.sessionId, f.pageId, "others");
+  await until(() => closeRequests(b).length === 1 && closeRequests(c).length === 1, "all snapshot targets need close requests");
+  assert.notEqual(closeRequests(b)[0].requestId, closeRequests(c)[0].requestId);
+  assert.deepEqual(closingIds(f.service), ["page-b", "page-c"]);
+  assert.equal(f.service.getState().controlId, f.controlId);
+  assert.equal(f.service.getState().selectedPageId, f.pageId);
+  f.service.sendInput(f.connection.sessionId, f.pageId, f.controlId, 1, { kind: "text", text: "still active" });
+  await until(() => f.client.count("input") === 1, "selected tab must retain manual input");
+  f.client.send({ type: "input.result", controlId: f.controlId, inputId: 1, ok: true });
+  await f.client.barrier();
+  const future = await f.peer(f.connection, "page-future");
+  for (const mode of ["selected", "others"]) f.service.closePages(f.connection.sessionId, f.pageId, mode);
+  f.service.selectPage(f.connection.sessionId, "page-future");
+  for (const mode of ["selected", "others"]) f.service.closePages(f.connection.sessionId, "page-future", mode);
+  f.service.selectPage(f.connection.sessionId, f.pageId);
+  await future.barrier(); await f.client.barrier();
+  assert.deepEqual(closingIds(f.service), ["page-b", "page-c"]);
+  assert.equal(closeRequests(f.client).length + closeRequests(future).length, 0, "future tabs and the selection are outside the batch");
+  b.socket.destroy();
+  await until(() => closingIds(f.service).length === 1, "first target did not finish");
+  f.service.closePages(f.connection.sessionId, f.pageId, "selected");
+  await c.barrier(); await f.client.barrier();
+  assert.equal(closeRequests(c).length, 1, "concurrent batches must not resend pending closes");
+  assert.equal(closeRequests(f.client).length, 0, "the batch remains locked until its last target settles");
+  c.socket.destroy();
+  await until(() => closingIds(f.service).length === 0, "batch did not finish");
+  assert.deepEqual(Array.from(f.service.getState().pages, page => page.id), [f.pageId, "page-future"]);
+  assert.equal(f.service.getState().selectedPageId, f.pageId);
+  clock.advance(30000);
+  assert.equal(f.service.getState().tabError, undefined);
+});
+
+test("close others with only the selected tab is a no-op and preserves its lease", async t => {
+  const clock = closeClock(), f = await controllable(t, clock);
+  f.service.closePages(f.connection.sessionId, f.pageId, "others");
+  await f.client.barrier();
+  assert.equal(closeRequests(f.client).length, 0);
+  assert.deepEqual(closingIds(f.service), []);
+  assert.equal(f.service.getState().controlId, f.controlId);
+  assert.equal(clock.timers.size, 0);
+});
+
+test("close rejects stale sessions, nonselected or missing pages, hidden viewers and invalid modes", async t => {
+  const clock = closeClock(), f = fixture(t, clock), connection = f.start();
+  const a = await f.peer(connection), b = await f.peer(connection, "page-b");
+  for (const mode of ["selected", "others"]) f.service.closePages(connection.sessionId, "page-a", mode);
+  f.service.setVisible(true);
+  const invalid = [
+    ["stale-session", "page-a", "selected"], [undefined, "page-a", "others"],
+    [connection.sessionId, "page-b", "selected"], [connection.sessionId, "page-b", "others"],
+    [connection.sessionId, "missing", "selected"], [connection.sessionId, undefined, "others"],
+    ...[undefined, null, "all", "", {}, 1].map(mode => [connection.sessionId, "page-a", mode]),
+  ];
+  for (const args of invalid) f.service.closePages(...args);
+  await a.barrier(); await b.barrier();
+  assert.equal(closeRequests(a).length + closeRequests(b).length, 0);
+  assert.deepEqual(closingIds(f.service), []);
+  assert.equal(clock.timers.size, 0);
+  assert.equal(f.service.getState().pages.length, 2);
+  f.service.setPaused(true);
+  f.service.closePages(connection.sessionId, "page-a", "selected");
+  await until(() => closeRequests(a).length === 1, "visible paused tabs can still be closed");
+});
+
+for (const scope of [undefined, "/users/bob/projects/other/session"]) {
+  test(`close rechecks ${scope ? "changed" : "lost"} scope before any command or state read`, async t => {
+    const clock = closeClock(), f = fixture(t, clock), connection = f.start(), a = await f.peer(connection);
+    f.service.setVisible(true);
+    f.setScope(scope);
+    f.service.closePages(connection.sessionId, "page-a", "selected");
+    // getState also revokes authorization, so observe the socket first.
+    await until(() => a.closed, "close entry point must revoke the old scope itself");
+    assert.equal(closeRequests(a).length, 0);
+    assert.equal(f.service.getState().status, "idle");
+    assert.equal(clock.timers.size, 0);
+  });
+}
+
+test("close failures are peer/request scoped and partial failure does not cancel the remaining batch", async t => {
+  const clock = closeClock(), f = fixture(t, clock), connection = f.start();
+  const a = await f.peer(connection), b = await f.peer(connection, "page-b"), c = await f.peer(connection, "page-c");
+  f.service.setVisible(true);
+  f.service.closePages(connection.sessionId, "page-a", "others");
+  await until(() => closeRequests(b).length === 1 && closeRequests(c).length === 1, "batch requests missing");
+  const bId = closeRequests(b)[0].requestId, cId = closeRequests(c)[0].requestId;
+  const unauthenticated = await f.connect(connection);
+  unauthenticated.send({ type: "page.closeFailed", requestId: bId });
+  await until(() => unauthenticated.closed, "unauthenticated failures must be rejected");
+  for (const requestId of [undefined, null, 1, {}, "stale", cId]) b.send({ type: "page.closeFailed", requestId });
+  a.send({ type: "page.closeFailed", requestId: bId, pageId: "page-b" });
+  await a.barrier(); await b.barrier();
+  assert.deepEqual(closingIds(f.service), ["page-b", "page-c"]);
+  assert.equal(f.service.getState().tabError, undefined);
+  b.send({ type: "page.closeFailed", requestId: bId, message: "private error detail" });
+  await until(() => closingIds(f.service).length === 1, "matching failure must clear only its target");
+  assert.deepEqual(closingIds(f.service), ["page-c"]);
+  const error = f.service.getState().tabError;
+  assert.equal(typeof error, "string"); assert(error.length > 0);
+  assert(!error.includes("private error detail"));
+  assert.equal(f.states.at(-1).tabError, error);
+  assert.equal(f.service.getState().pages.length, 3, "failed tab must stay registered");
+  f.service.closePages(connection.sessionId, "page-a", "others");
+  c.socket.destroy();
+  await until(() => closingIds(f.service).length === 0, "remaining success must finish the batch");
+  assert.equal(f.service.getState().tabError, error, "partial failure remains visible after another target succeeds");
+  assert.equal(closeRequests(b).length, 1);
+  f.service.closePages(connection.sessionId, "page-a", "others");
+  assert.equal(f.service.getState().tabError, undefined, "an explicit retry clears the previous error");
+  await until(() => closeRequests(b).length === 2, "retry command missing");
+  const retryId = closeRequests(b)[1].requestId;
+  assert.notEqual(retryId, bId);
+  b.send({ type: "page.closeFailed", requestId: bId });
+  await b.barrier();
+  assert.deepEqual(closingIds(f.service), ["page-b"], "old failures cannot settle a new request");
+  assert.equal(f.service.getState().tabError, undefined);
+  b.socket.destroy();
+  await until(() => closingIds(f.service).length === 0, "retry completion missing");
+  clock.advance(30000);
+  assert.equal(f.service.getState().tabError, undefined);
+});
+
+test("close times out at ten seconds without removing or replaying a tab and requires fresh manual control", async t => {
+  const clock = closeClock(), f = await controllable(t, clock);
+  f.service.closePages(f.connection.sessionId, f.pageId, "selected");
+  await until(() => closeRequests(f.client).length === 1, "close command missing");
+  const firstId = closeRequests(f.client)[0].requestId;
+  clock.advance(9999);
+  assert.deepEqual(closingIds(f.service), [f.pageId]);
+  assert.equal(f.service.getState().tabError, undefined);
+  clock.advance(1);
+  assert.deepEqual(closingIds(f.service), []);
+  assert.equal(f.service.getState().pages.length, 1);
+  assert.equal(f.service.getState().status, "live");
+  assert(f.service.getState().tabError);
+  assert.equal(f.states.at(-1).tabError, f.service.getState().tabError);
+  assert.equal(clock.timers.size, 0);
+  f.service.setControl(f.connection.sessionId, f.pageId, true);
+  assert.equal(f.service.getState().controlId, "", "pre-close decoded frames cannot reauthorize input");
+  clock.advance(30000);
+  await f.client.barrier();
+  assert.equal(closeRequests(f.client).length, 1, "timeouts never replay an uncertain close");
+  f.client.send(FRAME);
+  await until(() => f.frames.length === 2, "timed-out tab must resume observation");
+  f.service.acknowledge(f.connection.sessionId, f.pageId, f.frames.at(-1).sequence);
+  f.service.setControl(f.connection.sessionId, f.pageId, true);
+  assert(f.service.getState().controlId);
+  assert.notEqual(f.service.getState().controlId, f.controlId);
+  f.service.closePages(f.connection.sessionId, f.pageId, "selected");
+  await until(() => closeRequests(f.client).length === 2, "explicit retry missing");
+  assert.notEqual(closeRequests(f.client)[1].requestId, firstId);
+  assert.equal(f.service.getState().tabError, undefined);
+  f.client.send({ type: "page.closeFailed", requestId: firstId });
+  await f.client.barrier();
+  assert.deepEqual(closingIds(f.service), [f.pageId]);
+  f.client.socket.destroy();
+  await until(() => f.service.getState().status === "waiting", "late actual closure must remove the tab");
+  clock.advance(10000);
+  assert.equal(f.service.getState().tabError, undefined);
+});
+
+test("close batch timeout clears only unresolved targets after a partial success", async t => {
+  const clock = closeClock(), f = fixture(t, clock), connection = f.start();
+  const a = await f.peer(connection), b = await f.peer(connection, "page-b"), c = await f.peer(connection, "page-c");
+  f.service.setVisible(true);
+  f.service.closePages(connection.sessionId, "page-a", "others");
+  await until(() => closeRequests(b).length === 1 && closeRequests(c).length === 1, "batch requests missing");
+  b.socket.destroy();
+  await until(() => closingIds(f.service).length === 1, "successful target did not clear");
+  clock.advance(10000);
+  assert.deepEqual(closingIds(f.service), []);
+  assert.deepEqual(Array.from(f.service.getState().pages, page => page.id), ["page-a", "page-c"]);
+  assert.equal(f.service.getState().selectedPageId, "page-a");
+  assert(f.service.getState().tabError);
+  clock.advance(30000);
+  await a.barrier(); await c.barrier();
+  assert.equal(closeRequests(a).length, 0);
+  assert.equal(closeRequests(c).length, 1);
+});
+
+test("late actual closes clear only their own errors after a batch timeout", async t => {
+  const clock = closeClock(), f = fixture(t, clock), connection = f.start();
+  await f.peer(connection);
+  const b = await f.peer(connection, "page-b"), c = await f.peer(connection, "page-c");
+  f.service.setVisible(true);
+  f.service.closePages(connection.sessionId, "page-a", "others");
+  await until(() => closeRequests(b).length === 1 && closeRequests(c).length === 1, "batch requests missing");
+  clock.advance(10000);
+  assert(f.service.getState().tabError);
+  b.socket.destroy();
+  await until(() => f.service.getState().pages.length === 2, "late first closure missing");
+  assert(f.service.getState().tabError, "the remaining unresolved tab must retain its error");
+  c.socket.destroy();
+  await until(() => f.service.getState().pages.length === 1, "late final closure missing");
+  assert.equal(f.service.getState().tabError, undefined, "a completed close must not leave a stale warning");
+  assert.equal(f.service.getState().selectedPageId, "page-a");
+});
+
+test("close write failure settles only that target and still sends the rest of the batch", async t => {
+  const clock = closeClock(), f = fixture(t, clock), connection = f.start();
+  await f.peer(connection);
+  const b = await f.peer(connection, "page-b"), c = await f.peer(connection, "page-c");
+  f.service.setVisible(true);
+  const socket = f.service.peers.get("page-b").socket;
+  t.mock.method(socket, "write", () => { throw new Error("fixture write failed"); });
+  f.service.closePages(connection.sessionId, "page-a", "others");
+  await until(() => closeRequests(c).length === 1, "other targets must still receive their commands");
+  assert.deepEqual(closingIds(f.service), ["page-c"]);
+  assert.equal(closeRequests(b).length, 0);
+  assert.equal(f.service.getState().pages.length, 3);
+  assert(f.service.getState().tabError);
+  assert.equal(clock.timers.size, 1);
+});
+
+test("close safely stops if a synchronous state listener tears down the pending batch", async t => {
+  const clock = closeClock(), f = fixture(t, clock), connection = f.start();
+  const a = await f.peer(connection), b = await f.peer(connection, "page-b"), c = await f.peer(connection, "page-c");
+  f.service.setVisible(true);
+  let stopped = false;
+  const subscription = f.service.onState(state => {
+    if (!stopped && state.closingPageIds.length) { stopped = true; f.service.stop(); }
+  });
+  t.after(() => subscription.dispose());
+  assert.doesNotThrow(() => f.service.closePages(connection.sessionId, "page-a", "others"));
+  assert(stopped, "fixture must tear down after the closing state is emitted, before dispatch");
+  await until(() => a.closed && b.closed && c.closed, "teardown must disconnect the batch");
+  assert.equal(closeRequests(a).length + closeRequests(b).length + closeRequests(c).length, 0);
+  assert.deepEqual(closingIds(f.service), []);
+  assert.equal(f.service.getState().status, "idle");
+  assert.equal(clock.timers.size, 0);
+});
+
+for (const cleanup of ["stop", "restart", "dispose", "scope loss"]) {
+  test(`close ${cleanup} clears pending requests, errors and deadlines`, async t => {
+    const clock = closeClock(), f = fixture(t, clock), connection = f.start();
+    const a = await f.peer(connection), b = await f.peer(connection, "page-b"), c = await f.peer(connection, "page-c");
+    f.service.setVisible(true);
+    f.service.closePages(connection.sessionId, "page-a", "others");
+    await until(() => closeRequests(b).length === 1 && closeRequests(c).length === 1, "batch requests missing");
+    b.send({ type: "page.closeFailed", requestId: closeRequests(b)[0].requestId });
+    await until(() => closingIds(f.service).length === 1, "partial failure missing");
+    assert(f.service.getState().tabError);
+    const expired = [...clock.timers][0];
+    let replacement;
+    if (cleanup === "restart") replacement = f.start();
+    else if (cleanup === "scope loss") { f.setScope(undefined); f.service.closePages(connection.sessionId, "page-a", "selected"); }
+    else f.service[cleanup]();
+    await until(() => a.closed && b.closed && c.closed, "cleanup must disconnect every old peer");
+    assert.deepEqual(closingIds(f.service), []);
+    assert.equal(f.service.getState().tabError, undefined);
+    assert.equal(clock.timers.size, 0);
+    clock.advance(30000);
+    assert.equal(f.service.getState().tabError, undefined);
+    if (replacement) {
+      await f.peer(replacement);
+      const current = await f.peer(replacement, "page-c");
+      f.service.closePages(connection.sessionId, "page-a", "others");
+      await current.barrier();
+      assert.equal(closeRequests(current).length, 0, "old session IDs cannot close reused page IDs");
+      f.service.closePages(replacement.sessionId, "page-a", "others");
+      await until(() => closeRequests(current).length === 1, "new session close missing");
+      expired.callback();
+      assert.deepEqual(closingIds(f.service), ["page-c"], "late old timer cannot settle a replacement request");
+      assert.equal(f.service.getState().tabError, undefined);
+    }
+  });
+}

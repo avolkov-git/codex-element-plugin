@@ -68,6 +68,8 @@ export class BrowserViewerPanelManager implements vscode.Disposable {
           this.viewer.setPaused(message.paused); this.syncVisibility();
         } else if (message.type === "viewer.select" && typeof message.pageId === "string") {
           this.viewer.selectPage(message.sessionId, message.pageId);
+        } else if (message.type === "viewer.close" && typeof message.pageId === "string" && (message.mode === "selected" || message.mode === "others") && this.panel?.visible && this.documentVisible) {
+          this.viewer.closePages(message.sessionId, message.pageId, message.mode);
         } else if (message.type === "viewer.control" && typeof message.pageId === "string" && typeof message.enabled === "boolean" && this.panel?.visible && this.documentVisible) {
           this.viewer.setControl(message.sessionId, message.pageId, message.enabled);
         } else if (message.type === "viewer.input" && typeof message.pageId === "string" && typeof message.controlId === "string" && this.panel?.visible && this.documentVisible) {

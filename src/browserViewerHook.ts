@@ -20,13 +20,14 @@ export function attachBrowserViewer(page: Page, connection: BrowserViewerConnect
   let latest: { data: string; width: number; height: number } | undefined;
   let transition = Promise.resolve();
   let streamReady = false;
+  let closing = false;
   const pageId = randomUUID();
   const send = (message: object): void => {
     if (socket && !socket.destroyed && socket.writableLength < VIEWER_MAX_FRAME) socket.write(`${JSON.stringify(message)}\n`);
   };
   const interaction = new BrowserViewerInteraction(page, {
-    active: () => active && !closed,
-    session: async () => { await transition; return streamReady && !closed ? cdp : undefined; },
+    active: () => active && !closed && !closing,
+    session: async () => { await transition; return streamReady && !closed && !closing ? cdp : undefined; },
     send,
   });
   const metadata = async (): Promise<void> => {
@@ -125,6 +126,17 @@ export function attachBrowserViewer(page: Page, connection: BrowserViewerConnect
       });
     }
   };
+  const closePage = (requestId: unknown): void => {
+    if (closed || closing || typeof requestId !== "string" || !/^[a-z0-9-]{1,64}$/i.test(requestId)) return;
+    closing = true;
+    interaction.invalidate();
+    // Close this Page only, without an invisible beforeunload dialog. The MCP
+    // browser/context stays alive and can open another page after the last tab.
+    void Promise.resolve().then(() => page.close({ runBeforeUnload: false })).catch(() => {
+      closing = false;
+      if (!closed) send({ type: "page.closeFailed", requestId });
+    });
+  };
   const connect = (): void => {
     if (closed || page.isClosed()) { cleanup(); return; }
     const client = net.createConnection(connection.socketPath);
@@ -155,6 +167,7 @@ export function attachBrowserViewer(page: Page, connection: BrowserViewerConnect
           if (value.type === "stream" && typeof value.active === "boolean") setStreaming(value.active);
           else if (value.type === "control" && typeof value.controlId === "string") interaction.setControl(value.controlId);
           else if (value.type === "input") interaction.input(value);
+          else if (value.type === "page.close") closePage(value.requestId);
           else if (value.type === "ack") { awaitingAck = false; flush(); }
         } catch { cleanup(); return; }
       }

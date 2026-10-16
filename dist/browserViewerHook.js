@@ -54,14 +54,15 @@ function attachBrowserViewer(page, connection) {
     let latest;
     let transition = Promise.resolve();
     let streamReady = false;
+    let closing = false;
     const pageId = (0, crypto_1.randomUUID)();
     const send = (message) => {
         if (socket && !socket.destroyed && socket.writableLength < browserViewerProtocol_1.VIEWER_MAX_FRAME)
             socket.write(`${JSON.stringify(message)}\n`);
     };
     const interaction = new browserViewerInteraction_1.BrowserViewerInteraction(page, {
-        active: () => active && !closed,
-        session: async () => { await transition; return streamReady && !closed ? cdp : undefined; },
+        active: () => active && !closed && !closing,
+        session: async () => { await transition; return streamReady && !closed && !closing ? cdp : undefined; },
         send,
     });
     const metadata = async () => {
@@ -202,6 +203,19 @@ function attachBrowserViewer(page, connection) {
             });
         }
     };
+    const closePage = (requestId) => {
+        if (closed || closing || typeof requestId !== "string" || !/^[a-z0-9-]{1,64}$/i.test(requestId))
+            return;
+        closing = true;
+        interaction.invalidate();
+        // Close this Page only, without an invisible beforeunload dialog. The MCP
+        // browser/context stays alive and can open another page after the last tab.
+        void Promise.resolve().then(() => page.close({ runBeforeUnload: false })).catch(() => {
+            closing = false;
+            if (!closed)
+                send({ type: "page.closeFailed", requestId });
+        });
+    };
     const connect = () => {
         if (closed || page.isClosed()) {
             cleanup();
@@ -249,6 +263,8 @@ function attachBrowserViewer(page, connection) {
                         interaction.setControl(value.controlId);
                     else if (value.type === "input")
                         interaction.input(value);
+                    else if (value.type === "page.close")
+                        closePage(value.requestId);
                     else if (value.type === "ack") {
                         awaitingAck = false;
                         flush();
