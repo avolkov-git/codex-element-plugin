@@ -20,10 +20,12 @@ function event() {
 }
 
 function fixture(t, service) {
-  const states = event(), frames = event(), calls = [], panels = [], serializers = [], renders = [];
+  const states = event(), frames = event(), pointers = event(), inputResults = event(), calls = [], panels = [], serializers = [], renders = [];
   let current = state();
   const viewer = service || {
     onState: states.subscribe, onFrame: frames.subscribe, getState: () => current,
+    onPointer: pointers.subscribe, onInputResult: inputResults.subscribe,
+    setControl: (...args) => calls.push(["control", ...args]), sendInput: (...args) => calls.push(["input", ...args]),
     setVisible: value => { calls.push(["visible", value]); states.fire(current); },
     setPaused: value => calls.push(["paused", value]),
     selectPage: (...args) => calls.push(["select", ...args]),
@@ -60,7 +62,7 @@ function fixture(t, service) {
   });
   const manager = new BrowserViewerPanelManager({ extensionUri: { fsPath: root } }, viewer);
   t.after(() => manager.dispose());
-  return { manager, viewer, calls, panels, serializers, renders, makePanel, states, frames, BROWSER_VIEWER_TYPE,
+  return { manager, viewer, calls, panels, serializers, renders, makePanel, states, frames, pointers, inputResults, BROWSER_VIEWER_TYPE,
     setState(value) { current = value; states.fire(value); }, open() { manager.open(); return panels.at(-1); } };
 }
 
@@ -157,6 +159,39 @@ test("viewer disposal drops listeners and reopening requires a fresh ready hands
   h.manager.dispose(); h.manager.dispose();
   assert.equal(h.states.size, 0); assert.equal(h.frames.size, 0);
   assert(panel.disposed);
+});
+
+test("panel forwards manual controls only from the ready visible current session", t => {
+  const h = fixture(t), panel = h.open();
+  const control = { type: "viewer.control", sessionId: "session-a", pageId: "page-a", enabled: true };
+  const input = { type: "viewer.input", sessionId: "session-a", pageId: "page-a", controlId: "lease", inputId: 1, input: { kind: "text", text: "hello" } };
+  panel.send(control); panel.send(input);
+  assert.deepEqual(h.calls, []);
+  panel.send({ type: "viewer.ready" }); h.calls.length = 0;
+  panel.send({ ...control, sessionId: "old" }); panel.send({ ...input, sessionId: "old" });
+  assert.deepEqual(h.calls, []);
+  panel.send(control); panel.send(input);
+  assert.deepEqual(h.calls, [["control", "session-a", "page-a", true], ["input", "session-a", "page-a", "lease", 1, input.input]]);
+  panel.show(false); h.calls.length = 0;
+  panel.send(control); panel.send(input);
+  assert.deepEqual(h.calls, []);
+  panel.show(true); panel.send({ type: "viewer.visibility", visible: false }); h.calls.length = 0;
+  panel.send(control); panel.send(input);
+  assert.deepEqual(h.calls, []);
+});
+
+test("panel forwards pointer and input results without putting them into the chat bridge", t => {
+  const h = fixture(t), panel = h.open();
+  const pointer = { type: "browser.viewer.pointer", sessionId: "session-a", pageId: "page-a", kind: "move", x: .5, y: .5 };
+  const result = { type: "browser.viewer.inputResult", sessionId: "session-a", pageId: "page-a", controlId: "lease", inputId: 1, ok: true };
+  h.pointers.fire(pointer); h.inputResults.fire(result); assert.deepEqual(panel.sent, []);
+  panel.send({ type: "viewer.ready" });
+  h.pointers.fire(pointer); h.inputResults.fire(result);
+  assert.deepEqual(panel.sent.slice(-2), [pointer, result]);
+  panel.show(false); const count = panel.sent.length;
+  h.pointers.fire(pointer); assert.equal(panel.sent.length, count);
+  h.manager.dispose();
+  assert.equal(h.pointers.size, 0); assert.equal(h.inputResults.size, 0);
 });
 
 test("viewer serializer restores one viewer and disposes duplicate restored panels", async t => {

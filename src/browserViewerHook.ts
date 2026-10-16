@@ -1,26 +1,34 @@
 import * as net from "net";
 import { randomUUID } from "crypto";
-import type { Page, CDPSession } from "playwright";
+import type { Page, Frame, CDPSession } from "playwright";
 import { BrowserViewerConnection, VIEWER_MAX_FRAME } from "./browserViewerProtocol";
+import { BrowserViewerInteraction } from "./browserViewerInteraction";
 
 const attached = new WeakSet<Page>();
 
-/** Runs inside the existing MCP process. Only observation CDP methods are used. */
+/** Runs inside the existing MCP process; input requires an explicit stream-scoped lease. */
 export function attachBrowserViewer(page: Page, connection: BrowserViewerConnection): void {
   if (attached.has(page)) return;
   attached.add(page);
   let socket: net.Socket | undefined, cdp: CDPSession | undefined;
   let closed = false, active = false, awaitingAck = false, lastFrameAt = 0, attempt = 0, generation = 0;
   let retry: ReturnType<typeof setTimeout> | undefined, metadataTimer: ReturnType<typeof setInterval> | undefined;
+  let streamRetry: ReturnType<typeof setTimeout> | undefined;
   let frameTimer: ReturnType<typeof setTimeout> | undefined;
   let titleTimer: ReturnType<typeof setTimeout> | undefined;
   let titlePending = false, lastTitle = "Страница";
   let latest: { data: string; width: number; height: number } | undefined;
   let transition = Promise.resolve();
+  let streamReady = false;
   const pageId = randomUUID();
   const send = (message: object): void => {
     if (socket && !socket.destroyed && socket.writableLength < VIEWER_MAX_FRAME) socket.write(`${JSON.stringify(message)}\n`);
   };
+  const interaction = new BrowserViewerInteraction(page, {
+    active: () => active && !closed,
+    session: async () => { await transition; return streamReady && !closed ? cdp : undefined; },
+    send,
+  });
   const metadata = async (): Promise<void> => {
     // A modal dialog can suspend page.title(); do not accumulate evaluations.
     if (!titlePending) {
@@ -44,8 +52,11 @@ export function attachBrowserViewer(page: Page, connection: BrowserViewerConnect
     awaitingAck = true; lastFrameAt = Date.now();
     send({ type: "frame", ...frame });
   };
-  const setStreaming = (next: boolean): void => {
+  const setStreaming = (next: boolean, retries = 2): void => {
+    clearTimeout(streamRetry); streamRetry = undefined;
     active = next; awaitingAck = false; latest = undefined; lastFrameAt = 0;
+    streamReady = false;
+    interaction.invalidate();
     clearTimeout(frameTimer);
     const current = ++generation;
     transition = transition.then(async () => {
@@ -63,18 +74,56 @@ export function attachBrowserViewer(page: Page, connection: BrowserViewerConnect
           });
         }
         if (closed || current !== generation) return;
-        if (next) await cdp?.send("Page.startScreencast", { format: "jpeg", quality: 55, maxWidth: 1440, maxHeight: 900, everyNthFrame: 1 });
+        if (next) {
+          await cdp?.send("Page.startScreencast", { format: "jpeg", quality: 55, maxWidth: 1440, maxHeight: 900, everyNthFrame: 1 });
+          if (!closed && current === generation) streamReady = true;
+        }
         else await cdp?.send("Page.stopScreencast");
-      } catch { if (!closed) send({ type: "error" }); }
+      } catch {
+        if (closed || current !== generation) return;
+        // Chromium can replace its page target during initial navigation. Retry
+        // only observation startup, never an input action or an obsolete stream.
+        if (next && retries > 0 && !page.isClosed()) {
+          streamRetry = setTimeout(() => {
+            if (!closed && active && current === generation) setStreaming(true, retries - 1);
+          }, 250);
+          streamRetry.unref();
+        } else send({ type: "error" });
+      }
     }).catch(() => {});
+  };
+  const navigation = (frame: Frame): void => {
+    if (closed) return;
+    if (frame !== page.mainFrame()) { interaction.refreshObservation(); return; }
+    latest = undefined; awaitingAck = false; lastFrameAt = 0;
+    clearTimeout(frameTimer); frameTimer = undefined;
+    interaction.invalidate(true);
+    send({ type: "navigation" });
   };
   const cleanup = (): void => {
     if (closed) return;
     closed = true; active = false; generation++;
-    clearTimeout(retry); clearInterval(metadataTimer); clearTimeout(frameTimer); clearTimeout(titleTimer); latest = undefined;
+    clearTimeout(retry); clearTimeout(streamRetry); clearInterval(metadataTimer); clearTimeout(frameTimer); clearTimeout(titleTimer); latest = undefined;
     page.off("close", cleanup);
+    page.off("framenavigated", navigation);
     socket?.destroy();
-    void cdp?.detach().catch(() => {});
+    // Allow release-only cleanup before detaching, but a blocked renderer must
+    // not retain this observation session forever.
+    const release = interaction.dispose();
+    if (cdp) {
+      const session = cdp;
+      let detached = false;
+      const detach = (): void => {
+        if (detached) return;
+        detached = true;
+        void session.detach().catch(() => {});
+      };
+      const deadline = setTimeout(detach, 1000); deadline.unref();
+      void release.finally(() => {
+        clearTimeout(deadline);
+        detach();
+      });
+    }
   };
   const connect = (): void => {
     if (closed || page.isClosed()) { cleanup(); return; }
@@ -86,6 +135,7 @@ export function attachBrowserViewer(page: Page, connection: BrowserViewerConnect
       connected = true;
       send({ type: "hello", token: connection.token, pageId, title: "Страница", url: page.url().slice(0, 4096) });
       void metadata();
+      interaction.start();
       metadataTimer = setInterval(() => { void metadata(); }, 1500); metadataTimer.unref();
     });
     client.on("error", () => {});
@@ -103,11 +153,14 @@ export function attachBrowserViewer(page: Page, connection: BrowserViewerConnect
         try {
           const value = JSON.parse(line);
           if (value.type === "stream" && typeof value.active === "boolean") setStreaming(value.active);
+          else if (value.type === "control" && typeof value.controlId === "string") interaction.setControl(value.controlId);
+          else if (value.type === "input") interaction.input(value);
           else if (value.type === "ack") { awaitingAck = false; flush(); }
         } catch { cleanup(); return; }
       }
     });
   };
   page.on("close", cleanup);
+  page.on("framenavigated", navigation);
   connect();
 }

@@ -14,7 +14,7 @@ const origin = "http://browser-viewer.fixture.invalid";
 const prefix = "/reverse-proxy/element";
 const escapeScript = value => value.replace(/<\/script/gi, "<\\/script");
 const { renderWebviewHtml } = loadSource("src/webviewHtml.ts", { vscode });
-const allowedMessages = new Set(["viewer.ready", "viewer.visibility", "viewer.pause", "viewer.select", "viewer.ack"]);
+const allowedMessages = new Set(["viewer.ready", "viewer.visibility", "viewer.pause", "viewer.select", "viewer.ack", "viewer.control", "viewer.input"]);
 const themes = {
   light: { "editor-background": "#ffffff", "editor-foreground": "#25282c", "panel-border": "#d0d0d0",
     descriptionForeground: "#626871", "editorWidget-background": "#f3f4f6", "list-hoverBackground": "#e9ecef", errorForeground: "#bd303b" },
@@ -26,7 +26,7 @@ const sizes = [{ width: 1100, height: 760 }, { width: 360, height: 720 }];
 function viewerState(patch = {}) {
   return { type: "browser.viewer.state", sessionId: "session-a", status: "live", message: "Live fixture view",
     pages: [{ id: "page-a", title: "Orders " + "long-title-".repeat(35), url: `${origin}/orders/${"long-path-".repeat(70)}` },
-      { id: "page-b", title: "Inventory", url: `${origin}/inventory` }], selectedPageId: "page-a", ...patch };
+      { id: "page-b", title: "Inventory", url: `${origin}/inventory` }], selectedPageId: "page-a", controlId: "", pageRevision: 0, ...patch };
 }
 
 async function settle(frame) {
@@ -89,7 +89,7 @@ function hostHtml(contents, theme) {
   return `<!doctype html><html><head><meta charset="UTF-8"><style>
     html, body { width:100%; height:100%; margin:0; overflow:hidden; } iframe { display:block; width:100%; height:100%; border:0; }
     </style></head><body><script>
-    window.fixtureMessages = []; window.fixtureHostErrors = [];
+    window.fixtureMessages = []; window.fixtureHostErrors = []; window.fixtureForwardedKeys = [];
     window.fixtureSend = data => document.querySelector('iframe').contentWindow.postMessage({channel:'message', args:data}, '*');
     window.addEventListener('message', event => {
       if (event.source !== document.querySelector('iframe').contentWindow) return;
@@ -98,9 +98,264 @@ function hostHtml(contents, theme) {
         event.source.postMessage({channel:'content', args:${escapeScript(JSON.stringify({ contents, options: { allowScripts: true } }))}}, '*');
       }
       if (event.data.channel === 'onmessage') window.fixtureMessages.push(event.data.data);
+      if (event.data.channel === 'did-keydown') window.fixtureForwardedKeys.push(event.data.data);
       if (event.data.channel === 'onconsole' && event.data.data.level === 'error') window.fixtureHostErrors.push(event.data.data);
     });
     </script><iframe title="Element webview host" sandbox="allow-scripts allow-forms allow-same-origin allow-downloads" src="${prefix}/webview/index.html?id=viewer-probe"></iframe></body></html>`;
+}
+
+async function manualControlChecks({ page, frame, emit, messages, sendFrame, waitAck, shot, noImage }) {
+  const control = frame.getByRole("button", { name: /^(Включить|Отключить) управление$/ });
+  const proxy = frame.getByRole("textbox", { name: "Клавиатура браузера агента" });
+  const inputs = async () => (await messages()).filter(message => message.type === "viewer.input");
+  const answered = new Set();
+  const reply = async (input, patch = {}) => {
+    answered.add(input.inputId);
+    await emit({ type: "browser.viewer.inputResult", sessionId: input.sessionId, pageId: input.pageId,
+      controlId: input.controlId, inputId: input.inputId, ok: true, ...patch });
+  };
+  const drain = async () => {
+    // The actual Element wrapper forwards postMessage through two nested frames.
+    await settle(frame);
+    for (let i = 0; i < 80; i++) {
+      const next = (await inputs()).find(input => !answered.has(input.inputId));
+      if (!next) return;
+      await reply(next);
+    }
+    assert.fail("input queue did not drain");
+  };
+  let lease = 0, sequence = 100;
+  const grant = async () => {
+    await emit(viewerState());
+    await sendFrame(++sequence); await waitAck(sequence);
+    await control.click();
+    assert.deepEqual((await messages()).filter(message => message.type === "viewer.control").at(-1),
+      { type: "viewer.control", sessionId: "session-a", pageId: "page-a", enabled: true });
+    const controlId = `lease-${++lease}`;
+    await emit(viewerState({ controlId }));
+    assert.equal(await control.getAttribute("aria-pressed"), "true");
+    assert(await proxy.evaluate(node => node === document.activeElement), "keyboard capture starts only after grant");
+    return controlId;
+  };
+  const gesture = (type, x, y, extra = {}) => frame.locator(".viewer-stage").evaluate((node, { type, x, y, extra }) => {
+    const box = node.getBoundingClientRect(), image = node.querySelector("img");
+    const scale = Math.min(box.width / image.naturalWidth, box.height / image.naturalHeight);
+    const width = image.naturalWidth * scale, height = image.naturalHeight * scale;
+    const options = { bubbles: true, cancelable: true, clientX: box.left + (box.width - width) / 2 + width * x,
+      clientY: box.top + height * y, ...extra };
+    return node.dispatchEvent(type === "wheel" ? new WheelEvent(type, options) : new MouseEvent(type, options));
+  }, { type, x, y, extra });
+  const key = options => proxy.evaluate((node, options) => {
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...options });
+    node.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, options);
+  const pointer = { type: "browser.viewer.pointer", sessionId: "session-a", pageId: "page-a", kind: "focus", x: .25, y: .4,
+    bounds: { x: .15, y: .32, width: .4, height: .12 } };
+
+  assert.equal(await control.getAttribute("aria-pressed"), "false");
+  assert((await control.getAttribute("title")).includes("Esc"));
+  await gesture("click", .25, .5, { detail: 1 });
+  await gesture("wheel", .25, .5, { deltaY: 100 });
+  await page.keyboard.insertText("read-only");
+  assert.equal((await inputs()).length, 0, "live viewer is read-only until explicit opt-in");
+  assert.equal((await messages()).filter(message => message.type === "viewer.control").length, 0);
+  await emit({ ...pointer, pageId: "other" });
+  assert.equal(await frame.locator(".viewer-pointer").count(), 0);
+  await emit(pointer);
+  assert.equal(await frame.locator(".viewer-pointer").count(), 0, "focus-only events must not fabricate mouse movement");
+  assert.equal(await frame.locator(".viewer-focus-bounds").count(), 1, "focus-only events show the field outline");
+  await shot("focus-only");
+  const readOverlay = () => frame.locator(".viewer-pointer-layer").evaluate(node => {
+    const layer = node.getBoundingClientRect(), cursor = node.querySelector(".viewer-pointer").getBoundingClientRect();
+    const bounds = node.querySelector(".viewer-focus-bounds").getBoundingClientRect();
+    return { x: (cursor.left - layer.left) / layer.width, y: (cursor.top - layer.top) / layer.height,
+      width: bounds.width / layer.width, height: bounds.height / layer.height };
+  });
+  await emit({ ...pointer, kind: "move", bounds: undefined });
+  const overlay = await readOverlay();
+  for (const [key, expected] of Object.entries({ x: .25, y: .4, width: .4, height: .12 })) assert(Math.abs(overlay[key] - expected) < .001, `scaled overlay ${key}`);
+  await emit({ ...pointer, x: .8, y: .8, bounds: { ...pointer.bounds, width: .3 } });
+  const afterFocus = await readOverlay();
+  assert.equal(afterFocus.x, overlay.x); assert.equal(afterFocus.y, overlay.y);
+  assert(Math.abs(afterFocus.width - .3) < .001, "focus changes bounds without relocating the cursor");
+  await emit({ ...pointer, kind: "click", x: .6, y: .2, bounds: undefined });
+  const afterClick = await readOverlay();
+  assert(Math.abs(afterClick.x - .6) < .001 && Math.abs(afterClick.y - .2) < .001, "actual click updates cursor geometry");
+  await emit(pointer);
+  assert.equal((await readOverlay()).x, afterClick.x, "focus after click preserves actual cursor position");
+  await shot("pointer-readonly");
+  await emit({ ...pointer, kind: "clear" });
+  assert.equal(await frame.locator(".viewer-pointer, .viewer-focus-bounds").count(), 0, "clear removes both overlays");
+
+  let controlId = await grant();
+  const start = (await inputs()).length;
+  await gesture("click", .25, .5, { detail: 1, metaKey: true });
+  let first = (await inputs()).at(-1);
+  assert.deepEqual({ ...first.input, x: .25, y: .5 }, { kind: "click", x: .25, y: .5, button: "left", clickCount: 1, modifiers: 2 });
+  assert(Math.abs(first.input.x - .25) < .006 && Math.abs(first.input.y - .5) < .006, "click maps to decoded pixels within one CSS pixel");
+  await gesture("mousemove", .1, .1); await gesture("mousemove", .2, .2); await gesture("mousemove", .3, .3);
+  await gesture("wheel", .3, .3, { deltaY: 20 }); await gesture("wheel", .3, .3, { deltaY: 30 });
+  await gesture("wheel", .4, .4, { deltaY: 15 });
+  await page.keyboard.insertText("Привет"); await page.keyboard.insertText(" мир");
+  assert.equal((await inputs()).length, start + 1, "only one input in flight");
+  for (const patch of [{ inputId: first.inputId + 1 }, { controlId: "stale" }, { pageId: "other" }, { sessionId: "old" }]) {
+    await emit({ ...first, type: "browser.viewer.inputResult", ok: true, ...patch });
+    assert.equal((await inputs()).length, start + 1, "stale inputResult cannot advance queue");
+  }
+  await drain();
+  assert.deepEqual((await inputs()).slice(start).map(message => message.input.kind), ["click", "move", "wheel", "wheel", "text"]);
+  const queued = (await inputs()).slice(start);
+  assert.equal(queued[1].input.x, .3); assert.equal(queued[2].input.deltaY, 50); assert.equal(queued[3].input.deltaY, 15);
+  assert.equal(queued[4].input.text, "Привет мир");
+  await emit(pointer); await emit({ ...pointer, kind: "move", x: .6, y: .4, bounds: undefined }); await shot("manual-control");
+
+  const beforeLetterbox = (await inputs()).length;
+  await gesture("click", .5, 1.05, { detail: 1 });
+  await gesture("wheel", .5, 1.05, { deltaY: 80 });
+  await gesture("mousemove", -.05, .5);
+  assert.equal((await inputs()).length, beforeLetterbox, "letterbox gestures never reach remote page");
+  const originalViewport = page.viewportSize();
+  await page.setViewportSize({ width: 1100, height: 420 }); await settle(frame);
+  await gesture("click", -.05, .5, { detail: 1 });
+  assert.equal((await inputs()).length, beforeLetterbox, "side letterbox is excluded too");
+  await gesture("click", .75, .25, { detail: 1 }); await drain();
+  assert(Math.abs((await inputs()).at(-1).input.x - .75) < .006);
+  await page.setViewportSize(originalViewport); await settle(frame);
+
+  const beforeDouble = (await inputs()).length;
+  await frame.locator(".viewer-stage").dblclick({ position: { x: 80, y: 70 } });
+  await drain();
+  assert.deepEqual((await inputs()).slice(beforeDouble).filter(message => message.input.kind === "click").map(message => message.input.clickCount), [1, 2], "double-click emits two down/up requests, not three");
+  await frame.locator(".viewer-stage").click({ button: "right", position: { x: 80, y: 70 } }); await drain();
+  assert.equal((await inputs()).at(-1).input.button, "right");
+
+  await frame.evaluate(() => { window.fixtureBubbledKeys = []; window.addEventListener("keydown", event => window.fixtureBubbledKeys.push(event.key)); });
+  await page.evaluate(() => { window.fixtureForwardedKeys = []; });
+  const beforeKeys = (await inputs()).length;
+  for (const options of [{ key: "ф", code: "KeyA", metaKey: true }, { key: "a", code: "KeyA", ctrlKey: true },
+    { key: "z", code: "KeyZ", metaKey: true }, { key: "z", code: "KeyZ", metaKey: true, shiftKey: true }, { key: "y", code: "KeyY", ctrlKey: true },
+    ...["Backspace", "Delete", "Enter", "Tab", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].map(key => ({ key }))]) {
+    assert(await key(options), "remote editing keys prevent native document shortcuts"); await drain();
+  }
+  const keys = (await inputs()).slice(beforeKeys).map(message => message.input);
+  assert.deepEqual(keys.slice(0, 5), [{ kind: "key", key: "a", modifiers: 2 }, { kind: "key", key: "a", modifiers: 2 },
+    { kind: "key", key: "z", modifiers: 2 }, { kind: "key", key: "z", modifiers: 10 }, { kind: "key", key: "y", modifiers: 2 }]);
+  assert(await key({ key: "p", code: "KeyP", metaKey: true }));
+  assert.equal(await key({ key: "a", code: "KeyA", ctrlKey: true, altKey: true }), false, "AltGr printable input is not a remote shortcut");
+  assert.deepEqual(await frame.evaluate(() => window.fixtureBubbledKeys), [], "captured keys do not reach the Element key forwarder");
+  assert.deepEqual(await page.evaluate(() => window.fixtureForwardedKeys), [], "real Element wrapper does not forward remote shortcuts to IDE");
+  assert(await proxy.evaluate(node => node === document.activeElement), "remote Tab retains proxy focus");
+
+  const paste = "Я".repeat(1023) + "😀" + "文".repeat(1100) + "\nконец";
+  const beforePaste = (await inputs()).length;
+  await proxy.evaluate((node, text) => {
+    const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", text);
+    node.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+  }, paste);
+  await drain();
+  const chunks = (await inputs()).slice(beforePaste).map(message => message.input.text);
+  assert.equal(chunks.join(""), paste); assert(chunks.every(chunk => chunk.length <= 1024 && !/[\uD800-\uDBFF]$/.test(chunk)));
+  for (const inputType of ["insertFromComposition", "insertText"]) {
+    const beforeComposition = (await inputs()).length;
+    await proxy.evaluate((node, inputType) => {
+      node.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      node.value = "日本語";
+      node.dispatchEvent(new InputEvent("input", { bubbles: true, data: "日本語", inputType: "insertCompositionText", isComposing: true }));
+      node.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "日本語" }));
+      node.value = "日本語";
+      node.dispatchEvent(new InputEvent("input", { bubbles: true, data: "日本語", inputType }));
+    }, inputType);
+    await drain();
+    assert.deepEqual((await inputs()).slice(beforeComposition).map(message => message.input), [{ kind: "text", text: "日本語" }], `IME ${inputType} commits once`);
+  }
+  const beforeNativeComposition = (await inputs()).length;
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Input.imeSetComposition", { text: "に", selectionStart: 1, selectionEnd: 1 });
+    assert.equal((await inputs()).length, beforeNativeComposition, "native Chromium composition stays local until commit");
+    await cdp.send("Input.insertText", { text: "日本語" });
+    await drain();
+    assert.deepEqual((await inputs()).slice(beforeNativeComposition).map(message => message.input), [{ kind: "text", text: "日本語" }], "native Chromium IME commits once");
+  } finally { await cdp.detach(); }
+  assert.equal(await proxy.inputValue(), "", "proxy does not retain plaintext field values");
+
+  await frame.getByRole("combobox").focus();
+  assert.equal(await control.getAttribute("aria-pressed"), "true", "toolbar focus does not revoke control");
+  const outside = await frame.getByRole("combobox").evaluate(node => {
+    const event = new KeyboardEvent("keydown", { key: "a", code: "KeyA", ctrlKey: true, bubbles: true, cancelable: true });
+    node.dispatchEvent(event); return event.defaultPrevented;
+  });
+  assert.equal(outside, false, "no document-global keyboard capture");
+  await proxy.focus(); await page.keyboard.press("Escape");
+  assert.equal(await control.getAttribute("aria-pressed"), "false");
+  assert(!(await proxy.evaluate(node => node === document.activeElement)));
+  assert.equal((await messages()).filter(message => message.type === "viewer.control").at(-1).enabled, false);
+
+  controlId = await grant();
+  await gesture("click", .5, .5, { detail: 1 }); first = (await inputs()).at(-1);
+  await page.keyboard.insertText("не повторять");
+  await reply(first, { ok: false, message: "Не удалось выполнить ввод" });
+  const afterError = (await inputs()).length;
+  assert.equal(await control.getAttribute("aria-pressed"), "false");
+  assert((await frame.getByRole("status").innerText()).includes("Не удалось выполнить ввод"));
+  await reply(first); assert.equal((await inputs()).length, afterError, "late success never replays failed input");
+
+  controlId = await grant();
+  await gesture("click", .5, .5, { detail: 1 }); first = (await inputs()).at(-1);
+  for (let i = 0; i < 33; i++) await key({ key: "ArrowDown" });
+  assert.equal(await control.getAttribute("aria-pressed"), "false", "bounded queue stops on overflow");
+  assert((await frame.getByRole("status").innerText()).includes("переполнена"));
+  await reply(first);
+  assert.equal((await inputs()).at(-1).inputId, first.inputId, "overflow does not replay queued edits");
+
+  controlId = await grant();
+  await gesture("click", .5, .5, { detail: 1 }); first = (await inputs()).at(-1);
+  await frame.evaluate(() => window.fixtureInputTimeouts.at(-1)()); await settle(frame);
+  assert.equal(await control.getAttribute("aria-pressed"), "false", "stuck input times out locally");
+  await reply(first);
+
+  controlId = await grant();
+  await gesture("click", .5, .5, { detail: 1 }); first = (await inputs()).at(-1);
+  await key({ key: "Enter" });
+  await emit(viewerState({ controlId: "replacement-lease" }));
+  assert.equal(await control.getAttribute("aria-pressed"), "false", "new lease cannot inherit local capture");
+  await reply(first); assert.equal((await inputs()).at(-1).inputId, first.inputId);
+
+  controlId = await grant();
+  await emit(pointer);
+  await emit(viewerState({ pageRevision: 1 }));
+  await noImage("same-page navigation clears decoded frame");
+  assert.equal(await frame.locator(".viewer-pointer, .viewer-focus-bounds").count(), 0);
+  assert(await control.isDisabled());
+  await sendFrame(++sequence); await noImage("old revision frame must be ignored");
+
+  controlId = await grant();
+  await emit(viewerState({ status: "paused" }));
+  assert(await control.isDisabled());
+  await emit(viewerState());
+  assert(await control.isDisabled(), "resume waits for a fresh decoded ACK");
+  controlId = await grant();
+  await frame.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await settle(frame);
+  assert.equal(await control.getAttribute("aria-pressed"), "false");
+  assert.equal((await messages()).filter(message => message.type === "viewer.control").at(-1).enabled, false);
+  await frame.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event("visibilitychange")); });
+  await emit(viewerState());
+  assert(await control.isDisabled(), "visibility recovery waits for a fresh decoded ACK");
+
+  await grant();
+  await emit(pointer);
+  await emit({ type: "browser.viewer.frameClear", sessionId: "session-a", pageId: "page-a" });
+  await noImage("frameClear clears image and pointer");
+  assert.equal(await frame.locator(".viewer-pointer, .viewer-focus-bounds").count(), 0);
+  await grant();
+  const allInputs = await inputs();
+  assert(allInputs.every((input, i) => Number.isInteger(input.inputId) && input.inputId > (i ? allInputs[i - 1].inputId : 0)), "input IDs remain positive and monotonic across leases");
+  // Leave control active so the existing pause/select flow exercises explicit revocation.
 }
 
 async function runScenario(browser, scenario, jpeg) {
@@ -111,7 +366,12 @@ async function runScenario(browser, scenario, jpeg) {
   let page;
   try {
     await context.addInitScript(({ wrapper, theme, tokens }) => {
-      window.fixtureCsp = []; window.fixtureDecodeGates = [];
+      window.fixtureCsp = []; window.fixtureDecodeGates = []; window.fixtureInputTimeouts = [];
+      const timeout = window.setTimeout.bind(window);
+      window.setTimeout = (callback, ms, ...args) => {
+        if (ms === 10000) window.fixtureInputTimeouts.push(callback);
+        return timeout(callback, ms, ...args);
+      };
       window.addEventListener("securitypolicyviolation", event => window.fixtureCsp.push({ directive: event.violatedDirective, blocked: event.blockedURI }));
       // Hold an actual native decode to deterministically exercise session/page races.
       const decode = HTMLImageElement.prototype.decode;
@@ -183,25 +443,27 @@ async function runScenario(browser, scenario, jpeg) {
     assert.equal(await frame.evaluate(() => isSecureContext), false, "exercise the actual insecure HTTP deployment path");
     if (wrapper) assert.equal(await frame.evaluate(() => !!navigator.serviceWorker), false);
     const emit = async data => { await page.evaluate(data => window.fixtureSend(data), data); await settle(frame); };
-    const messages = () => page.evaluate(() => window.fixtureMessages);
+    const messages = async () => { await settle(frame); return page.evaluate(() => window.fixtureMessages); };
     const ackCount = async () => (await messages()).filter(message => message.type === "viewer.ack").length;
     const waitAck = async (sequence, sessionId = "session-a", pageId = "page-a") => {
       await page.waitForFunction(({ sequence, sessionId, pageId }) => window.fixtureMessages.some(message =>
         message.type === "viewer.ack" && message.sequence === sequence && message.sessionId === sessionId && message.pageId === pageId), { sequence, sessionId, pageId });
     };
-    const sendFrame = (sequence, patch = {}) => emit({ type: "browser.viewer.frame", sessionId: "session-a", pageId: "page-a", sequence, data: jpeg, width: 960, height: 540, ...patch });
+    const sendFrame = (sequence, patch = {}) => emit({ type: "browser.viewer.frame", sessionId: "session-a", pageId: "page-a", sequence, pageRevision: 0, data: jpeg, width: 960, height: 540, ...patch });
     const shot = async suffix => { await settle(frame); await fits(frame, `${label}/${suffix}`); await page.screenshot({ path: path.join(artifacts, `${label}-${suffix}.png`) }); };
     const noImage = async reason => { await settle(frame); assert.equal(await frame.locator(".viewer-frame").count(), 0, reason); };
 
     assert(await frame.getByRole("combobox").isDisabled());
-    assert(await frame.getByRole("button").isDisabled());
+    assert(await frame.getByRole("button", { name: "Приостановить просмотр" }).isDisabled());
+    assert(await frame.getByRole("button", { name: "Включить управление" }).isDisabled());
     await shot("idle");
     await emit(viewerState({ status: "waiting", message: "Waiting for the agent page", pages: [], selectedPageId: "" }));
     assert.equal(await frame.getByRole("status").innerText(), "Waiting for the agent page");
     await noImage("waiting has no stale image");
     await emit(viewerState());
     assert(!await frame.getByRole("combobox").isDisabled());
-    assert(!await frame.getByRole("button").isDisabled());
+    assert(!await frame.getByRole("button", { name: "Приостановить просмотр" }).isDisabled());
+    assert(await frame.getByRole("button", { name: "Включить управление" }).isDisabled(), "no control before decoded ACK");
     assert.equal(await frame.locator(".viewer-address").getAttribute("title"), viewerState().pages[0].url);
 
     await frame.evaluate(() => { window.fixtureHoldDecode = true; });
@@ -227,7 +489,8 @@ async function runScenario(browser, scenario, jpeg) {
     assert.equal(image.fit, "contain"); assert.equal(image.pointerEvents, "none"); assert.equal(image.draggable, false);
     await shot("live");
 
-    const pause = frame.getByRole("button"), pauseName = await pause.getAttribute("aria-label");
+    await manualControlChecks({ page, frame, emit, messages, sendFrame, waitAck, shot, noImage });
+    const pause = frame.getByRole("button", { name: /^(Приостановить|Возобновить) просмотр$/ }), pauseName = await pause.getAttribute("aria-label");
     assert(pauseName); assert.equal(await pause.getAttribute("title"), pauseName);
     await pause.click();
     await page.waitForFunction(() => window.fixtureMessages.some(message => message.type === "viewer.pause" && message.paused));
@@ -263,18 +526,19 @@ async function runScenario(browser, scenario, jpeg) {
     await sendFrame(6, { pageId: "page-b" });
     await noImage("old-session frame cannot reappear");
 
-    for (const [sequence, transition] of [[7, "session"], [8, "page"], [9, "idle"]]) {
+    for (const [sequence, transition] of [[7, "session"], [8, "page"], [9, "idle"], [12, "revision"]]) {
       const before = viewerState({ sessionId: `race-${sequence}` });
       await emit(before);
       await frame.evaluate(() => { window.fixtureHoldDecode = true; });
       await sendFrame(sequence, { sessionId: before.sessionId });
       await frame.waitForFunction(() => window.fixtureDecodeGates.length === 1);
       const after = transition === "session" ? { ...before, sessionId: `next-${sequence}` } :
-        transition === "page" ? { ...before, selectedPageId: "page-b" } : { ...before, status: "idle", pages: [], selectedPageId: "" };
+        transition === "page" ? { ...before, selectedPageId: "page-b" } : transition === "revision" ? { ...before, pageRevision: 1 } : { ...before, status: "idle", pages: [], selectedPageId: "" };
       await emit(after);
       await frame.evaluate(() => { window.fixtureHoldDecode = false; window.fixtureDecodeGates.shift()(); });
       await waitAck(sequence, before.sessionId);
       await noImage(`${transition} change must invalidate an in-flight decode`);
+      assert(await frame.getByRole("button", { name: "Включить управление" }).isDisabled(), `${transition} clears decoded eligibility`);
     }
 
     await emit(viewerState());
@@ -293,13 +557,13 @@ async function runScenario(browser, scenario, jpeg) {
     assert.equal(await frame.locator(".viewer-status.viewer-error").count(), 1);
     await shot("error");
 
-    const controlsBefore = (await messages()).filter(message => ["viewer.pause", "viewer.select"].includes(message.type)).length;
+    const controlsBefore = (await messages()).filter(message => ["viewer.pause", "viewer.select", "viewer.input"].includes(message.type)).length;
     await frame.locator(".viewer-stage").click();
     await page.keyboard.press("ArrowDown"); await page.keyboard.type("read-only"); await page.mouse.wheel(0, 120);
     await settle(frame);
-    assert.equal((await messages()).filter(message => ["viewer.pause", "viewer.select"].includes(message.type)).length, controlsBefore, "image gestures cannot control the browser");
+    assert.equal((await messages()).filter(message => ["viewer.pause", "viewer.select", "viewer.input"].includes(message.type)).length, controlsBefore, "image gestures cannot control the browser");
     const readinessBefore = (await messages()).filter(message => message.type === "viewer.ready").length;
-    assert.equal(readinessBefore, 1, "external plus inline bootstrap must mount exactly once before recovery");
+    assert.equal(readinessBefore, 2, "one mount plus the manual-control visibility recovery");
     await emit({ type: "browser.viewer.readyRequest" });
     await page.waitForFunction(count => window.fixtureMessages.filter(message => message.type === "viewer.ready").length === count + 1, readinessBefore);
     assert.equal((await messages()).filter(message => message.type === "viewer.ready").at(-1).visible, true);
@@ -327,7 +591,7 @@ async function runScenario(browser, scenario, jpeg) {
     assert.equal((await messages()).filter(message => message.type === "viewer.ready").length, readinessBefore + 2, "fallback retries must not add another mount after recovery");
     if (!wrapper) assert.equal(bootstrap.acquires, 1);
     assert.deepEqual(bootstrap.csp, [], "production CSP must remain intact");
-    assert((await messages()).every(message => allowedMessages.has(message.type)), "no browser-control host messages");
+    assert((await messages()).every(message => allowedMessages.has(message.type)), "only the allowlisted viewer protocol is emitted");
     assert.deepEqual(await page.evaluate(() => window.fixtureHostErrors), [], "no errors forwarded through the real VS Code API");
     assert.deepEqual(errors, [], "no unexpected browser errors");
     assert.deepEqual(blocked, [], "no external or unrecognized network requests");
@@ -354,8 +618,12 @@ async function main() {
   const results = [];
   try {
     const jpeg = await makeJpeg(browser);
-    for (const wrapper of skipWrapper ? [false] : [false, true]) for (const mode of ["external", "missing", "late"]) {
-      for (const size of sizes) for (const theme of ["light", "dark"]) results.push(await runScenario(browser, { wrapper, mode, theme, ...size }, jpeg));
+    for (const wrapper of skipWrapper ? [false] : [true, false]) for (const mode of ["external", "missing", "late"]) {
+      for (const size of sizes) for (const theme of ["light", "dark"]) {
+        const label = `${wrapper ? "element-http" : "production-html"}-${mode}-${size.width}x${size.height}-${theme}`;
+        if (process.env.CODEX_TEST_VIEWER_FILTER && !label.includes(process.env.CODEX_TEST_VIEWER_FILTER)) continue;
+        results.push(await runScenario(browser, { wrapper, mode, theme, ...size }, jpeg));
+      }
     }
   } finally { await browser.close(); }
   fs.writeFileSync(path.join(artifacts, skipWrapper ? "results-ci.json" : "results.json"), JSON.stringify({ wrapperRoot: skipWrapper ? null : wrapperRoot, skippedWrapper: skipWrapper, results }, null, 2) + "\n");

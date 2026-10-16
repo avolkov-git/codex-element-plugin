@@ -58,8 +58,8 @@ function fakeClock() {
 
 // The shared loader omits interval globals. Keep this equivalent loader local to
 // this test file so CDP races and pacing can use an entirely controlled clock.
-function loadHook(mocks, clock) {
-  const filename = path.join(root, "src/browserViewerHook.ts");
+function loadHook(mocks, clock, source = "browserViewerHook") {
+  const filename = path.join(root, `src/${source}.ts`);
   const output = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
     fileName: filename,
@@ -67,7 +67,8 @@ function loadHook(mocks, clock) {
   const module = { exports: {} }, localRequire = createRequire(filename);
   vm.runInNewContext(output, {
     module, exports: module.exports, __filename: filename, __dirname: path.dirname(filename),
-    require: name => Object.hasOwn(mocks, name) ? mocks[name] : name === "./browserViewerProtocol" ? protocol : localRequire(name),
+    require: name => Object.hasOwn(mocks, name) ? mocks[name] : name === "./browserViewerProtocol" ? protocol
+      : name === "./browserViewerInteraction" ? loadHook(mocks, clock, "browserViewerInteraction") : localRequire(name),
     Buffer, URL, process, console, Error, AbortController, ...clock,
   }, { filename });
   return module.exports;
@@ -99,6 +100,7 @@ class FakeSocket extends EventEmitter {
 
 function fixture(t, options = {}) {
   const clock = fakeClock(), sockets = [], calls = [], inputCalls = [];
+  const bindings = new Map(), scripts = [], evaluations = [];
   const cdp = new EventEmitter();
   let detachCount = 0, sessionCount = 0, pageClosed = options.closed || false;
   cdp.send = async (method, params) => {
@@ -107,11 +109,17 @@ function fixture(t, options = {}) {
   };
   cdp.detach = async () => { detachCount++; if (options.detach) return options.detach(); };
   const page = new EventEmitter();
+  const mainFrame = { evaluate: async script => { evaluations.push(script); }, };
   const forbidden = method => (...args) => { inputCalls.push({ method, args }); throw new Error(`Forbidden input: ${method}`); };
   Object.assign(page, {
     isClosed: () => pageClosed,
     title: options.title || (async () => "Fixture page"),
     url: () => options.url || "https://example.test/current",
+    viewportSize: () => options.viewport === undefined ? { width: 1000, height: 500 } : options.viewport,
+    mainFrame: () => mainFrame,
+    frames: () => [mainFrame],
+    exposeBinding: async (name, callback) => { bindings.set(name, callback); },
+    addInitScript: async script => { scripts.push(script); },
     context: () => ({ newCDPSession: async target => {
       assert.equal(target, page, "CDP must attach to the existing MCP page");
       sessionCount++;
@@ -131,8 +139,9 @@ function fixture(t, options = {}) {
   t.after(async () => {
     page.close();
     await settle();
-    assert.equal(inputCalls.length, 0, "viewer must never call browser input APIs");
-    assert(calls.every(call => ALLOWED_CDP.has(call.method)), `non-observation CDP call: ${JSON.stringify(calls)}`);
+    assert.equal(inputCalls.length, 0, "viewer must never call Playwright input/focus APIs");
+    const allowed = new Set([...ALLOWED_CDP, ...(options.manual ? ["Input.dispatchMouseEvent", "Input.dispatchKeyEvent", "Input.insertText", "Page.getLayoutMetrics"] : [])]);
+    assert(calls.every(call => allowed.has(call.method)), "unapproved CDP method");
   });
   const attach = () => attachBrowserViewer(page, CONNECTION);
   const connect = async () => {
@@ -149,7 +158,7 @@ function fixture(t, options = {}) {
     cdp.emit("Page.screencastFrame", value);
     return value;
   };
-  return { clock, sockets, calls, cdp, page, attach, connect, stream, frame,
+  return { clock, sockets, calls, cdp, page, attach, connect, stream, frame, bindings, scripts, evaluations, mainFrame,
     get detachCount() { return detachCount; }, get sessionCount() { return sessionCount; } };
 }
 
@@ -407,32 +416,61 @@ test("hook does nothing for a page already closed before attachment", async t =>
   assert.equal(f.page.listenerCount("close"), 0);
 });
 
-test("hook reports CDP attach failure and can recover on a later resume", async t => {
+test("hook retries a transient CDP attach failure without reporting a permanent error", async t => {
   let attempts = 0;
   const f = fixture(t, { newCDPSession: cdp => { if (++attempts === 1) throw new Error("fixture CDP unavailable"); return cdp; } });
   const socket = await f.connect();
   await f.stream(socket, true);
-  assert.equal(socket.messages.filter(message => message.type === "error").length, 1);
-  await f.stream(socket, false);
-  await f.stream(socket, true);
+  assert.equal(socket.messages.filter(message => message.type === "error").length, 0);
+  await f.clock.advance(250);
   assert.equal(f.sessionCount, 2);
   assert.equal(f.calls.at(-1).method, "Page.startScreencast");
 });
 
-test("hook reports startScreencast rejection and retries without duplicating the CDP attachment", async t => {
+test("hook retries startScreencast rejection without duplicating the CDP attachment", async t => {
   let starts = 0;
   const f = fixture(t, { send: method => {
     if (method === "Page.startScreencast" && ++starts === 1) throw new Error("fixture start failed");
     return {};
   } }), socket = await f.connect();
   await f.stream(socket, true);
-  assert.equal(socket.messages.filter(message => message.type === "error").length, 1);
-  await f.stream(socket, false);
-  await f.stream(socket, true);
+  assert.equal(socket.messages.filter(message => message.type === "error").length, 0);
+  await f.clock.advance(250);
   assert.equal(starts, 2);
   assert.equal(f.sessionCount, 1);
   f.frame(1);
   assert.equal(socket.frames().length, 1);
+});
+
+test("hook observation retries are bounded and recover on an explicit resume", async t => {
+  let fail = true;
+  const f = fixture(t, { newCDPSession: cdp => { if (fail) throw new Error("fixture unavailable"); return cdp; } });
+  const socket = await f.connect(); await f.stream(socket, true);
+  await f.clock.advance(10000);
+  assert.equal(f.sessionCount, 3);
+  assert.equal(socket.messages.filter(message => message.type === "error").length, 1);
+  fail = false;
+  await f.stream(socket, true);
+  assert.equal(f.sessionCount, 4);
+  f.frame(1); assert.equal(socket.frames().length, 1);
+});
+
+for (const action of ["pause", "close"]) test(`hook ${action} cancels an observation retry`, async t => {
+  const f = fixture(t, { newCDPSession: () => { throw new Error("fixture unavailable"); } });
+  const socket = await f.connect(); await f.stream(socket, true);
+  if (action === "pause") await f.stream(socket, false); else f.page.close();
+  await f.clock.advance(10000);
+  assert.equal(f.sessionCount, 1);
+  assert.equal(socket.messages.filter(message => message.type === "error").length, 0);
+});
+
+test("hook ignores a failed startup superseded by pause", async t => {
+  const pending = deferred();
+  const f = fixture(t, { newCDPSession: () => pending.promise });
+  const socket = await f.connect(); await f.stream(socket, true); await f.stream(socket, false);
+  pending.reject(new Error("fixture obsolete startup")); await settle(); await f.clock.advance(10000);
+  assert.equal(f.sessionCount, 1);
+  assert.equal(socket.messages.filter(message => message.type === "error").length, 0);
 });
 
 test("hook contains rejected CDP ACK and detach promises without unhandled rejections", async t => {
@@ -522,4 +560,147 @@ test("hook socket close while CDP attach is pending detaches the eventual sessio
   assert.equal(f.detachCount, 1);
   assert.equal(f.calls.filter(call => call.method === "Page.startScreencast").length, 0);
   assert.equal(f.page.listenerCount("close"), 0);
+});
+
+const textInput = { kind: "text", text: "private \u041f\u0440\u0438\u0432\u0435\u0442 \ud83d\ude80" };
+const clickInput = { kind: "click", x: 0.5, y: 0.25, button: "left", clickCount: 2, modifiers: 0 };
+const manualCalls = f => f.calls.filter(call => call.method.startsWith("Input."));
+const inputResults = socket => socket.messages.filter(message => message.type === "input.result");
+
+test("hook dispatches only validated input with an exact active nonempty lease", async t => {
+  const f = fixture(t, { manual: true }), socket = await f.connect();
+  const input = (inputId, controlId, value = textInput) => socket.receive({ type: "input", inputId, controlId, input: value });
+  socket.receive({ type: "control", controlId: "lease" });
+  input(1, "lease");
+  await f.stream(socket, true);
+  input(2, "lease");
+  socket.receive({ type: "control", controlId: "lease" });
+  input(3, ""); input(4, "wrong");
+  input(5, "lease", { kind: "text", text: "x".repeat(1025) });
+  input(6, "lease", { kind: "move", x: -1, y: 0.5 });
+  input(7, "lease", { kind: "key", key: "F5", modifiers: 0 });
+  await settle();
+  assert.equal(manualCalls(f).length, 0);
+  input(8, "lease");
+  await settle();
+  assert.deepEqual(manualCalls(f), [{ method: "Input.insertText", params: { text: textInput.text } }]);
+  assert.deepEqual(inputResults(socket).at(-1), { type: "input.result", inputId: 8, controlId: "lease", ok: true });
+  assert(!JSON.stringify(socket.messages).includes(textInput.text), "no input content may be reflected into IPC results");
+  input(8, "lease");
+  await settle();
+  assert.equal(manualCalls(f).length, 1, "duplicate IDs must not replay text");
+  socket.receive({ type: "control", controlId: "" });
+  input(9, "lease");
+  await settle();
+  assert.equal(manualCalls(f).length, 1);
+});
+
+for (const invalidation of ["revoke", "replace", "pause", "navigation", "close"]) {
+  test(`hook ${invalidation} stops accepted input waiting for CDP readiness`, async t => {
+    const pending = deferred();
+    const f = fixture(t, { manual: true, newCDPSession: () => pending.promise }), socket = await f.connect();
+    await f.stream(socket, true);
+    socket.receive({ type: "control", controlId: "lease" });
+    socket.receive({ type: "input", controlId: "lease", inputId: 1, input: textInput });
+    if (invalidation === "revoke") socket.receive({ type: "control", controlId: "" });
+    if (invalidation === "replace") socket.receive({ type: "control", controlId: "new-lease" });
+    if (invalidation === "pause") await f.stream(socket, false);
+    if (invalidation === "navigation") f.page.emit("framenavigated", f.mainFrame);
+    if (invalidation === "close") socket.destroy();
+    await settle();
+    pending.resolve(f.cdp);
+    await settle();
+    assert.equal(manualCalls(f).length, 0);
+    if (invalidation !== "close") assert.equal(inputResults(socket).at(-1).ok, false);
+  });
+}
+
+test("hook bounds unresolved input to one action without retaining or replaying a backlog", async t => {
+  const pending = deferred();
+  const f = fixture(t, { manual: true, send: method => method === "Input.insertText" ? pending.promise : {} }), socket = await f.connect();
+  await f.stream(socket, true);
+  socket.receive({ type: "control", controlId: "lease" });
+  for (let inputId = 1; inputId <= 200; inputId++) socket.receive({ type: "input", controlId: "lease", inputId, input: textInput });
+  await f.clock.advance(30000);
+  assert.equal(manualCalls(f).length, 1);
+  assert.equal(inputResults(socket).length, 199);
+  assert(inputResults(socket).every(result => !result.ok));
+  socket.receive({ type: "control", controlId: "" });
+  pending.resolve({});
+  await settle();
+  assert.equal(inputResults(socket).at(-1).ok, false);
+  assert.equal(manualCalls(f).length, 1);
+});
+
+for (const input of [clickInput, { kind: "key", key: "Enter", modifiers: 0 }]) {
+  test(`hook revocation releases an unresolved ${input.kind} and suppresses remaining presses`, async t => {
+    const pending = deferred(), pressed = input.kind === "click" ? "mousePressed" : "keyDown";
+    const released = input.kind === "click" ? "mouseReleased" : "keyUp";
+    const f = fixture(t, { manual: true, send: (_method, params) => params?.type === pressed ? pending.promise : {} }), socket = await f.connect();
+    await f.stream(socket, true);
+    socket.receive({ type: "control", controlId: "lease" });
+    socket.receive({ type: "input", controlId: "lease", inputId: 1, input });
+    await settle();
+    assert.equal(manualCalls(f).length, 1);
+    socket.receive({ type: "control", controlId: "" });
+    await settle();
+    assert.deepEqual(manualCalls(f).map(call => call.params.type), [pressed, released]);
+    pending.resolve({});
+    await settle();
+    assert.equal(manualCalls(f).length, 2);
+    assert.equal(inputResults(socket).at(-1).ok, false);
+  });
+}
+
+test("hook close releases before detach and caps a blocked release without double-detaching", async t => {
+  const down = deferred(), up = deferred();
+  const f = fixture(t, { manual: true, send: (_method, params) => params?.type === "mousePressed" ? down.promise
+    : params?.type === "mouseReleased" ? up.promise : {} }), socket = await f.connect();
+  await f.stream(socket, true);
+  socket.receive({ type: "control", controlId: "lease" });
+  socket.receive({ type: "input", controlId: "lease", inputId: 1, input: clickInput });
+  await settle();
+  socket.destroy();
+  await settle();
+  assert.equal(manualCalls(f).at(-1).params.type, "mouseReleased");
+  assert.equal(f.detachCount, 0);
+  await f.clock.advance(1000);
+  assert.equal(f.detachCount, 1);
+  down.resolve({}); up.resolve({});
+  await settle();
+  assert.equal(f.detachCount, 1);
+  assert.equal(inputResults(socket).length, 0);
+  assert.equal(f.page.listenerCount("framenavigated"), 0);
+});
+
+test("hook navigation clears pointers, revokes control and drops retained pre-navigation frames", async t => {
+  const f = fixture(t, { manual: true }), socket = await f.connect();
+  await f.stream(socket, true);
+  socket.receive({ type: "control", controlId: "lease" });
+  f.frame(1); f.frame(2);
+  f.page.emit("framenavigated", f.mainFrame);
+  socket.receive({ type: "ack" });
+  socket.receive({ type: "input", controlId: "lease", inputId: 1, input: textInput });
+  await f.clock.advance(1000);
+  assert.equal(manualCalls(f).length, 0);
+  assert.equal(socket.frames().length, 1);
+  assert.equal(socket.messages.filter(message => message.type === "navigation").length, 1);
+  assert.deepEqual(socket.messages.find(message => message.type === "pointer"), { type: "pointer", kind: "clear", x: 0, y: 0 });
+  const callback = [...f.bindings.values()][0];
+  const reply = await callback({ page: f.page, frame: f.mainFrame }, { kind: "ready" });
+  await callback({ page: f.page, frame: f.mainFrame }, { kind: "move", x: 0.2, y: 0.3, epoch: reply.epoch - 1 });
+  await settle();
+  assert.equal(socket.messages.filter(message => message.type === "pointer").length, 1);
+});
+
+test("hook iframe navigation refreshes observation without revoking the main-page lease", async t => {
+  const f = fixture(t, { manual: true }), socket = await f.connect();
+  await f.stream(socket, true);
+  socket.receive({ type: "control", controlId: "lease" });
+  f.page.emit("framenavigated", {});
+  socket.receive({ type: "input", controlId: "lease", inputId: 1, input: textInput });
+  await settle();
+  assert.equal(socket.messages.filter(message => message.type === "navigation").length, 0);
+  assert.equal(manualCalls(f).length, 1);
+  assert.equal(inputResults(socket).at(-1).ok, true);
 });

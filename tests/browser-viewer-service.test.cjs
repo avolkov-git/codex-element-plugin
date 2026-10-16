@@ -9,6 +9,7 @@ const { loadSource } = require("./service-test-utils.cjs");
 
 const { BrowserViewerService } = loadSource("src/browserViewerService.ts");
 const { VIEWER_MAX_FRAME, VIEWER_MAX_MESSAGE } = loadSource("src/browserViewerProtocol.ts");
+const { isViewerInput } = loadSource("src/browserViewerProtocol.ts");
 const FRAME = { type: "frame", data: "/9j/AAAA", width: 800, height: 600 };
 
 async function until(predicate, message, timeout = 2000) {
@@ -377,4 +378,146 @@ test("viewer publishes recovery from a CDP error on the next valid frame", async
   client.send(FRAME);
   await until(() => f.frames.length === 1, "recovery frame missing");
   assert.equal(f.states.at(-1).status, "live", "UI must receive a recovery state, not just getState callers");
+});
+
+async function controllable(t) {
+  const f = fixture(t), connection = f.start(), client = await f.peer(connection);
+  f.service.setVisible(true);
+  client.send(FRAME);
+  await until(() => f.frames.length === 1, "a decoded frame is required for manual control");
+  const frame = f.frames[0];
+  f.service.acknowledge(connection.sessionId, frame.pageId, frame.sequence);
+  f.service.setControl(connection.sessionId, frame.pageId, true);
+  const controlId = f.service.getState().controlId;
+  assert(controlId);
+  await until(() => client.messages.some(m => m.type === "control" && m.controlId === controlId), "control lease missing");
+  return { ...f, connection, client, controlId, pageId: frame.pageId };
+}
+
+test("manual input schema rejects arbitrary CDP, invalid geometry and unbounded text", () => {
+  for (const value of [null, [], {}, { kind: "Page.navigate", url: "https://example.test" },
+    { kind: "move", x: -1, y: 0 }, { kind: "move", x: NaN, y: 0 }, { kind: "move", x: 0, y: Infinity },
+    { kind: "click", x: 0, y: 0, button: "left", clickCount: "1", modifiers: 0 },
+    { kind: "click", x: 0, y: 0, button: "left", clickCount: 3, modifiers: 0 },
+    { kind: "wheel", x: 0, y: 0, deltaX: 0, deltaY: 2001 },
+    { kind: "key", key: "Power", modifiers: 0 }, { kind: "key", key: "a", modifiers: 16 },
+    { kind: "text", text: "x".repeat(1025) }, { kind: "text", text: "\u0000" }, { kind: "text", text: "" }]) assert.equal(isViewerInput(value), false, JSON.stringify(value));
+  for (const value of [{ kind: "move", x: 0, y: 1 }, { kind: "text", text: "Привет\nмир 😀" },
+    { kind: "click", x: .5, y: .7, button: "left", clickCount: 2, modifiers: 8 },
+    { kind: "wheel", x: .5, y: .5, deltaX: -2, deltaY: 500 }, { kind: "key", key: "a", modifiers: 2 }]) assert(isViewerInput(value));
+});
+
+test("control is opt-in and requires a visible, decoded current page", async t => {
+  const f = fixture(t), c = f.start(), client = await f.peer(c);
+  f.service.setControl(c.sessionId, "page-a", true);
+  assert.equal(f.service.getState().controlId, "");
+  f.service.setVisible(true);
+  f.service.setControl(c.sessionId, "page-a", true);
+  assert.equal(f.service.getState().controlId, "");
+  client.send(FRAME);
+  await until(() => f.frames.length === 1, "frame missing");
+  f.service.setControl(c.sessionId, "page-a", true);
+  assert.equal(f.service.getState().controlId, "", "not enabled before decode ACK");
+  f.service.acknowledge(c.sessionId, "page-a", f.frames[0].sequence);
+  f.service.setControl(c.sessionId, "page-a", true);
+  assert(f.service.getState().controlId);
+});
+
+test("same-page navigation invalidates old frame ACK and requires a new decoded revision", async t => {
+  const f = fixture(t), c = f.start(), client = await f.peer(c);
+  f.service.setVisible(true); client.send(FRAME);
+  await until(() => f.frames.length === 1, "old frame missing");
+  const old = f.frames[0];
+  client.send({ type: "navigation" });
+  await until(() => f.service.getState().pageRevision > old.pageRevision, "revision did not change");
+  f.service.acknowledge(c.sessionId, old.pageId, old.sequence);
+  f.service.setControl(c.sessionId, old.pageId, true);
+  assert.equal(f.service.getState().controlId, "", "old decode must not reauthorize control");
+  client.send(FRAME); await until(() => f.frames.length === 2, "new frame missing");
+  const next = f.frames[1];
+  assert.equal(next.pageRevision, f.service.getState().pageRevision);
+  f.service.acknowledge(c.sessionId, next.pageId, next.sequence);
+  f.service.setControl(c.sessionId, next.pageId, true);
+  assert(f.service.getState().controlId);
+});
+
+test("manual input is acknowledged once and stale IDs/leases/pages cannot dispatch", async t => {
+  const f = await controllable(t), results = [];
+  f.service.onInputResult(value => results.push(value));
+  const input = { kind: "text", text: "Привет" };
+  const send = (session = f.connection.sessionId, page = f.pageId, control = f.controlId, id = 1, value = input) => f.service.sendInput(session, page, control, id, value);
+  send("old"); send(undefined, "other"); send(undefined, undefined, "old");
+  send(undefined, undefined, undefined, 0); send(undefined, undefined, undefined, 1, { kind: "cdp" });
+  await delay(10); assert.equal(f.client.count("input"), 0);
+  send();
+  await until(() => f.client.count("input") === 1, "input not sent");
+  assert.deepEqual(f.client.messages.filter(m => m.type === "input")[0].input, input);
+  f.client.send({ type: "input.result", controlId: "old", inputId: 1, ok: true });
+  f.client.send({ type: "input.result", controlId: f.controlId, inputId: 2, ok: true });
+  await delay(10); assert.equal(results.length, 0);
+  f.client.send({ type: "input.result", controlId: f.controlId, inputId: 1, ok: true });
+  await until(() => results.length === 1, "input result missing");
+  assert.equal(results[0].ok, true);
+  assert(!JSON.stringify(results).includes(input.text), "typed text never appears in status messages");
+  send(); await delay(10); assert.equal(f.client.count("input"), 1, "duplicate id cannot replay text");
+});
+
+for (const mode of ["hidden", "paused", "selected", "navigation", "disabled", "scope", "stopped"]) {
+  test(`manual lease is revoked on ${mode}, including in-flight responses`, async t => {
+    const f = await controllable(t), results = [];
+    f.service.onInputResult(result => results.push(result));
+    f.service.sendInput(f.connection.sessionId, f.pageId, f.controlId, 1, { kind: "text", text: "one" });
+    await until(() => f.client.count("input") === 1, "first command missing");
+    if (mode === "hidden") f.service.setVisible(false);
+    if (mode === "paused") f.service.setPaused(true);
+    if (mode === "selected") { await f.peer(f.connection, "page-b"); f.service.selectPage(f.connection.sessionId, "page-b"); }
+    if (mode === "navigation") { f.client.send({ type: "navigation" }); await until(() => !f.service.getState().controlId, "navigation did not revoke"); }
+    if (mode === "disabled") f.service.setControl(f.connection.sessionId, f.pageId, false);
+    if (mode === "scope") f.setScope("/other-scope");
+    if (mode === "stopped") f.service.stop();
+    f.service.sendInput(f.connection.sessionId, f.pageId, f.controlId, 2, { kind: "text", text: "two" });
+    if (!f.client.socket.destroyed) f.client.send({ type: "input.result", controlId: f.controlId, inputId: 1, ok: true });
+    await delay(10);
+    assert.equal(f.service.getState().controlId, "");
+    assert.equal(f.client.count("input"), 1); assert.equal(results.length, 0);
+  });
+}
+
+test("manual input timeout revokes control without retrying an uncertain operation", { timeout: 11000 }, async t => {
+  const f = await controllable(t), results = [];
+  f.service.onInputResult(result => results.push(result));
+  f.service.sendInput(f.connection.sessionId, f.pageId, f.controlId, 1, { kind: "key", key: "Enter", modifiers: 0 });
+  await until(() => results.length === 1, "input deadline missing", 9000);
+  assert.equal(results[0].ok, false);
+  assert.equal(f.service.getState().controlId, "");
+  assert.match(f.service.getState().inputError, /не будет повторена/);
+  assert.equal(f.client.count("input"), 1);
+});
+
+test("manual input has one in-flight command and a failed command revokes the lease", async t => {
+  for (const overflow of [false, true]) {
+    const f = await controllable(t), results = [];
+    f.service.onInputResult(result => results.push(result));
+    f.service.sendInput(f.connection.sessionId, f.pageId, f.controlId, 1, { kind: "text", text: "one" });
+    await until(() => f.client.count("input") === 1, "input missing");
+    if (overflow) f.service.sendInput(f.connection.sessionId, f.pageId, f.controlId, 2, { kind: "text", text: "two" });
+    else f.client.send({ type: "input.result", controlId: f.controlId, inputId: 1, ok: false });
+    await until(() => !f.service.getState().controlId, "failure did not revoke");
+    assert.equal(results.length, 1); assert.equal(results[0].ok, false);
+    assert.equal(f.client.count("input"), 1);
+  }
+});
+
+test("pointer forwarding is scoped, bounded and excludes arbitrary page data", async t => {
+  const f = await controllable(t), pointers = [], b = await f.peer(f.connection, "page-b");
+  f.service.onPointer(value => pointers.push(value));
+  const event = { type: "pointer", kind: "focus", x: .2, y: .3, bounds: { x: .1, y: .2, width: .3, height: .1, value: "secret" }, text: "secret" };
+  b.send(event); f.client.send({ ...event, x: -1 }); f.client.send({ ...event, bounds: { x: 0 } });
+  await delay(10); assert.equal(pointers.length, 0);
+  f.client.send(event);
+  await until(() => pointers.length === 1, "pointer missing");
+  assert.equal(pointers[0].pageId, f.pageId);
+  assert(!JSON.stringify(pointers).includes("secret"));
+  f.service.setPaused(true); f.client.send(event); await delay(10);
+  assert.equal(pointers.length, 1);
 });

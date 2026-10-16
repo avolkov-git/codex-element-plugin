@@ -49,7 +49,11 @@ class BrowserViewerPanelManager {
             viewer.onState(state => { if (this.ready)
                 this.post(state); }),
             viewer.onFrame(frame => { if (this.ready && this.panel?.visible && this.documentVisible)
-                this.post(frame); })
+                this.post(frame); }),
+            viewer.onPointer(pointer => { if (this.ready && this.panel?.visible && this.documentVisible)
+                this.post(pointer); }),
+            viewer.onInputResult(result => { if (this.ready)
+                this.post(result); })
         ];
     }
     open() {
@@ -121,6 +125,12 @@ class BrowserViewerPanelManager {
                 }
                 else if (message.type === "viewer.select" && typeof message.pageId === "string") {
                     this.viewer.selectPage(message.sessionId, message.pageId);
+                }
+                else if (message.type === "viewer.control" && typeof message.pageId === "string" && typeof message.enabled === "boolean" && this.panel?.visible && this.documentVisible) {
+                    this.viewer.setControl(message.sessionId, message.pageId, message.enabled);
+                }
+                else if (message.type === "viewer.input" && typeof message.pageId === "string" && typeof message.controlId === "string" && this.panel?.visible && this.documentVisible) {
+                    this.viewer.sendInput(message.sessionId, message.pageId, message.controlId, message.inputId, message.input);
                 }
                 else if (message.type === "viewer.ack" && typeof message.pageId === "string" && Number.isSafeInteger(message.sequence)) {
                     this.viewer.acknowledge(message.sessionId, message.pageId, message.sequence);
