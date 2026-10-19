@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { verifyLinuxBrowserDependencies } = require("./linux-browser-dependencies");
 const {
   targets,
   targetPaths,
@@ -302,6 +303,8 @@ function checkBrowserRuntime(value) {
     ]) {
       validateBrowserRuntimeFile(runtimeRoot, manifest[field], `${platform} ${field}`, executable && !platform.startsWith("win32-"));
     }
+    try { verifyLinuxBrowserDependencies(runtimeRoot, manifest); }
+    catch (error) { errors.push(`${platform} portable browser dependencies: ${error.message}`); }
   }
 }
 

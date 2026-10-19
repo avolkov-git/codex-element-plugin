@@ -185,6 +185,10 @@ function validateTargets() {
   if (!fs.existsSync(browserRuntimeRoot)) {
     throw new Error(`Browser runtime root does not exist: ${browserRuntimeRoot}. Prepare it with scripts/prepare-browser-runtime.js.`);
   }
+  if (releaseTargets.some(target => target.platformId === "linux-x64")) {
+    const browserManifest = JSON.parse(fs.readFileSync(path.join(browserRuntimeRoot, "browser/linux-x64/runtime.json"), "utf8"));
+    if (!browserManifest.linuxDependenciesPath) throw new Error("Linux releases require portable Chromium dependencies; prepare the runtime on Ubuntu 24.04 first.");
+  }
 }
 
 function createZip(platformRoot, payloadRoot, archivePath) {

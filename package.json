@@ -97,7 +97,7 @@
     "check:runtime-payload": "node --test tests/runtime-payload.test.cjs tests/stage-deploy-review.test.cjs",
     "check:features": "node scripts/rc-features-check.js",
     "check:services": "node --test tests/service-reliability.test.cjs",
-    "check:browser-runtime": "node --test tests/browser-runtime.test.cjs tests/element-application.test.cjs tests/settings-panel.test.cjs tests/base-context-settings.test.cjs",
+    "check:browser-runtime": "node --test tests/browser-runtime.test.cjs tests/linux-browser-dependencies.test.cjs tests/element-application.test.cjs tests/settings-panel.test.cjs tests/base-context-settings.test.cjs",
     "check:browser-viewer": "node --test tests/browser-viewer-service.test.cjs tests/browser-viewer-hook.test.cjs tests/browser-viewer-interaction.test.cjs tests/browser-viewer-runtime.test.cjs tests/browser-viewer-panel.test.cjs",
     "check:browser-viewer-ui": "node scripts/browser-viewer-ui-check.cjs",
     "check:settings-browser": "node scripts/settings-browser-check.cjs",

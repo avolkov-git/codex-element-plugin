@@ -117,7 +117,7 @@ for (const target of targets) {
 
 function stagingFixture(root, target) {
   const source = path.join(root, "source"); fixture(source, target, true);
-  for (const script of ["stage-deploy-payload.js", "verify-deploy-payload.js", "runtime-preflight-lib.js"]) {
+  for (const script of ["stage-deploy-payload.js", "verify-deploy-payload.js", "runtime-preflight-lib.js", "linux-browser-dependencies.js"]) {
     write(source, `scripts/${script}`, fs.readFileSync(path.join(__dirname, "../scripts", script)));
   }
   write(source, "package.json", JSON.stringify({

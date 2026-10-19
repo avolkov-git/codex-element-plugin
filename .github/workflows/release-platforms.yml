@@ -25,7 +25,7 @@ jobs:
           - platform: win32-x64
             os: windows-latest
           - platform: linux-x64
-            os: ubuntu-latest
+            os: ubuntu-24.04
 
     steps:
       - name: Check out source without the full LFS matrix
@@ -111,6 +111,19 @@ jobs:
             --platform "${{ matrix.platform }}" \
             --browser-runtime-root "${RUNNER_TEMP}/codex-browser-runtime" \
             --output "${RUNNER_TEMP}/codex-plugin-release"
+
+      - name: Check packaged browser on clean Ubuntu without package installation
+        if: matrix.platform == 'linux-x64'
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/codex-linux-clean"
+          tar -xzf "${RUNNER_TEMP}/codex-plugin-release/codex-plugins-"*-linux-x64.tar.gz -C "${RUNNER_TEMP}/codex-linux-clean"
+          docker run --rm --network none --read-only --shm-size=1g \
+            --tmpfs /tmp:rw,mode=1777 --user 1000:1000 \
+            -e HOME=/tmp -e USER=ubuntu \
+            -v "${RUNNER_TEMP}/codex-linux-clean/codex-plugins:/payload:ro" \
+            -v "${GITHUB_WORKSPACE}/scripts:/checks:ro" \
+            ubuntu:24.04 /payload/browser/linux-x64/node/node /checks/linux-browser-clean-smoke.cjs /payload
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7

@@ -20,7 +20,7 @@ function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-stage-review-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const source = path.join(root, "source"), target = path.join(root, "codex-plugin-deploy");
-  for (const name of ["stage-deploy-payload.js", "verify-deploy-payload.js", "runtime-preflight-lib.js"]) {
+  for (const name of ["stage-deploy-payload.js", "verify-deploy-payload.js", "runtime-preflight-lib.js", "linux-browser-dependencies.js"]) {
     put(source, `scripts/${name}`, fs.readFileSync(path.join(repo, "scripts", name)));
   }
   const production = JSON.parse(fs.readFileSync(path.join(repo, "package.json")));

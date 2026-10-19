@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { targetForPlatform, runtimeFileNames } = require("./runtime-preflight-lib");
+const { verifyLinuxBrowserDependencies } = require("./linux-browser-dependencies");
 
 // Only call with the disposable stage created by package-platform-releases.js.
 function prepareMarketplacePayload(root, platformId) {
@@ -17,6 +18,7 @@ function prepareMarketplacePayload(root, platformId) {
   const browserRoot = path.join(root, "browser", platformId);
   const browser = JSON.parse(fs.readFileSync(path.join(browserRoot, "runtime.json"), "utf8"));
   if (browser.platformId !== platformId || browser.schemaVersion !== 1) throw new Error("Browser platform mismatch");
+  const linuxDependencies = verifyLinuxBrowserDependencies(browserRoot, browser);
   for (const field of ["nodePath", "launcherPath", "browserExecutablePath"]) {
     const relative = browser[field];
     if (typeof relative !== "string" || relative.includes("\\") || relative.split("/").some(p => !p || p === "." || p === "..") || path.isAbsolute(relative)) {
@@ -61,6 +63,7 @@ function prepareMarketplacePayload(root, platformId) {
   for (const file of runtimeFileNames(target)) required.add(`bin/${platformId}/${file}`);
   required.add(`browser/${platformId}/runtime.json`);
   for (const field of ["nodePath", "launcherPath", "browserExecutablePath"]) required.add(`browser/${platformId}/${browser[field]}`);
+  for (const file of linuxDependencies) required.add(`browser/${platformId}/${file}`);
   if (required.size > 1000) throw new Error("XBSL requiredFiles limit exceeded");
   for (const file of required) {
     if (!inventory.some(entry => entry.name === file && entry.file && entry.size > 0)) throw new Error(`Missing required file: ${file}`);

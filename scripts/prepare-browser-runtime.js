@@ -41,6 +41,10 @@ try {
   if (!fs.existsSync(playwrightCli)) {
     fail(`cannot find Playwright CLI under ${path.dirname(playwrightPackageJson)}`);
   }
+  // Packages are installed only on the build runner. The target server uses our private copy.
+  if (process.platform === "linux") {
+    run(process.execPath, [playwrightCli, "install-deps", "chromium"], workspace, process.env);
+  }
   const browsersPath = path.join(workspace, "browsers");
   run(process.execPath, [playwrightCli, "install", "chromium"], workspace, {
     ...process.env,
@@ -75,6 +79,10 @@ try {
     browserExecutablePath: normalizeRelative(path.relative(targetRoot, browserExecutable))
   };
   fs.writeFileSync(path.join(targetRoot, "runtime.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  if (process.platform === "linux") {
+    require("./linux-browser-dependencies").bundleLinuxBrowserDependencies(targetRoot);
+    Object.assign(manifest, JSON.parse(fs.readFileSync(path.join(targetRoot, "runtime.json"), "utf8")));
+  }
   smokeTestBrowser(targetRoot, manifest);
   console.log(`Browser runtime prepared: ${targetRoot}`);
   console.log(`Playwright MCP ${manifest.playwrightMcpVersion}; ${manifest.nodeVersion}; ${manifest.browserExecutablePath}`);
