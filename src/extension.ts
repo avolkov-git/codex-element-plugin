@@ -400,6 +400,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     onDidChangeChat: (chatId: string) => chatPanels.postSnapshot(chatId),
     onDidResolveProfile: ensureHistoryLoaded,
+    getElementMcpLaunch: isCurrent => elementMcpIdeBridge.prepareRuntimeLaunch(isCurrent),
+    sanitizeRuntimeOutput: value => elementMcpIdeBridge.sanitize(value),
     onDidStopRuntime: () => browserViewer.stop(),
     getManagedBrowserLaunch: async isCurrent => {
       const epoch = identityEpoch;
@@ -417,11 +419,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   shutdown = async () => {
     pressureMonitor?.dispose();
     docsCorpusContext.dispose();
-    try { await runtime.stop(); await diffPatches.flush(); await history.flush(); }
+    try {
+      try { await runtime.stop(); }
+      finally { await elementMcpIdeBridge.close(); }
+      await diffPatches.flush();
+      await history.flush();
+    }
     finally { await logger.flush(); }
   };
   integrations = new CodexIntegrationsService(context, settings, profiles, runtime, logger);
   context.subscriptions.push(integrations);
+  let mcpSessionStop = Promise.resolve();
+  const stopForMcpSessionChange = (): void => {
+    // The controller invalidates its epoch synchronously, before process cleanup awaits.
+    mcpSessionStop = runtime.stopForMcpSessionChange().catch(() => {
+      logger.warn("Не удалось завершить runtime после смены IDE-сессии MCP.");
+    });
+  };
+  elementMcpIdeBridge.configure({
+    getTargets: () => integrations.getElementMcpTargets(),
+    onInvalidate: stopForMcpSessionChange
+  });
+  integrations.setElementSessionProvider(() => elementMcpIdeBridge.getView(), async () => {
+    elementMcpIdeBridge.invalidate();
+    await mcpSessionStop;
+  });
+  context.subscriptions.push(elementMcpIdeBridge.onDidChange(() => integrations.notifyElementSessionChanged()));
   const browserSessionId = crypto.randomUUID();
   const elementApplication = new ElementApplicationService(logger);
   context.subscriptions.push(elementApplication);
@@ -534,6 +557,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   context.subscriptions.push(pressureMonitor);
   const invalidateIdentity = (): void => {
+    elementMcpIdeBridge.invalidate();
     browserViewer.stop();
     const epoch = ++identityEpoch;
     const previous = historyProfileId;

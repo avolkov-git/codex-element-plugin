@@ -130,15 +130,23 @@ const turnRequests = [];
 async function checkConcurrentStartup() {
   const controller = Object.create(CodexRuntimeController.prototype);
   let observerStops = 0;
-  controller.options = { onDidStopRuntime: () => { observerStops++; } };
+  let processStops = 0;
+  controller.options = {
+    onDidStopRuntime: () => { observerStops++; },
+    onDidChange() {},
+    state: { setRuntime() {} }
+  };
   let running = false;
   let started = 0;
   let initialized;
-  controller.processManager = { get isRunning() { return running; } };
+  controller.processManager = {
+    get isRunning() { return running; },
+    async stop() { processStops++; running = false; }
+  };
   controller.startBackendSession = () => {
     started++;
     running = true;
-    return new Promise((resolve) => { initialized = resolve; });
+    return new Promise((resolve) => { initialized = () => { controller.backendReady = true; resolve(); }; });
   };
   const first = controller.ensureBackendProcess();
   let secondReady = false;
@@ -153,7 +161,8 @@ async function checkConcurrentStartup() {
   controller.startBackendSession = async () => { throw new Error("startup fixture failure"); };
   await assert.rejects(controller.ensureBackendProcess(), /startup fixture failure/);
   assert.equal(observerStops, 1, "failed startup must release its browser observer");
-  controller.startBackendSession = async () => { started++; running = true; };
+  assert.equal(processStops, 1, "failed startup must clean up its process before returning the error");
+  controller.startBackendSession = async () => { started++; running = true; controller.backendReady = true; };
   await controller.ensureBackendProcess();
   assert.equal(started, 2, "failed startup must not block a retry");
 }
@@ -231,7 +240,7 @@ async function main() {
     },
     notify(method) { assert.equal(method, "initialized"); }, dispose() {}
   };
-  await controller.initializeBackendSession();
+  await controller.initializeBackendSession(undefined, cwd, controller.lifecycleEpoch);
   await controller.startDeviceCodeLogin();
   await controller.loginWithApiKey("fixture-not-a-real-key");
   await controller.loadModelOptions(true);

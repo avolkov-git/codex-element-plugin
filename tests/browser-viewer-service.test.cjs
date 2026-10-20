@@ -63,9 +63,8 @@ function serviceWithClock(clock) {
   return module.exports.BrowserViewerService;
 }
 
-function fixture(t, clock) {
+function fixture(t, clock, Service = clock ? serviceWithClock(clock) : BrowserViewerService) {
   let scope = "/users/alice/projects/one/sessions/current";
-  const Service = clock ? serviceWithClock(clock) : BrowserViewerService;
   const service = new Service(() => scope);
   const frames = [], states = [], clients = [], directories = [];
   service.onFrame(frame => frames.push(JSON.parse(JSON.stringify(frame))));
@@ -141,6 +140,29 @@ test("viewer IPC is local/private, session credentials rotate and public events 
   const publicEvents = JSON.stringify(f.states);
   for (const secret of [first.token, second.token, first.socketPath, second.socketPath]) assert(!publicEvents.includes(secret));
 });
+
+for (const [name, temporaryRoot] of [
+  ["Element instance path", "/var/opt/1C/1CE/instances/1c-enterprise-element-server-with-ide/work/ides-temp5824225732727879671"],
+  ["UTF-8 byte length", `/tmp/${"\u044f".repeat(42)}`],
+]) {
+  test(`viewer uses a short private socket under a long TMPDIR: ${name}`, { skip: process.platform === "win32" }, async t => {
+    const { BrowserViewerService: Service } = loadSource("src/browserViewerService.ts", {
+      os: { tmpdir: () => temporaryRoot },
+    });
+    const f = fixture(t, undefined, Service), connection = f.start();
+    assert(Buffer.byteLength(connection.socketPath) <= 103, "full UTF-8 socket path must fit sun_path");
+    assert.equal(path.dirname(path.dirname(connection.socketPath)), "/tmp");
+    assert.equal(fs.statSync(path.dirname(connection.socketPath)).mode & 0o777, 0o700);
+    await until(() => fs.existsSync(connection.socketPath), "socket must exist at its untruncated path");
+    assert(fs.statSync(connection.socketPath).isSocket());
+    f.service.setVisible(true);
+    const peer = await f.peer(connection);
+    await until(() => peer.messages.some(message => message.type === "stream" && message.active), "producer must receive stream activation");
+    peer.send(FRAME);
+    await until(() => f.frames.length === 1, "viewer must receive a frame through the short path");
+    assert.equal(f.service.getState().status, "live");
+  });
+}
 
 for (const [name, token] of [
   ["missing", undefined], ["wrong length", "x"], ["wrong value", "0".repeat(64)],

@@ -52,6 +52,8 @@ const worklogNormalizer_1 = require("./worklogNormalizer");
 const diffPatchStore_1 = require("./diffPatchStore");
 class SteerTurnNotActiveError extends Error {
 }
+class ElementMcpVerificationError extends Error {
+}
 class UserCancelledTurnError extends Error {
     constructor() {
         super("Turn cancelled by user.");
@@ -71,6 +73,7 @@ class CodexRuntimeController {
         this.experimentalContextScope = (0, crypto_1.randomUUID)();
         this.experimentalContextSaving = false;
         this.mcpStartupStatuses = new Map();
+        this.backendReady = false;
         this.modelCatalog = new modelCatalog_1.ModelCatalog(() => this.fetchModelOptions(), (snapshot) => {
             if (snapshot.status === "ready") {
                 this.options.state.setModelOptions(snapshot.options, "ready");
@@ -94,6 +97,7 @@ class CodexRuntimeController {
         this.runtimeEpoch = 0;
         this.lifecycleEpoch = 0;
         this.managedBrowserServerName = null;
+        this.hasElementMcpLaunch = false;
         this.disposed = false;
         this.queuedDispatches = new Map();
         this.promptStarts = new Map();
@@ -118,7 +122,7 @@ class CodexRuntimeController {
         this.restoreAttempted = false;
         this.pressure = { notifications: 0, streamNotifications: 0, ignoredNotifications: 0, stdoutLines: 0, stdoutBytes: 0, maxLineBytes: 0, maxHandleMs: 0, diffFailures: 0 };
     }
-    getMetrics() { return { ...this.pressure, pid: this.processManager.pid, running: this.processManager.isRunning }; }
+    getMetrics() { return { ...this.pressure, pid: this.processManager.pid, running: this.isBackendRunning() }; }
     getExperimentalContextView() {
         const view = this.experimentalContextView;
         const busy = this.hasActiveContextWork();
@@ -693,7 +697,7 @@ class CodexRuntimeController {
         throw new Error("model/list exceeded the pagination limit");
     }
     isBackendRunning() {
-        return this.processManager.isRunning;
+        return this.backendReady && this.processManager.isRunning && !this.backendStartPromise && !this.backendStopPromise;
     }
     async loadMcpRuntimeStatuses() {
         await this.ensureBackendProcess();
@@ -718,7 +722,15 @@ class CodexRuntimeController {
         return statuses;
     }
     async reloadMcpServers() {
-        if (!this.processManager.isRunning) {
+        if (!this.processManager.isRunning && !this.backendStartPromise) {
+            return;
+        }
+        await this.ensureBackendProcess();
+        if (this.hasElementMcpLaunch) {
+            // Recreate clients with fresh process-local overrides, then verify again.
+            await this.stopForMcpSessionChange();
+            await this.ensureBackendProcess();
+            this.integrationsChangedEmitter.fire();
             return;
         }
         await this.requireRpcClient().request("config/mcpServer/reload", null, 15000);
@@ -1300,10 +1312,13 @@ class CodexRuntimeController {
         return result.turnId;
     }
     async readAccount() {
-        if (!this.processManager.isRunning) {
+        if (!this.isBackendRunning()) {
             await this.ensureBackendProcess();
             return;
         }
+        await this.readBackendAccount();
+    }
+    async readBackendAccount() {
         const rpcClient = this.requireRpcClient();
         this.updateAuth({
             status: "checking",
@@ -1980,6 +1995,7 @@ class CodexRuntimeController {
         this.activeConcreteItemsByChat.clear();
     }
     stop() {
+        this.backendReady = false;
         this.options.onDidStopRuntime?.();
         if (this.backendStopPromise) {
             return this.backendStopPromise;
@@ -2010,6 +2026,14 @@ class CodexRuntimeController {
                 this.options.state.updateChat(chat.id, { status: "idle", activeTurnId: null, activeRunMode: null }, "immediate");
             }
         }
+        // Requests may outlive a chat's presence in the sidebar (for example archive).
+        for (const pending of this.pendingApprovals.values()) {
+            pending.resolve(false);
+            this.options.state.setPendingApproval(pending.chatId, null);
+        }
+        this.pendingApprovals.clear();
+        for (const id of this.pendingUserInputs.keys())
+            this.rejectUserInput(id, "Codex runtime stopped.");
         this.modelCatalog.invalidate();
         this.rejectAllHiddenPlannerRuns(new Error("Codex runtime stopped before docs planner completed."));
         this.cleanupThinking();
@@ -2019,6 +2043,8 @@ class CodexRuntimeController {
             this.clearBackendRouting();
             this.options.state.setRuntime({ status: "notStarted", label: "Backend остановлен" });
             this.options.onDidChange();
+        }).catch((error) => {
+            throw this.sanitizeRuntimeError(error);
         }).finally(() => {
             if (this.backendStopPromise === stopping) {
                 this.backendStopPromise = undefined;
@@ -2030,7 +2056,7 @@ class CodexRuntimeController {
     async stopForIdentityChange() {
         // Invalidate pending settings writes even when another stop is already in progress.
         this.experimentalContextScope = (0, crypto_1.randomUUID)();
-        await this.stop();
+        await this.stopForMcpSessionChange();
         this.restoreAttempted = false;
         this.options.state.setAuth({
             status: "notAuthenticated", accountType: "none", accountLabel: "", profileLabel: "-", message: "Пользователь или проект IDE изменился. Подключите Codex заново.",
@@ -2038,9 +2064,24 @@ class CodexRuntimeController {
         });
         this.options.onDidChange();
     }
+    stopForMcpSessionChange() {
+        // Preserve queued text, but require an explicit retry against the new scope.
+        for (const chat of this.options.state.getSidebarSnapshot().chats) {
+            for (const queued of chat.queuedMessages) {
+                if (queued.dispatchState !== "accepted") {
+                    this.options.state.updateQueuedChatMessage(chat.id, queued.id, {
+                        dispatchState: "failed",
+                        dispatchError: "Сессия Element MCP изменилась. Проверьте целевое приложение перед повторной отправкой."
+                    });
+                }
+            }
+        }
+        return this.stop();
+    }
     clearBackendRouting() {
         this.options.onDidStopRuntime?.();
         this.managedBrowserServerName = null;
+        this.hasElementMcpLaunch = false;
         this.ignoredServerResponses.clear();
         this.cancelledTurnIds.clear();
         this.completedTurnIds.clear();
@@ -2111,7 +2152,7 @@ class CodexRuntimeController {
     }
     dispose() {
         this.disposed = true;
-        void this.stop().catch((error) => this.options.logger.error(`Runtime disposal failed: ${normalizeErrorMessage(error)}`));
+        void this.stop().catch((error) => this.options.logger.error(`Runtime disposal failed: ${this.sanitizeRuntimeError(error).message}`));
         this.rejectAllHiddenPlannerRuns(new Error("Codex runtime disposed before docs planner completed."));
         this.cleanupThinking();
         this.rpcClient?.dispose();
@@ -2126,31 +2167,42 @@ class CodexRuntimeController {
         if (this.backendStartPromise) {
             return this.backendStartPromise;
         }
-        if (this.processManager.isRunning) {
+        if (this.processManager.isRunning && this.backendReady) {
             return;
         }
         // Unexpected exits can leave owned-tree cleanup in flight.
-        if (this.processManager.pid) {
-            await this.processManager.stop();
+        if (this.processManager.pid || this.processManager.isRunning) {
+            const epoch = this.lifecycleEpoch;
+            await this.resetBackendAfterFailedStart();
+            this.assertLifecycleEpoch(epoch);
             return this.ensureBackendProcess();
         }
-        const startup = this.startBackendSession();
-        this.backendStartPromise = startup;
-        try {
-            await startup;
-        }
-        catch (error) {
-            if (this.backendStartPromise === startup)
-                this.options.onDidStopRuntime?.();
-            throw error;
-        }
-        finally {
+        const startup = this.startBackendSession().catch(async (error) => {
+            const safeError = this.sanitizeRuntimeError(error);
+            if (this.backendStartPromise === startup) {
+                if (error instanceof ElementMcpVerificationError) {
+                    await this.stopForMcpSessionChange();
+                }
+                else {
+                    await this.resetBackendAfterFailedStart();
+                    if (this.backendStartPromise !== startup)
+                        throw safeError;
+                    this.options.onDidStopRuntime?.();
+                }
+                this.options.state.setRuntime({ status: "error", label: `Backend не запустился: ${safeError.message}` });
+                this.options.onDidChange();
+            }
+            throw safeError;
+        }).finally(() => {
             if (this.backendStartPromise === startup) {
                 this.backendStartPromise = undefined;
             }
-        }
+        });
+        this.backendStartPromise = startup;
+        return startup;
     }
     async startBackendSession() {
+        this.backendReady = false;
         const epoch = this.lifecycleEpoch;
         this.loadedThreadIds.clear();
         this.contextCompactionItemThreads.clear();
@@ -2198,7 +2250,11 @@ class CodexRuntimeController {
         const cwd = resolveRuntimeCwd(this.options.context, codexHome);
         const browserLaunch = await this.options.getManagedBrowserLaunch?.(() => epoch === this.lifecycleEpoch && !this.disposed);
         this.assertLifecycleEpoch(epoch);
-        const args = ["app-server", ...(browserLaunch?.args ?? [])];
+        const elementLaunch = await this.prepareElementMcpLaunch(epoch);
+        this.assertLifecycleEpoch(epoch);
+        // Element may replace the entire MCP table (names containing dots). Apply
+        // the private browser entry last so shared configuration cannot replace it.
+        const args = ["app-server", ...(elementLaunch?.args ?? []), ...(browserLaunch?.args ?? [])];
         this.options.state.setRuntime({
             status: "starting",
             label: "Backend запускается"
@@ -2212,7 +2268,7 @@ class CodexRuntimeController {
                 runtimePath,
                 args,
                 cwd,
-                env,
+                env: { ...env, ...elementLaunch?.env },
                 managedServerName: browserLaunch?.managedServerName,
                 mode: "normal"
             });
@@ -2220,14 +2276,14 @@ class CodexRuntimeController {
             if (attempt.earlyError) {
                 throw attempt.earlyError;
             }
-            await this.initializeBackendSession();
+            await this.initializeBackendSession(elementLaunch, cwd, epoch);
             this.assertLifecycleEpoch(epoch);
             return;
         }
         catch (error) {
             this.assertLifecycleEpoch(epoch);
-            const message = normalizeErrorMessage(error);
-            if (!shouldRetryBackendStart(error)) {
+            const message = this.sanitizeRuntimeError(error).message;
+            if (error instanceof ElementMcpVerificationError || !shouldRetryBackendStart(error)) {
                 throw error;
             }
             this.options.logger.warn(`Backend start failed in normal mode, retrying with minimal environment: ${message}`);
@@ -2236,14 +2292,16 @@ class CodexRuntimeController {
         }
         const fallbackCwd = resolveRuntimeCwd(this.options.context, codexHome, { forceSafe: true });
         const fallbackEnv = buildMinimalRuntimeEnv(codexHome, proxy, toolEnv);
+        const fallbackBrowser = await this.options.getManagedBrowserLaunch?.(() => epoch === this.lifecycleEpoch && !this.disposed);
+        this.assertLifecycleEpoch(epoch);
+        const fallbackElement = await this.prepareElementMcpLaunch(epoch);
+        this.assertLifecycleEpoch(epoch);
         try {
-            const fallbackBrowser = await this.options.getManagedBrowserLaunch?.(() => epoch === this.lifecycleEpoch && !this.disposed);
-            this.assertLifecycleEpoch(epoch);
             const fallbackAttempt = await this.startBackendProcessAttempt({
                 runtimePath,
-                args: ["app-server", ...(fallbackBrowser?.args ?? [])],
+                args: ["app-server", ...(fallbackElement?.args ?? []), ...(fallbackBrowser?.args ?? [])],
                 cwd: fallbackCwd,
-                env: fallbackEnv,
+                env: { ...fallbackEnv, ...fallbackElement?.env },
                 managedServerName: fallbackBrowser?.managedServerName,
                 mode: "minimal"
             });
@@ -2251,20 +2309,112 @@ class CodexRuntimeController {
             if (fallbackAttempt.earlyError) {
                 throw fallbackAttempt.earlyError;
             }
-            await this.initializeBackendSession();
+            await this.initializeBackendSession(fallbackElement, fallbackCwd, epoch);
+            this.assertLifecycleEpoch(epoch);
         }
         catch (error) {
             this.assertLifecycleEpoch(epoch);
-            const message = normalizeErrorMessage(error);
+            if (error instanceof ElementMcpVerificationError)
+                throw error;
+            const message = this.sanitizeRuntimeError(error).message;
             const diagnostics = await diagnoseRuntimeLaunchFailure(runtimeResolution, fallbackCwd, fallbackEnv);
+            this.assertLifecycleEpoch(epoch);
             this.options.state.setRuntime({
                 status: "error",
                 label: `Backend не запустился: ${message}`
             });
             this.options.onDidChange();
             this.options.logger.error(`Backend start failed after minimal-env retry: ${message}`);
-            this.options.logger.error(`Backend launch diagnostics: ${diagnostics}`);
+            this.options.logger.error(`Backend launch diagnostics: ${this.sanitizeRuntimeOutput(diagnostics)}`);
             throw error;
+        }
+    }
+    async prepareElementMcpLaunch(epoch) {
+        const runtimeEpoch = this.runtimeEpoch;
+        const launch = await this.options.getElementMcpLaunch?.(() => epoch === this.lifecycleEpoch && runtimeEpoch === this.runtimeEpoch && !this.disposed && !this.backendStopPromise);
+        this.assertLifecycleEpoch(epoch);
+        this.assertRuntimeEpoch(runtimeEpoch);
+        this.hasElementMcpLaunch = Boolean(launch && (launch.args.length || Object.keys(launch.env).length || launch.serverName || launch.verify));
+        return launch;
+    }
+    async finishBackendStartup(launch, cwd, epoch) {
+        const rpc = this.requireRpcClient();
+        const runtimeEpoch = this.runtimeEpoch;
+        const assertCurrent = () => {
+            this.assertLifecycleEpoch(epoch);
+            this.assertRuntimeEpoch(runtimeEpoch);
+            if (rpc !== this.rpcClient)
+                throw new UserCancelledTurnError();
+        };
+        if (launch?.verify) {
+            let threadId;
+            try {
+                if (!launch.serverName)
+                    throw new Error("Для проверки Element MCP не задано имя сервера.");
+                // No turn is started: this in-memory thread only owns the MCP client.
+                const result = await rpc.request("thread/start", {
+                    cwd, ephemeral: true, approvalPolicy: "never", sandbox: "read-only"
+                }, 30000);
+                assertCurrent();
+                threadId = extractThreadId(result);
+                if (!threadId)
+                    throw new Error("Не удалось создать проверочный диалог Element MCP.");
+                let verifying = true;
+                try {
+                    await launch.verify(async (tool, args) => {
+                        assertCurrent();
+                        if (!verifying)
+                            throw new Error("Проверка Element MCP уже завершена.");
+                        const result = await rpc.request("mcpServer/tool/call", {
+                            server: launch.serverName, threadId, tool, arguments: args
+                        }, 30000);
+                        assertCurrent();
+                        return result;
+                    });
+                    assertCurrent();
+                }
+                finally {
+                    verifying = false;
+                }
+            }
+            catch (error) {
+                assertCurrent();
+                throw new ElementMcpVerificationError(`Проверка привязки Element MCP не пройдена: ${this.sanitizeRuntimeError(error).message}`);
+            }
+            finally {
+                // Ephemeral threads have no rollout to archive. Unsubscribe unloads them.
+                if (threadId && rpc === this.rpcClient && runtimeEpoch === this.runtimeEpoch && epoch === this.lifecycleEpoch) {
+                    try {
+                        await rpc.request("thread/unsubscribe", { threadId }, 5000);
+                    }
+                    catch (error) {
+                        assertCurrent();
+                        throw new ElementMcpVerificationError(`Не удалось закрыть проверочный диалог Element MCP: ${this.sanitizeRuntimeError(error).message}`);
+                    }
+                }
+            }
+        }
+        assertCurrent();
+        await this.readBackendAccount();
+        assertCurrent();
+        this.backendReady = true;
+        this.options.state.setRuntime({ status: "running", label: `Backend запущен, PID ${this.processManager.pid || "-"}` });
+        this.options.onDidChange();
+    }
+    sanitizeRuntimeOutput(value) {
+        try {
+            return this.options.sanitizeRuntimeOutput?.(value) ?? value;
+        }
+        catch {
+            throw new Error("Не удалось безопасно обработать вывод Codex.");
+        }
+    }
+    sanitizeRuntimeError(error) {
+        try {
+            return new Error(this.sanitizeRuntimeOutput(error instanceof Error ? error.message : String(error)));
+        }
+        catch {
+            return new Error("Не удалось безопасно обработать вывод Codex.");
         }
     }
     async startBackendProcessAttempt(input) {
@@ -2283,13 +2433,14 @@ class CodexRuntimeController {
                 this.processManager.writeLine(line);
             }
             catch (error) {
+                const safeError = this.sanitizeRuntimeError(error);
                 if (payload.method)
-                    throw error;
+                    throw safeError;
                 // JsonRpcClient's reply path cannot queue a rejected write. Fail the
                 // transport explicitly instead of creating an unhandled rejection or
                 // silently leaving the backend waiting for an answer we discarded.
-                this.options.logger.error(`App-server response transport failed: ${normalizeErrorMessage(error)}`);
-                void this.stop().catch((stopError) => this.options.logger.error(`Runtime stop failed: ${normalizeErrorMessage(stopError)}`));
+                this.options.logger.error(`App-server response transport failed: ${safeError.message}`);
+                void this.stop().catch((stopError) => this.options.logger.error(`Runtime stop failed: ${this.sanitizeRuntimeError(stopError).message}`));
             }
         }, (notification) => { if (this.rpcClient === rpcClient && epoch === this.runtimeEpoch)
             this.handleNotification(notification); }, (request) => {
@@ -2300,7 +2451,7 @@ class CodexRuntimeController {
         });
         this.rpcClient?.dispose();
         this.rpcClient = rpcClient;
-        const diagnostics = summarizeRuntimeStart(input.runtimePath, input.cwd, input.env);
+        const diagnostics = this.sanitizeRuntimeOutput(summarizeRuntimeStart(input.runtimePath, input.cwd, input.env));
         this.options.logger.info(`Starting bundled Codex runtime app-server: mode=${input.mode}; ${diagnostics}.`);
         let resolveSpawnError = () => undefined;
         const spawnErrorPromise = new Promise((resolve) => {
@@ -2314,6 +2465,7 @@ class CodexRuntimeController {
             onStdout: (line) => {
                 if (epoch !== this.runtimeEpoch || this.rpcClient !== rpcClient)
                     return;
+                line = this.sanitizeRuntimeOutput(line);
                 const bytes = Buffer.byteLength(line);
                 this.pressure.stdoutLines++;
                 this.pressure.stdoutBytes += bytes;
@@ -2326,31 +2478,36 @@ class CodexRuntimeController {
                 }
             },
             onStderr: (line) => {
-                this.options.logger.runtime("warn", `stderr: ${line}`);
+                if (epoch !== this.runtimeEpoch || this.rpcClient !== rpcClient)
+                    return;
+                this.options.logger.runtime("warn", `stderr: ${this.sanitizeRuntimeOutput(line)}`);
             },
             onError: (error) => {
-                resolveSpawnError(error);
-                if (epoch === this.runtimeEpoch)
-                    this.options.logger.error(`Runtime transport error: ${normalizeErrorMessage(error)}`);
+                if (epoch !== this.runtimeEpoch || this.rpcClient !== rpcClient)
+                    return;
+                const safeError = this.sanitizeRuntimeError(error);
+                resolveSpawnError(safeError);
+                this.options.logger.error(`Runtime transport error: ${safeError.message}`);
             },
             onExit: (code, signal) => { if (epoch === this.runtimeEpoch && this.rpcClient === rpcClient)
                 this.handleExit(code, signal); }
         });
-        this.options.state.setRuntime({
-            status: "running",
-            label: `Backend запущен, PID ${pid || "-"}`
-        });
-        this.options.onDidChange();
         this.options.logger.info(`Spawned bundled Codex runtime app-server with pid ${pid || "-"} in ${input.mode} mode.`);
         const earlyError = await waitForEarlySpawnError(spawnErrorPromise, 500);
         return { pid, earlyError };
     }
     async resetBackendAfterFailedStart() {
+        this.backendReady = false;
         this.rpcClient?.dispose();
         this.rpcClient = undefined;
-        await this.processManager.stop(1000);
+        try {
+            await this.processManager.stop(1000);
+        }
+        catch (error) {
+            throw this.sanitizeRuntimeError(error);
+        }
     }
-    async initializeBackendSession() {
+    async initializeBackendSession(launch, cwd, epoch) {
         const rpcClient = this.requireRpcClient();
         this.updateAuth({ message: "Инициализируем Codex app-server..." });
         const result = await rpcClient.request("initialize", {
@@ -2366,9 +2523,12 @@ class CodexRuntimeController {
                 optOutNotificationMethods: null
             }
         });
+        this.assertLifecycleEpoch(epoch);
+        if (rpcClient !== this.rpcClient)
+            throw new UserCancelledTurnError();
         rpcClient.notify("initialized");
         this.options.logger.info(`initialize completed: ${summarizeInitializeResult(result)}.`);
-        await this.readAccount();
+        await this.finishBackendStartup(launch, cwd, epoch);
     }
     handleHiddenPlannerNotification(notification) {
         const turnId = extractTurnId(notification.params);
@@ -2501,13 +2661,13 @@ class CodexRuntimeController {
                 }
             });
             if (completed.success) {
-                void this.readAccount();
+                void this.readAccount().catch((error) => this.options.logger.warn(`Account refresh failed: ${this.sanitizeRuntimeError(error).message}`));
             }
             return;
         }
         if (notification.method === "account/updated") {
             this.modelCatalog.invalidate();
-            void this.readAccount();
+            void this.readAccount().catch((error) => this.options.logger.warn(`Account refresh failed: ${this.sanitizeRuntimeError(error).message}`));
             return;
         }
         if (notification.method === "account/rateLimits/updated") {
@@ -3005,6 +3165,7 @@ class CodexRuntimeController {
         return resolution.response;
     }
     handleExit(code, signal) {
+        this.backendReady = false;
         this.runtimeEpoch += 1;
         for (const chatId of this.postTurnReviews.keys())
             this.cancelChangeReview(chatId);

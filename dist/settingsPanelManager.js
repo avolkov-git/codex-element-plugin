@@ -272,7 +272,7 @@ class SettingsPanelManager {
         }
         if (message.command === "settings.integrations.refresh") {
             const scope = isRecord(message.payload) && message.payload.scope === "skills" ? "skills" : "mcp";
-            await this.runIntegrationAction(panel, () => this.integrations.refresh(true), scope, scope === "skills" ? "Навыки обновлены." : "MCP-серверы обновлены.");
+            await this.runIntegrationAction(panel, () => this.integrations.refresh(true, scope === "mcp"), scope, scope === "skills" ? "Навыки обновлены." : "MCP-серверы обновлены.");
             return;
         }
         if (message.command === "settings.browser.save") {

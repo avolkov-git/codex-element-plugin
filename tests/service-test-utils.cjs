@@ -29,6 +29,7 @@ function loadSource(relativePath, mocks = {}) {
 
 const logger = { info() {}, warn() {}, error() {} };
 const vscode = {
+  workspace: { getConfiguration: () => ({ get: (_name, fallback) => fallback }) },
   EventEmitter: class {
     event = () => ({ dispose() {} });
     fire() {}

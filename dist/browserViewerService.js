@@ -84,7 +84,10 @@ class BrowserViewerService {
         const sessionId = (0, crypto_1.randomUUID)();
         this.scope = scopeRoot;
         try {
-            const directory = process.platform === "win32" ? undefined : fs.mkdtempSync(path.join(os.tmpdir(), "codex-view-"));
+            // Element's TMPDIR can exceed sun_path (104 bytes on macOS, 108 on Linux).
+            // Keep the complete UTF-8 path within both limits; Node may silently truncate it.
+            const temporaryRoot = Buffer.byteLength(path.join(os.tmpdir(), "codex-view-XXXXXX", "view.sock")) <= 103 ? os.tmpdir() : "/tmp";
+            const directory = process.platform === "win32" ? undefined : fs.mkdtempSync(path.join(temporaryRoot, "codex-view-"));
             if (directory)
                 fs.chmodSync(directory, 0o700);
             this.directory = directory;

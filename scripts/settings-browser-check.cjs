@@ -32,7 +32,7 @@ async function lastCommand(page, command) {
 
 async function fits(page, label) {
   const failures = await page.evaluate(() => {
-    const nodes = [...document.querySelectorAll("button, .section-feedback, .editor-feedback, .browser-test-result, .integration-title-line, .integration-description, .settings-data-row, .settings-header")];
+    const nodes = [...document.querySelectorAll("button, .inline-state, .section-feedback, .editor-feedback, .browser-test-result, .integration-title-line, .integration-description, .settings-data-row, .settings-header")];
     return nodes.filter(node => node.getClientRects().length && !node.closest('[aria-hidden="true"]') && node.getAttribute("tabindex") !== "-1").flatMap(node => {
       const rect = node.getBoundingClientRect();
       return rect.left < -1 || rect.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1 ? [`${node.id || node.className}: ${Math.round(rect.left)}..${Math.round(rect.right)}, ${node.scrollWidth}/${node.clientWidth}`] : [];
@@ -72,6 +72,30 @@ async function runScenario(browser, scenario, artifacts) {
   assert.match(await page.locator(".browser-section").innerText(), /Тестовое приложение/);
   assert.equal((await page.locator(".settings-version").innerText()).trim(), extensionVersion);
   await shot("tools");
+
+  assert.equal(await page.locator("[data-element-ide-session]").count(), 0, "no optional MCP session means no extra UI");
+  await update({ integrations: { elementIdeSession: { status: "expired", serverName: "element-docs",
+    message: "Сессия приложения истекла. Повторите проверку подключения. <не HTML>" } } });
+  const sessionState = page.locator('[data-element-ide-session="expired"]');
+  assert.equal(await sessionState.getAttribute("role"), "status");
+  assert.match(await sessionState.innerText(), /<не HTML>/);
+  await shot("ide-session-expired");
+  await sessionState.getByRole("button", { name: "Повторить" }).click();
+  assert.deepEqual(await lastCommand(page, "settings.integrations.refresh"), { scope: "mcp" });
+  const applicationError = "Запрос IDE-сессии Element MCP завершился ошибкой (HTTP 502). Console не нашла приложение по 1C.applicationId (Console HTTP 404). Проверьте выбранный сервер и приложение текущей IDE. Это не ошибка отсутствующего протокола MCP.";
+  await update({ integrations: { elementIdeSession: { status: "error", serverName: "element-docs", message: applicationError } } });
+  const rejectedSession = page.locator('[data-element-ide-session="error"]');
+  assert.equal(await rejectedSession.getAttribute("role"), "status");
+  assert.match(await rejectedSession.innerText(), /Console не нашла приложение/);
+  await shot("ide-session-console-error");
+  await rejectedSession.getByRole("button", { name: "Повторить" }).click();
+  assert.deepEqual(await lastCommand(page, "settings.integrations.refresh"), { scope: "mcp" });
+  await update({ integrations: { status: "ready", mcpStatus: "ready", skillsStatus: "ready",
+    elementIdeSession: { status: "ready", serverName: "element-docs", canPrepare: false,
+      message: "Приложение текущего workspace подключено. Управляемые изменения выключены оператором MCP." } } });
+  assert.equal(await page.locator("[data-element-ide-session] button").count(), 0);
+  assert.match(await page.locator("[data-element-ide-session]").innerText(), /выключены/);
+  await update({ integrations: { elementIdeSession: { status: "disconnected", message: "" } } });
 
   // Autosave has one owner; unrelated acknowledgements must not unlock it.
   await page.locator("#browser-enabled").uncheck();

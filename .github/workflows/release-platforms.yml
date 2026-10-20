@@ -68,6 +68,7 @@ jobs:
           npm run check:models
           npm run check:protocol
           npm run check:mcp-elicitation
+          npm run check:element-mcp
           npm run check:markdown-links
           npm run check:transcript-window
           npm run check:runtime
@@ -94,6 +95,7 @@ jobs:
           node scripts/app-server-smoke.js "$RUNTIME"
           node scripts/code-mode-mcp-smoke.cjs "$RUNTIME"
           node scripts/code-mode-mcp-smoke.cjs "$RUNTIME" --expect-missing-host
+          node scripts/element-mcp-session-smoke.cjs "$RUNTIME"
 
       - name: Prepare managed Playwright MCP browser runtime
         shell: bash

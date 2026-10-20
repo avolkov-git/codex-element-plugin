@@ -40,6 +40,7 @@ const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const codexIntegrationConstants_1 = require("./codexIntegrationConstants");
 const platform_1 = require("./platform");
+const elementMcpEndpoint_1 = require("./elementMcpEndpoint");
 class CodexIntegrationsService {
     constructor(context, settings, profiles, runtime, logger) {
         this.context = context;
@@ -70,20 +71,64 @@ class CodexIntegrationsService {
         this.changeEmitter.dispose();
     }
     getSnapshot() {
+        const session = this.elementSessionProvider?.();
         return {
             ...this.snapshot,
-            mcpServers: this.withManagedBrowser(this.snapshot.mcpServers).map((server) => ({ ...server, args: server.args ? [...server.args] : undefined })),
+            elementIdeSession: session,
+            mcpServers: this.withManagedBrowser(this.snapshot.mcpServers).map((server) => ({
+                ...server, args: server.args ? [...server.args] : undefined,
+                ...(session?.serverName === server.name && !["ready", "renewing"].includes(session.status) ? {
+                    runtimeStatus: session.status === "connecting" ? "starting" : "failed",
+                    error: session.message, toolCount: 0, resourceCount: 0
+                } : {})
+            })),
             skills: this.snapshot.skills.map((skill) => ({ ...skill }))
         };
     }
     setManagedBrowserProvider(provider) {
         this.managedBrowserProvider = provider;
     }
-    async refresh(forceSkills = false) {
+    setElementSessionProvider(provider, beforeChange) {
+        this.elementSessionProvider = provider;
+        this.beforeMcpConfigurationChange = beforeChange;
+    }
+    notifyElementSessionChanged() {
+        this.changeEmitter.fire();
+    }
+    async getElementMcpTargets(home) {
+        const endpoint = this.elementEndpoint();
+        if (!endpoint)
+            return [];
+        const records = await this.readConfiguredMcpRecords(home);
+        const stdioServerNames = records.filter(record => record.enabled !== false && record.transport?.type === "stdio").map(record => record.name).sort();
+        return records.flatMap(record => {
+            const transport = record.transport;
+            if (transport?.type !== "streamable_http" || typeof transport.url !== "string"
+                || (0, elementMcpEndpoint_1.elementMcpEndpointKey)(transport.url, true) !== endpoint)
+                return [];
+            const headers = [transport.http_headers, transport.env_http_headers];
+            const sessionHeaderConfigured = referencesSessionEnvironment(transport) || headers.some(header => header && typeof header === "object" && Object.keys(header).some(name => ["x-element-ide-session", "x-element-ide-control", "x-element-mcp-token"].includes(name.toLowerCase())));
+            const sessionTokenUsedElsewhere = records.some(other => {
+                if (other.name === record.name || other.enabled === false || other.transport?.type !== "streamable_http")
+                    return false;
+                return referencesSessionEnvironment(other.transport);
+            });
+            return [{ name: record.name, url: transport.url, enabled: record.enabled !== false,
+                    sessionHeaderConfigured, stdioServerNames: [...stdioServerNames], sessionTokenUsedElsewhere }];
+        });
+    }
+    elementEndpoint() {
+        return (0, elementMcpEndpoint_1.elementMcpEndpointKey)(vscode.workspace.getConfiguration("codexElement").get("elementMcpUrl", "http://127.0.0.1:9900"));
+    }
+    async refresh(forceSkills = false, retryElementSession = false) {
         if (this.refreshPromise) {
+            if (retryElementSession && ["error", "expired"].includes(this.elementSessionProvider?.().status ?? "")) {
+                await this.refreshPromise.catch(() => undefined);
+                return this.refresh(forceSkills, true);
+            }
             return this.refreshPromise;
         }
-        const refresh = this.performRefresh(forceSkills);
+        const refresh = this.performRefresh(forceSkills, retryElementSession);
         this.refreshPromise = refresh;
         try {
             return await refresh;
@@ -94,7 +139,7 @@ class CodexIntegrationsService {
             }
         }
     }
-    async performRefresh(forceSkills) {
+    async performRefresh(forceSkills, retryElementSession) {
         const previous = this.snapshot;
         this.snapshot = {
             ...this.snapshot,
@@ -115,6 +160,9 @@ class CodexIntegrationsService {
         let runtimeLoaded = false;
         let skillsLoaded = false;
         try {
+            if (retryElementSession && ["error", "expired"].includes(this.elementSessionProvider?.().status ?? "")) {
+                await this.beforeMcpConfigurationChange?.();
+            }
             configured = await this.listConfiguredMcpServers();
             configuredLoaded = true;
         }
@@ -175,8 +223,23 @@ class CodexIntegrationsService {
         if (isReservedBrowserName(normalized.name) || (normalized.originalName && isReservedBrowserName(normalized.originalName))) {
             throw new Error("Управляемый браузер настраивается в разделе браузерного тестирования, а не в общем MCP-профиле.");
         }
+        if (normalized.transport === "http" && this.elementEndpoint() && (0, elementMcpEndpoint_1.elementMcpEndpointKey)(normalized.url, true) === this.elementEndpoint()) {
+            const configured = await this.getElementMcpTargets();
+            if (configured.some(server => server.name !== normalized.name && server.name !== normalized.originalName)) {
+                throw new Error("Этот 1C Element MCP уже подключён. Измените существующий сервер, не создавая второе подключение.");
+            }
+            if (normalized.bearerTokenEnvVar?.toUpperCase() === "ELEMENT_IDE_MCP_SESSION_TOKEN") {
+                throw new Error("Переменная IDE-сессии управляется плагином и не может использоваться как bearer token.");
+            }
+        }
         const codexHome = await this.getCodexHome();
+        const elementChanged = await this.invalidateElementBindingIfNeeded(normalized.transport === "http" ? normalized.url : undefined);
         await editMcpConfig(codexHome, async (stagedHome) => {
+            if (normalized.transport === "http" && this.elementEndpoint()
+                && (0, elementMcpEndpoint_1.elementMcpEndpointKey)(normalized.url, true) === this.elementEndpoint()
+                && (await this.getElementMcpTargets(stagedHome)).some(server => server.name !== normalized.name && server.name !== normalized.originalName)) {
+                throw new Error("Другой сеанс уже добавил этот 1C Element MCP. Обновите список серверов.");
+            }
             if (normalized.originalName) {
                 await this.runCli(["mcp", "remove", normalized.originalName], stagedHome);
             }
@@ -195,8 +258,8 @@ class CodexIntegrationsService {
                 await setMcpEnabledInConfig(path.join(stagedHome, "config.toml"), normalized.name, false);
             }
         });
-        await this.reloadRuntimeMcpIfRunning();
-        await this.refresh(true);
+        await this.reloadRuntimeMcpIfRunning(elementChanged);
+        await this.refreshAfterMcpMutation();
         this.logger.info(`MCP server saved: name=${normalized.name}; transport=${normalized.transport}; enabled=${normalized.enabled !== false}.`);
         return normalized.name;
     }
@@ -207,11 +270,12 @@ class CodexIntegrationsService {
     async removeMcpServer(name) {
         const normalizedName = validateMcpName(name);
         const codexHome = await this.getCodexHome();
+        const elementChanged = await this.invalidateElementBindingIfNeeded();
         await editMcpConfig(codexHome, async (stagedHome) => {
             await this.runCli(["mcp", "remove", normalizedName], stagedHome);
         });
-        await this.reloadRuntimeMcpIfRunning();
-        await this.refresh(true);
+        await this.reloadRuntimeMcpIfRunning(elementChanged);
+        await this.refreshAfterMcpMutation();
         this.logger.info(`MCP server removed: name=${normalizedName}.`);
     }
     async setMcpEnabled(name, enabled) {
@@ -219,12 +283,26 @@ class CodexIntegrationsService {
         if (isReservedBrowserName(normalizedName)) {
             throw new Error("Измените настройки браузерного тестирования текущего пользователя и проекта.");
         }
+        if (enabled) {
+            const targets = await this.getElementMcpTargets();
+            if (targets.some(target => target.name === normalizedName)
+                && targets.some(target => target.name !== normalizedName && target.enabled)) {
+                throw new Error("Этот 1C Element MCP уже включён под другим именем. Оставьте одно подключение.");
+            }
+        }
         const codexHome = await this.getCodexHome();
+        const elementChanged = await this.invalidateElementBindingIfNeeded(undefined, enabled ? normalizedName : undefined);
         await editMcpConfig(codexHome, async (stagedHome) => {
+            if (enabled) {
+                const targets = await this.getElementMcpTargets(stagedHome);
+                if (targets.some(target => target.name === normalizedName) && targets.some(target => target.name !== normalizedName && target.enabled)) {
+                    throw new Error("Другой сеанс уже включил этот 1C Element MCP. Обновите список серверов.");
+                }
+            }
             await setMcpEnabledInConfig(path.join(stagedHome, "config.toml"), normalizedName, enabled);
         });
-        await this.reloadRuntimeMcpIfRunning();
-        await this.refresh(true);
+        await this.reloadRuntimeMcpIfRunning(elementChanged);
+        await this.refreshAfterMcpMutation();
         this.logger.info(`MCP server ${enabled ? "enabled" : "disabled"}: name=${normalizedName}.`);
     }
     async startMcpOAuth(name) {
@@ -253,6 +331,11 @@ class CodexIntegrationsService {
         }
         await this.reloadRuntimeMcpIfRunning();
         const statuses = await this.runtime.loadMcpRuntimeStatuses();
+        const session = this.elementSessionProvider?.();
+        if (session?.serverName === normalizedName && !["ready", "renewing"].includes(session.status)) {
+            return { name: normalizedName, status: "failed", message: session.message, runtimeStatus: "failed",
+                authStatus: configured.authStatus, toolCount: 0, resourceCount: 0 };
+        }
         const runtimeStatus = statuses.find((candidate) => candidate.name === normalizedName);
         const resolved = runtimeStatus ? {
             ...configured,
@@ -319,13 +402,17 @@ class CodexIntegrationsService {
         return skills.filter((skill) => skill.enabled);
     }
     async listConfiguredMcpServers() {
-        const result = await this.runCli(["mcp", "list", "--json"]);
+        const records = await this.readConfiguredMcpRecords();
+        return this.withManagedBrowser(records.flatMap((candidate) => normalizeMcpCliRecord(candidate)))
+            .sort((left, right) => left.name.localeCompare(right.name));
+    }
+    async readConfiguredMcpRecords(home) {
+        const result = await this.runCli(["mcp", "list", "--json"], home);
         const records = JSON.parse(result.stdout || "[]");
         if (!Array.isArray(records)) {
             throw new Error("Codex CLI вернул некорректный список MCP-серверов.");
         }
-        return this.withManagedBrowser(records.flatMap((candidate) => normalizeMcpCliRecord(candidate)))
-            .sort((left, right) => left.name.localeCompare(right.name));
+        return records.filter((record) => Boolean(record && typeof record === "object" && typeof record.name === "string"));
     }
     withManagedBrowser(configured) {
         const servers = configured.filter((server) => !isReservedBrowserName(server.name));
@@ -341,10 +428,32 @@ class CodexIntegrationsService {
         }
         return servers;
     }
-    async reloadRuntimeMcpIfRunning() {
-        if (this.runtime.isBackendRunning()) {
+    async reloadRuntimeMcpIfRunning(elementChanged = false) {
+        // Cancel even a still-starting client that read configuration before publication.
+        if (elementChanged)
+            await this.beforeMcpConfigurationChange?.();
+        else
+            await this.invalidateElementBindingIfNeeded();
+        if (this.runtime.isBackendRunning())
             await this.runtime.reloadMcpServers();
+    }
+    async refreshAfterMcpMutation() {
+        if (this.refreshPromise)
+            await this.refreshPromise.catch(() => undefined);
+        return this.refresh(true);
+    }
+    async invalidateElementBindingIfNeeded(incomingUrl, enablingName) {
+        if (!this.beforeMcpConfigurationChange)
+            return false;
+        const session = this.elementSessionProvider?.();
+        const endpoint = this.elementEndpoint();
+        if ((session && ["connecting", "ready", "renewing", "revoking"].includes(session.status))
+            || (incomingUrl && endpoint && (0, elementMcpEndpoint_1.elementMcpEndpointKey)(incomingUrl, true) === endpoint)
+            || (await this.getElementMcpTargets()).some(target => target.enabled || target.name === enablingName)) {
+            await this.beforeMcpConfigurationChange();
+            return true;
         }
+        return false;
     }
     async getCodexHome() {
         const profileId = await this.profiles.requireProfileId(this.settings.listExistingProfileIds());
@@ -435,6 +544,12 @@ function normalizeMcpInput(input) {
     }
     const args = (input.args ?? []).map((arg) => arg.trim()).filter(Boolean).slice(0, 50);
     return { ...input, originalName, name, transport: "stdio", command, args, enabled: input.enabled !== false };
+}
+function referencesSessionEnvironment(transport) {
+    const reserved = (value) => typeof value === "string" && value.toUpperCase() === "ELEMENT_IDE_MCP_SESSION_TOKEN";
+    const headers = transport.env_http_headers;
+    return reserved(transport.bearer_token_env_var)
+        || Boolean(headers && typeof headers === "object" && Object.values(headers).some(reserved));
 }
 function validateMcpName(value) {
     const normalized = value.trim().replace(/\s+/g, "-");

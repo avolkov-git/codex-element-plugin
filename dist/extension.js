@@ -474,6 +474,8 @@ async function activate(context) {
         },
         onDidChangeChat: (chatId) => chatPanels.postSnapshot(chatId),
         onDidResolveProfile: ensureHistoryLoaded,
+        getElementMcpLaunch: isCurrent => elementMcpIdeBridge.prepareRuntimeLaunch(isCurrent),
+        sanitizeRuntimeOutput: value => elementMcpIdeBridge.sanitize(value),
         onDidStopRuntime: () => browserViewer.stop(),
         getManagedBrowserLaunch: async (isCurrent) => {
             const epoch = identityEpoch;
@@ -496,7 +498,12 @@ async function activate(context) {
         pressureMonitor?.dispose();
         docsCorpusContext.dispose();
         try {
-            await runtime.stop();
+            try {
+                await runtime.stop();
+            }
+            finally {
+                await elementMcpIdeBridge.close();
+            }
             await diffPatches.flush();
             await history.flush();
         }
@@ -506,6 +513,22 @@ async function activate(context) {
     };
     integrations = new codexIntegrationsService_1.CodexIntegrationsService(context, settings, profiles, runtime, logger);
     context.subscriptions.push(integrations);
+    let mcpSessionStop = Promise.resolve();
+    const stopForMcpSessionChange = () => {
+        // The controller invalidates its epoch synchronously, before process cleanup awaits.
+        mcpSessionStop = runtime.stopForMcpSessionChange().catch(() => {
+            logger.warn("Не удалось завершить runtime после смены IDE-сессии MCP.");
+        });
+    };
+    elementMcpIdeBridge.configure({
+        getTargets: () => integrations.getElementMcpTargets(),
+        onInvalidate: stopForMcpSessionChange
+    });
+    integrations.setElementSessionProvider(() => elementMcpIdeBridge.getView(), async () => {
+        elementMcpIdeBridge.invalidate();
+        await mcpSessionStop;
+    });
+    context.subscriptions.push(elementMcpIdeBridge.onDidChange(() => integrations.notifyElementSessionChanged()));
     const browserSessionId = crypto.randomUUID();
     const elementApplication = new elementApplicationService_1.ElementApplicationService(logger);
     context.subscriptions.push(elementApplication);
@@ -623,6 +646,7 @@ async function activate(context) {
     });
     context.subscriptions.push(pressureMonitor);
     const invalidateIdentity = () => {
+        elementMcpIdeBridge.invalidate();
         browserViewer.stop();
         const epoch = ++identityEpoch;
         const previous = historyProfileId;

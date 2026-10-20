@@ -269,9 +269,18 @@
       <div class="section-heading"><div class="section-label"><h2>MCP-серверы</h2><span class="section-count">${servers.length}</span></div><div class="compact-actions"><button class="icon-button" id="refresh-integrations" type="button" title="Обновить MCP-серверы" aria-label="Обновить MCP-серверы" ${disabled(loading)}>${icon("refresh")}</button><button class="icon-text-button" id="add-mcp" type="button">${icon("plus")}Добавить</button></div></div>
       ${state.drawer !== "mcp" ? sectionFeedback("mcp") : ""}
       ${integrationState(status, servers.length, integrations.mcpMessage || integrations.message, "MCP-серверов пока нет", "mcp")}
+      ${elementSessionState(integrations.elementIdeSession)}
       <div class="integration-list">${servers.map(mcpServerRow).join("")}</div>
       ${integrations.updatedAt ? `<div class="integration-updated">Обновлено ${escapeHtml(formatUpdatedAt(integrations.updatedAt))}</div>` : ""}
     </section>`;
+  }
+
+  function elementSessionState(session) {
+    if (!session || (session.status === "disconnected" && !session.serverName)) return "";
+    const ready = session.status === "ready" || session.status === "renewing";
+    const failed = session.status === "error" || session.status === "expired";
+    const retry = failed ? `<button class="quiet-button retry-integrations" data-scope="mcp" type="button">${icon("refresh")}Повторить</button>` : "";
+    return `<div class="inline-state ${failed ? "warning" : ""}" data-element-ide-session="${escapeAttribute(session.status)}" role="status">${icon(ready ? "check" : failed ? "alert" : "plug")}<span>${escapeHtml(session.message || "Проверяем привязку приложения к IDE...")}</span>${retry}</div>`;
   }
 
   function mcpServerRow(server) {

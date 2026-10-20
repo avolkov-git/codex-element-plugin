@@ -9,6 +9,8 @@ import { resolveBundledRuntimeExecutable, validateRuntimeExecutable } from "./pl
 import { SettingsService } from "./settingsService";
 import { McpRuntimeStatus, McpServerOption, SkillOption, SkillSelection } from "./types";
 import { UserProfileService } from "./userProfileService";
+import { elementMcpEndpointKey } from "./elementMcpEndpoint";
+import { ElementMcpSessionView, ElementMcpTarget } from "./elementMcpSessionTypes";
 
 export interface McpServerSaveInput {
   originalName?: string;
@@ -44,6 +46,7 @@ export interface CodexIntegrationsSnapshot {
   mcpMessage: string;
   skillsMessage: string;
   updatedAt?: string;
+  elementIdeSession?: ElementMcpSessionView;
 }
 
 interface McpCliRecord {
@@ -75,6 +78,8 @@ export class CodexIntegrationsService implements vscode.Disposable {
   private readonly runtimeSubscription: vscode.Disposable;
   private refreshPromise: Promise<CodexIntegrationsSnapshot> | undefined;
   private managedBrowserProvider: (() => McpServerSaveInput | undefined) | undefined;
+  private elementSessionProvider: (() => ElementMcpSessionView) | undefined;
+  private beforeMcpConfigurationChange: (() => Promise<void>) | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -96,9 +101,17 @@ export class CodexIntegrationsService implements vscode.Disposable {
   }
 
   getSnapshot(): CodexIntegrationsSnapshot {
+    const session = this.elementSessionProvider?.();
     return {
       ...this.snapshot,
-      mcpServers: this.withManagedBrowser(this.snapshot.mcpServers).map((server) => ({ ...server, args: server.args ? [...server.args] : undefined })),
+      elementIdeSession: session,
+      mcpServers: this.withManagedBrowser(this.snapshot.mcpServers).map((server) => ({
+        ...server, args: server.args ? [...server.args] : undefined,
+        ...(session?.serverName === server.name && !["ready", "renewing"].includes(session.status) ? {
+          runtimeStatus: session.status === "connecting" ? "starting" as const : "failed" as const,
+          error: session.message, toolCount: 0, resourceCount: 0
+        } : {})
+      })),
       skills: this.snapshot.skills.map((skill) => ({ ...skill }))
     };
   }
@@ -107,11 +120,51 @@ export class CodexIntegrationsService implements vscode.Disposable {
     this.managedBrowserProvider = provider;
   }
 
-  async refresh(forceSkills = false): Promise<CodexIntegrationsSnapshot> {
+  setElementSessionProvider(provider: () => ElementMcpSessionView, beforeChange: () => Promise<void>): void {
+    this.elementSessionProvider = provider;
+    this.beforeMcpConfigurationChange = beforeChange;
+  }
+
+  notifyElementSessionChanged(): void {
+    this.changeEmitter.fire();
+  }
+
+  async getElementMcpTargets(home?: string): Promise<ElementMcpTarget[]> {
+    const endpoint = this.elementEndpoint();
+    if (!endpoint) return [];
+    const records = await this.readConfiguredMcpRecords(home);
+    const stdioServerNames = records.filter(record =>
+      record.enabled !== false && record.transport?.type === "stdio").map(record => record.name).sort();
+    return records.flatMap(record => {
+      const transport = record.transport;
+      if (transport?.type !== "streamable_http" || typeof transport.url !== "string"
+        || elementMcpEndpointKey(transport.url, true) !== endpoint) return [];
+      const headers = [transport.http_headers, transport.env_http_headers];
+      const sessionHeaderConfigured = referencesSessionEnvironment(transport) || headers.some(header =>
+        header && typeof header === "object" && Object.keys(header).some(name =>
+          ["x-element-ide-session", "x-element-ide-control", "x-element-mcp-token"].includes(name.toLowerCase())));
+      const sessionTokenUsedElsewhere = records.some(other => {
+        if (other.name === record.name || other.enabled === false || other.transport?.type !== "streamable_http") return false;
+        return referencesSessionEnvironment(other.transport);
+      });
+      return [{ name: record.name, url: transport.url, enabled: record.enabled !== false,
+        sessionHeaderConfigured, stdioServerNames: [...stdioServerNames], sessionTokenUsedElsewhere }];
+    });
+  }
+
+  private elementEndpoint(): string | undefined {
+    return elementMcpEndpointKey(vscode.workspace.getConfiguration("codexElement").get<string>("elementMcpUrl", "http://127.0.0.1:9900"));
+  }
+
+  async refresh(forceSkills = false, retryElementSession = false): Promise<CodexIntegrationsSnapshot> {
     if (this.refreshPromise) {
+      if (retryElementSession && ["error", "expired"].includes(this.elementSessionProvider?.().status ?? "")) {
+        await this.refreshPromise.catch(() => undefined);
+        return this.refresh(forceSkills, true);
+      }
       return this.refreshPromise;
     }
-    const refresh = this.performRefresh(forceSkills);
+    const refresh = this.performRefresh(forceSkills, retryElementSession);
     this.refreshPromise = refresh;
     try {
       return await refresh;
@@ -122,7 +175,7 @@ export class CodexIntegrationsService implements vscode.Disposable {
     }
   }
 
-  private async performRefresh(forceSkills: boolean): Promise<CodexIntegrationsSnapshot> {
+  private async performRefresh(forceSkills: boolean, retryElementSession: boolean): Promise<CodexIntegrationsSnapshot> {
     const previous = this.snapshot;
     this.snapshot = {
       ...this.snapshot,
@@ -145,6 +198,9 @@ export class CodexIntegrationsService implements vscode.Disposable {
     let skillsLoaded = false;
 
     try {
+      if (retryElementSession && ["error", "expired"].includes(this.elementSessionProvider?.().status ?? "")) {
+        await this.beforeMcpConfigurationChange?.();
+      }
       configured = await this.listConfiguredMcpServers();
       configuredLoaded = true;
     } catch (error) {
@@ -207,8 +263,23 @@ export class CodexIntegrationsService implements vscode.Disposable {
     if (isReservedBrowserName(normalized.name) || (normalized.originalName && isReservedBrowserName(normalized.originalName))) {
       throw new Error("Управляемый браузер настраивается в разделе браузерного тестирования, а не в общем MCP-профиле.");
     }
+    if (normalized.transport === "http" && this.elementEndpoint() && elementMcpEndpointKey(normalized.url!, true) === this.elementEndpoint()) {
+      const configured = await this.getElementMcpTargets();
+      if (configured.some(server => server.name !== normalized.name && server.name !== normalized.originalName)) {
+        throw new Error("Этот 1C Element MCP уже подключён. Измените существующий сервер, не создавая второе подключение.");
+      }
+      if (normalized.bearerTokenEnvVar?.toUpperCase() === "ELEMENT_IDE_MCP_SESSION_TOKEN") {
+        throw new Error("Переменная IDE-сессии управляется плагином и не может использоваться как bearer token.");
+      }
+    }
     const codexHome = await this.getCodexHome();
+    const elementChanged = await this.invalidateElementBindingIfNeeded(normalized.transport === "http" ? normalized.url : undefined);
     await editMcpConfig(codexHome, async (stagedHome) => {
+      if (normalized.transport === "http" && this.elementEndpoint()
+        && elementMcpEndpointKey(normalized.url!, true) === this.elementEndpoint()
+        && (await this.getElementMcpTargets(stagedHome)).some(server => server.name !== normalized.name && server.name !== normalized.originalName)) {
+        throw new Error("Другой сеанс уже добавил этот 1C Element MCP. Обновите список серверов.");
+      }
       if (normalized.originalName) {
         await this.runCli(["mcp", "remove", normalized.originalName], stagedHome);
       }
@@ -226,8 +297,8 @@ export class CodexIntegrationsService implements vscode.Disposable {
         await setMcpEnabledInConfig(path.join(stagedHome, "config.toml"), normalized.name, false);
       }
     });
-    await this.reloadRuntimeMcpIfRunning();
-    await this.refresh(true);
+    await this.reloadRuntimeMcpIfRunning(elementChanged);
+    await this.refreshAfterMcpMutation();
     this.logger.info(`MCP server saved: name=${normalized.name}; transport=${normalized.transport}; enabled=${normalized.enabled !== false}.`);
     return normalized.name;
   }
@@ -240,11 +311,12 @@ export class CodexIntegrationsService implements vscode.Disposable {
   async removeMcpServer(name: string): Promise<void> {
     const normalizedName = validateMcpName(name);
     const codexHome = await this.getCodexHome();
+    const elementChanged = await this.invalidateElementBindingIfNeeded();
     await editMcpConfig(codexHome, async (stagedHome) => {
       await this.runCli(["mcp", "remove", normalizedName], stagedHome);
     });
-    await this.reloadRuntimeMcpIfRunning();
-    await this.refresh(true);
+    await this.reloadRuntimeMcpIfRunning(elementChanged);
+    await this.refreshAfterMcpMutation();
     this.logger.info(`MCP server removed: name=${normalizedName}.`);
   }
 
@@ -253,12 +325,26 @@ export class CodexIntegrationsService implements vscode.Disposable {
     if (isReservedBrowserName(normalizedName)) {
       throw new Error("Измените настройки браузерного тестирования текущего пользователя и проекта.");
     }
+    if (enabled) {
+      const targets = await this.getElementMcpTargets();
+      if (targets.some(target => target.name === normalizedName)
+        && targets.some(target => target.name !== normalizedName && target.enabled)) {
+        throw new Error("Этот 1C Element MCP уже включён под другим именем. Оставьте одно подключение.");
+      }
+    }
     const codexHome = await this.getCodexHome();
+    const elementChanged = await this.invalidateElementBindingIfNeeded(undefined, enabled ? normalizedName : undefined);
     await editMcpConfig(codexHome, async (stagedHome) => {
+      if (enabled) {
+        const targets = await this.getElementMcpTargets(stagedHome);
+        if (targets.some(target => target.name === normalizedName) && targets.some(target => target.name !== normalizedName && target.enabled)) {
+          throw new Error("Другой сеанс уже включил этот 1C Element MCP. Обновите список серверов.");
+        }
+      }
       await setMcpEnabledInConfig(path.join(stagedHome, "config.toml"), normalizedName, enabled);
     });
-    await this.reloadRuntimeMcpIfRunning();
-    await this.refresh(true);
+    await this.reloadRuntimeMcpIfRunning(elementChanged);
+    await this.refreshAfterMcpMutation();
     this.logger.info(`MCP server ${enabled ? "enabled" : "disabled"}: name=${normalizedName}.`);
   }
 
@@ -290,6 +376,11 @@ export class CodexIntegrationsService implements vscode.Disposable {
 
     await this.reloadRuntimeMcpIfRunning();
     const statuses = await this.runtime.loadMcpRuntimeStatuses();
+    const session = this.elementSessionProvider?.();
+    if (session?.serverName === normalizedName && !["ready", "renewing"].includes(session.status)) {
+      return { name: normalizedName, status: "failed", message: session.message, runtimeStatus: "failed",
+        authStatus: configured.authStatus, toolCount: 0, resourceCount: 0 };
+    }
     const runtimeStatus = statuses.find((candidate) => candidate.name === normalizedName);
     const resolved: McpServerOption = runtimeStatus ? {
       ...configured,
@@ -363,13 +454,18 @@ export class CodexIntegrationsService implements vscode.Disposable {
   }
 
   private async listConfiguredMcpServers(): Promise<McpServerOption[]> {
-    const result = await this.runCli(["mcp", "list", "--json"]);
+    const records = await this.readConfiguredMcpRecords();
+    return this.withManagedBrowser(records.flatMap((candidate) => normalizeMcpCliRecord(candidate)))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  private async readConfiguredMcpRecords(home?: string): Promise<McpCliRecord[]> {
+    const result = await this.runCli(["mcp", "list", "--json"], home);
     const records = JSON.parse(result.stdout || "[]") as unknown;
     if (!Array.isArray(records)) {
       throw new Error("Codex CLI вернул некорректный список MCP-серверов.");
     }
-    return this.withManagedBrowser(records.flatMap((candidate) => normalizeMcpCliRecord(candidate)))
-      .sort((left, right) => left.name.localeCompare(right.name));
+    return records.filter((record): record is McpCliRecord => Boolean(record && typeof record === "object" && typeof record.name === "string"));
   }
 
   private withManagedBrowser(configured: McpServerOption[]): McpServerOption[] {
@@ -387,10 +483,29 @@ export class CodexIntegrationsService implements vscode.Disposable {
     return servers;
   }
 
-  private async reloadRuntimeMcpIfRunning(): Promise<void> {
-    if (this.runtime.isBackendRunning()) {
-      await this.runtime.reloadMcpServers();
+  private async reloadRuntimeMcpIfRunning(elementChanged = false): Promise<void> {
+    // Cancel even a still-starting client that read configuration before publication.
+    if (elementChanged) await this.beforeMcpConfigurationChange?.();
+    else await this.invalidateElementBindingIfNeeded();
+    if (this.runtime.isBackendRunning()) await this.runtime.reloadMcpServers();
+  }
+
+  private async refreshAfterMcpMutation(): Promise<CodexIntegrationsSnapshot> {
+    if (this.refreshPromise) await this.refreshPromise.catch(() => undefined);
+    return this.refresh(true);
+  }
+
+  private async invalidateElementBindingIfNeeded(incomingUrl?: string, enablingName?: string): Promise<boolean> {
+    if (!this.beforeMcpConfigurationChange) return false;
+    const session = this.elementSessionProvider?.();
+    const endpoint = this.elementEndpoint();
+    if ((session && ["connecting", "ready", "renewing", "revoking"].includes(session.status))
+      || (incomingUrl && endpoint && elementMcpEndpointKey(incomingUrl, true) === endpoint)
+      || (await this.getElementMcpTargets()).some(target => target.enabled || target.name === enablingName)) {
+      await this.beforeMcpConfigurationChange();
+      return true;
     }
+    return false;
   }
 
   private async getCodexHome(): Promise<string> {
@@ -486,6 +601,14 @@ function normalizeMcpInput(input: McpServerSaveInput): Required<Pick<McpServerSa
   }
   const args = (input.args ?? []).map((arg) => arg.trim()).filter(Boolean).slice(0, 50);
   return { ...input, originalName, name, transport: "stdio", command, args, enabled: input.enabled !== false };
+}
+
+function referencesSessionEnvironment(transport: Record<string, unknown>): boolean {
+  const reserved = (value: unknown): boolean =>
+    typeof value === "string" && value.toUpperCase() === "ELEMENT_IDE_MCP_SESSION_TOKEN";
+  const headers = transport.env_http_headers;
+  return reserved(transport.bearer_token_env_var)
+    || Boolean(headers && typeof headers === "object" && Object.values(headers).some(reserved));
 }
 
 function validateMcpName(value: string): string {
