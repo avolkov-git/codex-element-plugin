@@ -196,8 +196,7 @@ function createZip(platformRoot, payloadRoot, archivePath) {
     runCommand("zip", ["-X", "-q", "-r", archivePath, "codex-plugins"], platformRoot);
     return;
   }
-  const script = "& { param($source, $destination) Compress-Archive -LiteralPath $source -DestinationPath $destination -Force }";
-  runCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script, payloadRoot, archivePath], platformRoot);
+  runCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", path.join(__dirname, "package-windows-zip.ps1"), "-Source", payloadRoot, "-Destination", archivePath], platformRoot);
 }
 
 function extractZip(archivePath, destinationPath) {

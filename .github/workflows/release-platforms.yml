@@ -81,6 +81,10 @@ jobs:
           node --check media/settings.js
           git diff --check
 
+      - name: Check Windows ZIP portability
+        if: matrix.platform == 'win32-x64'
+        run: node --test tests/windows-release-zip.test.cjs
+
       - name: Check history isolation and migration
         if: matrix.platform == 'linux-x64'
         run: |

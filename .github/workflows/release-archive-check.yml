@@ -1,0 +1,28 @@
+name: Release archive checks
+
+on:
+  push:
+    paths:
+      - scripts/package-windows-zip.ps1
+      - scripts/package-platform-releases.js
+      - tests/windows-release-zip.test.cjs
+      - .github/workflows/release-archive-check.yml
+  pull_request:
+    paths:
+      - scripts/package-windows-zip.ps1
+      - scripts/package-platform-releases.js
+      - tests/windows-release-zip.test.cjs
+      - .github/workflows/release-archive-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-zip:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+      - run: node --test tests/windows-release-zip.test.cjs
