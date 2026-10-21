@@ -458,9 +458,11 @@ async function main() {
           `$ErrorActionPreference='Stop'; $p=Get-CimInstance Win32_Process -Filter 'ProcessId = ${runtime.child.pid}'; if (!$p) { exit 1 }; [Console]::Out.Write($p.CommandLine)`]]
         : ["ps", ["-p", String(runtime.child.pid), "-o", "command="]];
       const inspected = spawnSync(processCommand[0], processCommand[1], {
-        cwd: root, env: baseEnv(home), encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024,
+        // The observer needs the host's OS tooling environment, not the isolated runtime home.
+        cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 1024 * 1024,
       });
-      check(inspected.status === 0 && inspected.stdout.trim(), "Could not inspect actual process argv (requires ps or Windows PowerShell/CIM)");
+      check(inspected.status === 0 && inspected.stdout?.trim(),
+        `Could not inspect actual process argv (requires ps or Windows PowerShell/CIM): ${clean(inspected.error?.message || inspected.stderr || `exit ${inspected.status}`).slice(0, 2000)}`);
       noSecrets(inspected.stdout, "OS process argv");
     }
     console.log("PASS partial-before-browser and combined-process-local-partial variants; base header values absent from argv");
