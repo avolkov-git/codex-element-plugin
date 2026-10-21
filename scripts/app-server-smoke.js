@@ -4,19 +4,21 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
-const { spawn } = require("node:child_process");
-const { createInterface } = require("node:readline");
 const Module = require("node:module");
 const ts = require("typescript");
 const Ajv = require("ajv");
 const { targetForPlatform, validateRuntimeFile } = require("./runtime-preflight-lib");
-// Exercise the current transport without rebuilding or modifying dist.
-const rpcFilename = path.resolve(__dirname, "../src/jsonRpcClient.ts");
-const rpcModule = new Module(rpcFilename, module);
-rpcModule._compile(ts.transpileModule(fs.readFileSync(rpcFilename, "utf8"), {
-  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }
-}).outputText, rpcFilename);
-const { JsonRpcClient } = rpcModule.exports;
+// Exercise the current transport and process-tree cleanup without modifying dist.
+function loadSource(relativePath) {
+  const filename = path.resolve(__dirname, relativePath);
+  const sourceModule = new Module(filename, module);
+  sourceModule._compile(ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS }
+  }).outputText, filename);
+  return sourceModule.exports;
+}
+const { JsonRpcClient } = loadSource("../src/jsonRpcClient.ts");
+const { RuntimeProcessManager } = loadSource("../src/runtimeProcessManager.ts");
 const runtime = path.resolve(process.argv[2]);
 const live = process.argv.includes("--live");
 const authHomeIndex = process.argv.indexOf("--auth-home");
@@ -36,12 +38,9 @@ async function main() {
   assert.deepEqual(validateRuntimeFile(runtime, target, { required: true }).errors, [], "smoke requires a native executable; never run foreign binaries");
   assert.ok(authHomeIndex === -1 || live, "--auth-home is only allowed with explicit --live");
   const temp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "codex-element-runtime-smoke-")));
-  let child;
-  let processClosed;
+  const manager = new RuntimeProcessManager();
   let rpc;
-  let reader;
   let completionTimer;
-  let cleanupTimer;
   const notificationErrors = [];
   try {
     fs.chmodSync(temp, 0o700);
@@ -57,10 +56,7 @@ async function main() {
     let deltaCount = 0;
     const done = new Promise((resolve) => { completed = resolve; });
     async function start(configOverrides = []) {
-      child = spawn(runtime, ["app-server", "-c", 'cli_auth_credentials_store="file"', ...configOverrides], { cwd: temp, env, stdio: ["pipe", "pipe", "pipe"] });
-      processClosed = new Promise((resolve) => child.once("close", resolve));
-      child.stderr.resume();
-      rpc = new JsonRpcClient((line) => child.stdin.write(`${line}\n`), (notification) => {
+      rpc = new JsonRpcClient((line) => manager.writeLine(line), (notification) => {
         try {
           if (contract.notifications[notification.method]) validate("notifications", notification.method, notification);
           if (notification.method === "item/agentMessage/delta") deltaCount++;
@@ -68,23 +64,25 @@ async function main() {
           if (notification.method === "turn/completed") completed(notification.params.turn);
         } catch (error) { notificationErrors.push(error.message); }
       }, () => { throw new Error("No tool approvals allowed in smoke test"); });
-      reader = createInterface({ input: child.stdout });
-      reader.on("line", (line) => rpc.handleLine(line));
-      child.on("error", () => rpc.dispose());
-      child.on("exit", () => rpc.dispose());
+      manager.start({
+        command: runtime,
+        args: ["app-server", "-c", 'cli_auth_credentials_store="file"', ...configOverrides],
+        cwd: temp, env,
+        // Only the fixture seeds a >8 MiB rollout over RPC; normal resumes send its ID.
+        maxLineBytes: 32 * 1024 * 1024,
+        maxPendingWriteBytes: 32 * 1024 * 1024,
+        onStdout: (line) => rpc.handleLine(line),
+        onStderr() {},
+        onError: () => rpc.dispose(),
+        onExit: () => rpc.dispose(),
+      });
       const initialized = await request("initialize", { clientInfo: { name: "codex_element_smoke", version: "0.1.89" }, capabilities: { experimentalApi: true, requestAttestation: false, mcpServerOpenaiFormElicitation: false, optOutNotificationMethods: null } }, "InitializeResponse");
       assert.ok(initialized.userAgent.includes(`/${contract.version} `), `unexpected runtime: ${initialized.userAgent}`);
       rpc.notify("initialized");
     }
     async function stop() {
       rpc?.dispose();
-      reader?.close();
-      if (child && child.exitCode === null && child.signalCode === null) {
-        child.kill();
-        cleanupTimer = setTimeout(() => child.kill("SIGKILL"), 2000);
-      }
-      await processClosed;
-      clearTimeout(cleanupTimer);
+      await manager.stop(2000);
     }
     async function request(method, params, responseName) {
       if (method === "thread/resume" || method === "thread/fork") assert.equal(params.excludeTurns, true);
@@ -255,13 +253,7 @@ async function main() {
   } finally {
     clearTimeout(completionTimer);
     rpc?.dispose();
-    reader?.close();
-    if (child && child.exitCode === null && child.signalCode === null) {
-      child.kill();
-      cleanupTimer = setTimeout(() => child.kill("SIGKILL"), 2000);
-    }
-    await processClosed;
-    clearTimeout(cleanupTimer);
+    await manager.stop(2000);
     // Runtime cache cleanup can briefly race the final directory traversal after close.
     fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
