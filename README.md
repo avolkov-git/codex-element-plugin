@@ -65,8 +65,8 @@
 
 1. Откройте страницу [Releases](https://github.com/avolkov-git/codex-element-plugin/releases).
 2. Выберите архив по операционной системе сервера Element:
-   - Windows x64: `codex-plugins-1.0.4-win32-x64.zip`;
-   - Linux x64: `codex-plugins-1.0.4-linux-x64.tar.gz`.
+   - Windows x64: `codex-plugins-1.0.5-win32-x64.zip`;
+   - Linux x64: `codex-plugins-1.0.5-linux-x64.tar.gz`.
 3. Сверьте SHA-256 с `SHA256SUMS.txt`.
 4. Распакуйте архив.
 5. Остановите серверную IDE и замените установленный каталог плагина в `/plugins`, сохранив его имя. При первой установке поместите туда каталог `codex-plugins`. Не оставляйте две версии плагина одновременно.
@@ -239,7 +239,7 @@ Legacy layout для старых Windows, Linux и macOS сборок подд�
 Не копируйте рабочий Git-каталог в `/plugins`. Соберите payload без `.git`, `node_modules`, временных файлов и LFS pointers:
 
 ```bash
-node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy-1.0.4/win32-x64/codex-plugins --platform win32-x64 --platform-only --browser-runtime-root ../local-codex-temp/browser-runtime --strict
+node scripts/stage-deploy-payload.js --target ../codex-plugin-deploy-1.0.5/win32-x64/codex-plugins --platform win32-x64 --platform-only --browser-runtime-root ../local-codex-temp/browser-runtime --strict
 ```
 
 Для тестовых сборок используйте отдельный target. Обычные команды ниже работают с каталогом `../codex-plugin-deploy`:
@@ -273,8 +273,8 @@ GitHub Actions делает это матрицей на `windows-latest` и `ub
 Команда собирает и повторно распаковывает оба архива, запускает строгий preflight и создает в указанном `--output`:
 
 ```text
-codex-plugins-1.0.4-win32-x64.zip
-codex-plugins-1.0.4-linux-x64.tar.gz
+codex-plugins-1.0.5-win32-x64.zip
+codex-plugins-1.0.5-linux-x64.tar.gz
 SHA256SUMS.txt
 README_RELEASE.md
 ```
