@@ -118,10 +118,12 @@ async function harness(realRoot) {
     history = new ChatHistoryService({ globalStorageUri: { fsPath: realRoot } }, realRoot, { info() {}, error() {} }, () => identity.getCurrent(), message => errors.push(message));
     await history.load(identities.A.userKey);
   }
-  let stops = 0;
+  let stops = 0, bridgeInvalidations = 0, viewerStops = 0;
   const runtime = { async stopForIdentityChange() { stops++; const waiting = stopGates.shift(); if (waiting) await waiting.promise; } };
   const dependencies = {
     state, history, identity, runtime, vscode,
+    elementMcpIdeBridge: { invalidate() { bridgeInvalidations++; } },
+    browserViewer: { stop() { viewerStops++; } },
     chatPanels: { closeIfActiveChat() {}, postAllSnapshots() {} },
     sidebar: { postSnapshot() {} }, logger: { info() {} }, rulesContext: {}, refreshRulesContext() {}, reportHistoryError: message => errors.push(message),
     profiles: { getCurrentProfileLabel: () => identity.getCurrent()?.userLabel }
@@ -132,6 +134,8 @@ async function harness(realRoot) {
   return {
     ...api, state, identity, history, loads, writes, publications, errors,
     get stops() { return stops; },
+    get bridgeInvalidations() { return bridgeInvalidations; },
+    get viewerStops() { return viewerStops; },
     select(name, invalidate = true) { currentName = name; if (invalidate) identity.invalidate(); },
     holdStop() { const waiting = gate(); stopGates.push(waiting); return waiting; },
     holdLoad(name) { const waiting = gate(); loadGates.set(identities[name].userKey, waiting); return waiting; },
@@ -168,6 +172,8 @@ async function main() {
       h.select("B", false);
       const loading = h.ensureHistoryLoaded();
       await until(() => h.stops === 1);
+      assert.equal(h.bridgeInvalidations, 1, "Identity change must invalidate the MCP session.");
+      assert.equal(h.viewerStops, 1, "Identity change must stop the previous browser view.");
       await tick();
       assert.equal(h.loads.length, 0, "New history loaded while the old cleanup was still in flight.");
       held.release();

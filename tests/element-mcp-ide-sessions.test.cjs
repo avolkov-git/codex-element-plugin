@@ -76,7 +76,7 @@ async function fixture(t, host = "127.0.0.1") {
   const rootB = path.join(root, "other-workspace");
   fs.mkdirSync(rootB);
   const f = {
-    root: fs.realpathSync(root), rootB: fs.realpathSync(rootB), calls: [], sessions: [], managers: [],
+    root: await fs.promises.realpath(root), rootB: await fs.promises.realpath(rootB), calls: [], sessions: [], managers: [],
     csrf: "synthetic-csrf-token", version: "0.23.0", createCode: 201, hook: undefined, mutateCreate: (value) => value,
   };
   const server = http.createServer(async (req, res) => {
