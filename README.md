@@ -5,13 +5,13 @@
 Плагин для Theia IDE, который добавляет Codex в среду разработки 1C: Элемент. Runtime работает через поставляемый вместе с плагином [codex app-server](https://github.com/openai/codex).
 Подробнее про `codex app-server` [тут](https://developers.openai.com/codex/app-server) и [тут](https://github.com/openai/codex/tree/main/codex-rs/app-server)
 
-- Стабильная версия: `1.0.4`. Условия проверки: [описание релиза](docs/release-1.0.4.md#проверки).
+- Стабильная версия: `1.0.5`. Условия проверки: [описание релиза](docs/release-1.0.5.md#проверки).
 - Текущая версия Codex CLI/app-server: `0.154.0`
 - Готовые поставки: Windows x64 и Linux x64
 - Исходный проект также содержит runtime-матрицу для Windows, Linux и macOS на x64 и arm64
 - [Релизы](https://github.com/avolkov-git/codex-element-plugin/releases)
 
-Изменения версии: [релиз 1.0.4](docs/release-1.0.4.md). Установка, проверка и перенос данных: [руководство](docs/1.0.0-rc-testing.md).
+Изменения версии: [релиз 1.0.5](docs/release-1.0.5.md). Установка, проверка и перенос данных: [руководство](docs/1.0.0-rc-testing.md).
 
 В `1.0.1-rc` исправлены очереди обновлений, diff, логов и истории; поиск документации вынесен в worker. [Разбор нагрузки, замеры и проверка обрывов IDE](docs/reviews/2026-09-08-streaming-pressure.md).
 
@@ -116,7 +116,7 @@ Console проверяет штатные `1C.projectId` и `1C.applicationId`; 
 
 ### Браузерное тестирование
 
-В версии `1.0.5-rc6` кнопка монитора в шапке чата открывает вкладку «Codex: Браузер» рядом с чатом. В ней видны указатель и фокус браузера; можно выбрать страницу, приостановить просмотр или включить ручное управление мышью и клавиатурой. Кнопка × закрывает выбранную страницу браузера, а пункт «Закрыть остальные» в меню рядом со списком оставляет только её. Агент продолжает работать через Playwright MCP, поэтому перед ручным вводом попросите его подождать. Подробнее: [просмотр браузера агента](docs/browser-viewer.md).
+В версии `1.0.5` кнопка монитора в шапке чата открывает вкладку «Codex: Браузер» рядом с чатом. В ней видны указатель и фокус браузера; можно выбрать страницу, приостановить просмотр или включить ручное управление мышью и клавиатурой. Кнопка × закрывает выбранную страницу браузера, а пункт «Закрыть остальные» в меню рядом со списком оставляет только её. Агент продолжает работать через Playwright MCP, поэтому перед ручным вводом попросите его подождать. Подробнее: [просмотр браузера агента](docs/browser-viewer.md).
 
 Платформенная поставка включает официальный `@playwright/mcp`, Node.js и headless Chromium. В настройках включите браузерное тестирование: адрес приложения плагин получает из Console по `1C.applicationId` текущей IDE, без внешнего MCP. При смене приложения адрес определяется заново, а история проекта сохраняется. При запуске создаётся отдельная browser-сессия с временным именем MCP; прежняя общая запись `codex-element-browser` отключается. Отдельный порт, `npx`, системный Node.js и `sudo` не требуются.
 
@@ -256,7 +256,7 @@ npm run preflight:deploy
 
 ```bash
 npm run build
-node scripts/package-platform-releases.js --output ../codex-plugin-release/1.0.4 --browser-runtime-root ../local-codex-temp/browser-runtime
+node scripts/package-platform-releases.js --output ../codex-plugin-release/1.0.5 --browser-runtime-root ../local-codex-temp/browser-runtime
 ```
 
 Перед локальной platform-specific упаковкой подготовьте browser runtime на целевой ОС. Кросс-компиляция browser runtime не поддерживается: Windows payload собирается на Windows, Linux payload — на Linux.
@@ -283,7 +283,7 @@ README_RELEASE.md
 
 ### Автоматический выпуск
 
-Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v1.0.4`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
+Workflow `.github/workflows/release-platforms.yml` использует ту же команду упаковки. Ручной запуск workflow создает проверяемый artifact без публикации. Push тега, совпадающего с версией `package.json`, например `v1.0.5`, автоматически создает GitHub Release и прикладывает оба архива, `SHA256SUMS.txt` и `README_RELEASE.md`.
 
 CI загружает из Git LFS только `win32-x64` и `linux-x64`. Остальная runtime-матрица не скачивается для этого релиза.
 

@@ -30,7 +30,10 @@ fs.writeFileSync(
   `${artifacts.map((artifact) => `${artifact.sha256}  ${artifact.name}`).join("\n")}\n`,
   "utf8"
 );
-fs.writeFileSync(path.join(outputRoot, "README_RELEASE.md"), [
+const releaseNotesPath = path.join(sourceRoot, "docs", `release-${manifest.version}.md`);
+fs.writeFileSync(path.join(outputRoot, "README_RELEASE.md"), fs.existsSync(releaseNotesPath)
+  ? fs.readFileSync(releaseNotesPath, "utf8")
+  : [
   `# Codex for 1C: Element ${manifest.version}`,
   "",
   "Платформенные архивы содержат Codex app-server и управляемый Playwright MCP browser runtime:",

@@ -1,6 +1,6 @@
 # IDE-сессии 1C Element MCP
 
-Версия плагина: `1.0.5-rc6`, ветка `feature/1.0.5-rc1-browser-viewer`.
+Версия плагина: `1.0.5`, ветка `master`.
 Протокол: IDE sessions v1 из 1C Element MCP 0.23.0 и новее; подробная диагностика Console доступна с MCP 0.23.1.
 Bundled Codex: 0.154.0.
 
